@@ -72,22 +72,32 @@ def rebuild(db, hero="Hero"):
         db["hands"][hand_id] = new
 
 
-def tournaments_response(db):
-    """DB → 웹앱 응답 구조. 토너먼트는 최신 시작 시간 역순 정렬."""
+def tournament_list(db):
+    """토너먼트 목록(핸드 본문 제외) — 최신 시작 시간 역순. 지연 로딩용."""
     groups = {}
     for rec in db["hands"].values():
         key = rec["tournament_id"]
         g = groups.setdefault(key, {
-            "id": key, "name": rec["tournament_name"], "hands": [],
+            "id": key, "name": rec["tournament_name"],
+            "hand_count": 0, "analyzed": 0, "start": "", "end": "",
         })
-        g["hands"].append({k: v for k, v in rec.items() if k != "raw"})
-    tournaments = []
-    for g in groups.values():
-        g["hands"].sort(key=lambda h: h.get("datetime") or "")
-        times = [h["datetime"] for h in g["hands"] if h.get("datetime")]
-        g["start"] = times[0] if times else ""
-        g["end"] = times[-1] if times else ""
-        g["hand_count"] = len(g["hands"])
-        tournaments.append(g)
-    tournaments.sort(key=lambda t: t["start"], reverse=True)
+        g["hand_count"] += 1
+        if rec.get("analysis"):
+            g["analyzed"] += 1
+        dt = rec.get("datetime") or ""
+        if dt:
+            g["start"] = min(g["start"] or dt, dt)
+            g["end"] = max(g["end"], dt)
+    tournaments = sorted(groups.values(), key=lambda t: t["start"], reverse=True)
     return {"tournaments": tournaments}
+
+
+def tournament_hands(db, tournament_id):
+    """특정 토너먼트의 핸드 목록 (raw 제외, 시간순)."""
+    hands = [
+        {k: v for k, v in rec.items() if k != "raw"}
+        for rec in db["hands"].values()
+        if rec["tournament_id"] == tournament_id
+    ]
+    hands.sort(key=lambda h: h.get("datetime") or "")
+    return {"id": tournament_id, "hands": hands}

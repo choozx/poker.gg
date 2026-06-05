@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -44,6 +45,25 @@ ANALYSIS_SYSTEM_PROMPT = """\
 """
 
 
+REPORT_SYSTEM_PROMPT = """\
+당신은 NLH 토너먼트 전문 포커 코치입니다. 한 플레이어(Hero)의 핸드별 AI 분석 모음을 읽고 종합 리포트를 작성하세요.
+
+형식 (정확히 준수):
+## 반복되는 실수 패턴
+패턴별로 (빈도 높은 순, 최대 5개):
+- **패턴 제목** — 근거 핸드 번호들. 왜 EV 손실인지 1~2문장. 교정 방법 1문장.
+## 잘하고 있는 점
+- 1~2개, 각 한 줄
+## 우선 교정 1순위
+- 가장 EV 손실이 큰 패턴 하나와 구체적인 실행 지침 2~3문장
+
+규칙:
+- 반드시 핸드 번호를 인용해 근거를 제시하세요. 근거 없는 일반론 금지.
+- 분석 모음에 실수가 없으면 패턴을 억지로 만들지 말고 그렇다고 쓰세요.
+- 한국어, 간결하게.
+"""
+
+
 class ClaudeCLIBackend:
     """Claude Code CLI 헤드리스 모드(claude -p) 사용. 별도 API 키 불필요."""
 
@@ -52,9 +72,9 @@ class ClaudeCLIBackend:
     def available(self):
         return shutil.which("claude") is not None
 
-    def analyze_stream(self, hand_md):
-        """분석 텍스트를 생성되는 대로 chunk 단위로 yield."""
-        prompt = ANALYSIS_SYSTEM_PROMPT + "\n다음 핸드를 분석하세요:\n\n" + hand_md
+    def stream(self, system, user):
+        """system+user 프롬프트로 생성 텍스트를 chunk 단위로 yield."""
+        prompt = system + "\n" + user
         # shutil.which로 절대경로 해석(윈도우 PATH 대응), encoding 고정(윈도우 cp949 방지)
         claude_bin = shutil.which("claude") or "claude"
         proc = subprocess.Popen(
@@ -103,16 +123,16 @@ class AnthropicAPIBackend:
         return bool(os.environ.get("ANTHROPIC_API_KEY")
                     or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
 
-    def analyze_stream(self, hand_md):
-        """분석 텍스트를 생성되는 대로 chunk 단위로 yield."""
+    def stream(self, system, user):
+        """system+user 프롬프트로 생성 텍스트를 chunk 단위로 yield."""
         import anthropic
         client = anthropic.Anthropic()
         with client.messages.stream(
             model="claude-opus-4-8",
             max_tokens=16000,
             thinking={"type": "adaptive"},
-            system=ANALYSIS_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": "다음 핸드를 분석하세요:\n\n" + hand_md}],
+            system=system,
+            messages=[{"role": "user", "content": user}],
         ) as stream:
             yield from stream.text_stream
 
@@ -228,6 +248,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   @keyframes blink { to { visibility: hidden; } }
   .ai-meta { color: var(--dim); font-size: 11px; margin-top: 6px; text-align: right; }
 
+  #report-overlay { display: none; position: fixed; inset: 0; z-index: 50;
+                    background: rgba(0,0,0,.62); align-items: center; justify-content: center; }
+  #report-overlay.open { display: flex; }
+  #report-panel { width: min(860px, 92vw); max-height: 86vh; overflow-y: auto;
+                  background: var(--panel); border: 1px solid var(--border);
+                  border-radius: 14px; padding: 20px 26px 24px; }
+  #report-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  #report-head h2 { font-size: 17px; }
+  #report-body h2 { color: var(--gold); font-size: 15px; margin: 14px 0 6px; }
+  #report-body ul { list-style: none; margin: 4px 0 10px 6px; }
+  #report-body li { padding: 2px 0; }
+  #report-body strong { color: #fff; }
+  #report-body .ai-meta { margin-top: 14px; }
+
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
            background: var(--accent); color: #0c1117; font-weight: 600;
            padding: 9px 20px; border-radius: 8px; opacity: 0; transition: opacity .25s; }
@@ -238,10 +272,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <header>
   <h1>🃏 Hand History Converter</h1>
   <span class="spacer"></span>
+  <button id="btnReport" onclick="openReport()" style="display:none">📊 종합 리포트</button>
   <label class="small">Hero 이름 <input type="text" id="hero" value="Hero"></label>
   <button id="btnOpen">파일 열기</button>
   <input type="file" id="file" accept=".txt,.log" multiple style="display:none">
 </header>
+
+<div id="report-overlay" onclick="if(event.target===this) closeReport()">
+  <div id="report-panel">
+    <div id="report-head">
+      <h2>📊 종합 리포트</h2>
+      <span class="spacer"></span>
+      <button onclick="closeReport()">닫기</button>
+    </div>
+    <div id="report-body"></div>
+  </div>
+</div>
 
 <div id="drop">
   <strong>핸드 히스토리 파일을 여기에 드래그</strong>
@@ -260,6 +306,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 let DATA = null, SEL = 0, HIDE_FOLDS = false;
+let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 
 const $ = s => document.querySelector(s);
 
@@ -324,14 +371,15 @@ function renderSidebar() {
   $('#sidebar').innerHTML = DATA.tournaments.map((t, i) => `
     <div class="tourney ${i===SEL?'sel':''}" onclick="selectTourney(${i})">
       <div class="tname">${esc(t.name)}</div>
-      <div class="tmeta">#${t.id} · 핸드 ${t.hand_count}개<br>${esc(t.start.slice(0,16))} ~ ${esc(t.end.slice(11,16))}</div>
+      <div class="tmeta">#${t.id} · 핸드 ${t.hand_count}개${t.analyzed ? ' · 🤖' + t.analyzed : ''}<br>${esc(t.start.slice(0,16))} ~ ${esc(t.end.slice(11,16))}</div>
     </div>`).join('');
 }
 
-// 현재 표시 대상 핸드 (필터 적용)
+// 현재 표시 대상 핸드 (필터 적용) — 지연 로딩 전이면 빈 배열
 function visibleHands() {
   const t = DATA.tournaments[SEL];
-  return HIDE_FOLDS ? t.hands.filter(h => !h.no_action_fold) : t.hands;
+  const hands = (t && t.hands) || [];
+  return HIDE_FOLDS ? hands.filter(h => !h.no_action_fold) : hands;
 }
 
 function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
@@ -419,7 +467,7 @@ function renderAIBox(handId) {
 async function analyzeHand(handId) {
   let hand = null;
   for (const t of DATA.tournaments) {
-    hand = t.hands.find(h => h.hand_id === handId);
+    hand = (t.hands || []).find(h => h.hand_id === handId);
     if (hand) break;
   }
   if (!hand) return;
@@ -460,7 +508,24 @@ async function analyzeHand(handId) {
   renderAIBox(handId);
 }
 
-function selectTourney(i) { SEL = i; renderSidebar(); renderMain(); $('#main').scrollTop = 0; }
+// 토너먼트 선택 — 핸드는 처음 선택될 때 서버에서 지연 로드
+async function selectTourney(i) {
+  SEL = i; renderSidebar();
+  const t = DATA.tournaments[i];
+  if (!t) { $('#mainhead').innerHTML = ''; $('#hands').innerHTML = ''; return; }
+  if (!t.hands) {
+    $('#mainhead').innerHTML = `<h2>${esc(t.name)}</h2>`;
+    $('#hands').innerHTML = '<div class="ai-loading">핸드 불러오는 중</div>';
+    const res = await fetch('/api/tournament?id=' + encodeURIComponent(t.id));
+    const data = await res.json();
+    if (SEL !== i) return;  // 로딩 중 다른 토너먼트로 이동함
+    t.hands = data.hands;
+    for (const h of t.hands)
+      if (h.analysis && !AI_CACHE[h.hand_id])
+        AI_CACHE[h.hand_id] = {status: 'done', text: h.analysis, backend: '저장됨'};
+  }
+  renderMain(); $('#main').scrollTop = 0;
+}
 function toggleAll(open) {
   document.querySelectorAll('.hand').forEach(el => el.classList.toggle('open', open));
 }
@@ -481,18 +546,16 @@ function downloadMd() {
   a.click();
 }
 
-function applyData(data) {
+async function applyData(data) {
   DATA = data; SEL = 0;
-  // DB에 저장된 AI 분석 결과를 캐시에 복원
-  for (const t of DATA.tournaments)
-    for (const h of t.hands)
-      if (h.analysis && !AI_CACHE[h.hand_id])
-        AI_CACHE[h.hand_id] = {status: 'done', text: h.analysis, backend: '저장됨'};
+  REPORT = data.report || null;
+  ANALYZED_TOTAL = data.analyzed_total || 0;
+  updateReportBtn();
   const params = new URLSearchParams(location.search);
   HIDE_FOLDS = params.has('hidefolds');
   $('#drop').style.display = 'none';
   $('#layout').classList.add('active');
-  renderSidebar(); renderMain();
+  await selectTourney(0);
   if (params.has('expand')) toggleAll(true);
 }
 
@@ -526,6 +589,68 @@ $('#file').onchange = e => loadFiles(e.target.files);
 }));
 document.body.addEventListener('drop', e => loadFiles(e.dataTransfer.files));
 
+// --- 종합 리포트 ---
+function updateReportBtn() {
+  const b = $('#btnReport');
+  b.style.display = '';
+  b.textContent = `📊 종합 리포트${ANALYZED_TOTAL ? ` (${ANALYZED_TOTAL}핸드 분석됨)` : ''}`;
+}
+function openReport() { $('#report-overlay').classList.add('open'); renderReport(); }
+function closeReport() { $('#report-overlay').classList.remove('open'); }
+
+function renderReport(streamText) {
+  const el = $('#report-body');
+  if (REPORT_STREAMING) {
+    el.innerHTML = mdToHtml(streamText || '') + '<span class="ai-cursor">▍</span>';
+    return;
+  }
+  if (REPORT) {
+    el.innerHTML = mdToHtml(REPORT.text) +
+      `<div class="ai-meta">${esc(REPORT.created_at)} 생성 · 분석 핸드 ${REPORT.hand_count}개 기반 · ` +
+      `<a href="#" style="color:var(--dim)" onclick="event.preventDefault(); generateReport()">다시 생성</a></div>`;
+  } else {
+    el.innerHTML = `
+      <p style="color:var(--dim)">분석된 핸드들을 모아 반복되는 실수 패턴을 진단합니다.<br>
+      현재 분석된 핸드: ${ANALYZED_TOTAL}개 (3개 이상 필요)</p>
+      <button class="primary" style="margin-top:12px" onclick="generateReport()">리포트 생성</button>`;
+  }
+}
+
+async function generateReport() {
+  if (REPORT_STREAMING) return;
+  REPORT_STREAMING = true;
+  renderReport('');
+  try {
+    const res = await fetch('/api/report', {method: 'POST'});
+    if (!res.ok) {
+      const data = await res.json();
+      REPORT_STREAMING = false;
+      $('#report-body').innerHTML = `<div class="ai-error">${esc(data.error || 'HTTP ' + res.status)}</div>`;
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, {stream: true});
+      renderReport(text);
+    }
+    text += decoder.decode();
+    REPORT_STREAMING = false;
+    if (text.trim()) {
+      const now = new Date();
+      REPORT = {text, created_at: now.toISOString().slice(0,16).replace('T',' '),
+                hand_count: ANALYZED_TOTAL};
+    }
+    renderReport();
+  } catch (e) {
+    REPORT_STREAMING = false;
+    $('#report-body').innerHTML = `<div class="ai-error">${esc(String(e))}</div>`;
+  }
+}
+
 // 저장된 DB가 있으면 시작하자마자 표시
 fetch('/api/db').then(r => r.json()).then(d => {
   if (d.tournaments && d.tournaments.length) applyData(d);
@@ -546,14 +671,48 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        from urllib.parse import parse_qs, urlparse
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self._send(INDEX_HTML)
         elif path == "/api/db":
-            resp = store.tournaments_response(DB)
+            resp = store.tournament_list(DB)
+            resp["report"] = DB.get("report")
+            resp["analyzed_total"] = sum(1 for r in DB["hands"].values() if r.get("analysis"))
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/tournament":
+            qs = parse_qs(urlparse(self.path).query)
+            tid = qs.get("id", [""])[0]
+            resp = store.tournament_hands(DB, tid)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         else:
             self.send_error(404)
+
+    def _stream_ai(self, system, user):
+        """AI 스트리밍 응답 공통 처리. 성공 시 전체 텍스트, 실패 시 None 반환."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-AI-Backend", AI_BACKEND.name)
+        self.end_headers()
+        full = []
+        ok = True
+        try:
+            for chunk in AI_BACKEND.stream(system, user):
+                full.append(chunk)
+                self.wfile.write(chunk.encode("utf-8"))
+                self.wfile.flush()
+        except BrokenPipeError:
+            ok = False  # 클라이언트가 연결을 끊음 — 불완전 결과는 저장 안 함
+        except Exception as e:
+            ok = False
+            try:
+                self.wfile.write(f"\n\n> ⚠️ 분석 중 오류: {e}".encode("utf-8"))
+                self.wfile.flush()
+            except BrokenPipeError:
+                pass
+        text = "".join(full).strip()
+        return text if ok and text else None
 
     def do_POST(self):
         if self.path.startswith("/api/import"):
@@ -571,7 +730,9 @@ class Handler(BaseHTTPRequestHandler):
                 resp = {"error": "핸드를 찾지 못했습니다. 'CoinPoker Hand #' 로 시작하는 로그인지 확인하세요."}
             else:
                 resp = {"added": added, "skipped": skipped}
-                resp.update(store.tournaments_response(DB))
+                resp.update(store.tournament_list(DB))
+                resp["report"] = DB.get("report")
+                resp["analyzed_total"] = sum(1 for r in DB["hands"].values() if r.get("analysis"))
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif self.path == "/api/analyze":
             length = int(self.headers.get("Content-Length", 0))
@@ -588,34 +749,43 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({"error": str(e)}, ensure_ascii=False),
                            "application/json; charset=utf-8", code=400)
                 return
-            # 스트리밍 응답: 생성되는 텍스트를 즉시 브라우저로 전달
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("X-AI-Backend", AI_BACKEND.name)
-            self.end_headers()
-            full = []
-            ok = True
-            try:
-                for chunk in AI_BACKEND.analyze_stream(hand_md):
-                    full.append(chunk)
-                    self.wfile.write(chunk.encode("utf-8"))
-                    self.wfile.flush()
-            except BrokenPipeError:
-                ok = False  # 클라이언트가 연결을 끊음 — 불완전 분석은 저장 안 함
-            except Exception as e:
-                ok = False
-                try:
-                    msg = f"\n\n> ⚠️ 분석 중 오류: {e}"
-                    self.wfile.write(msg.encode("utf-8"))
-                    self.wfile.flush()
-                except BrokenPipeError:
-                    pass
-            # 완료된 분석은 DB에 영구 저장 → 재분석 불필요
+            # 스트리밍 응답 + 완료된 분석은 DB에 영구 저장
+            text = self._stream_ai(ANALYSIS_SYSTEM_PROMPT,
+                                   "다음 핸드를 분석하세요:\n\n" + hand_md)
             hand_id = body.get("hand_id")
-            text = "".join(full).strip()
-            if ok and text and hand_id in DB["hands"]:
+            if text and hand_id in DB["hands"]:
                 DB["hands"][hand_id]["analysis"] = text
+                store.save_db(DB_PATH, DB)
+        elif self.path == "/api/report":
+            # 분석된 핸드들을 모아 반복 실수 패턴 종합 리포트 생성
+            analyzed = [(hid, r) for hid, r in DB["hands"].items() if r.get("analysis")]
+            if len(analyzed) < 3:
+                self._send(json.dumps(
+                    {"error": f"분석된 핸드가 {len(analyzed)}개뿐입니다. "
+                              "3개 이상 분석한 뒤 리포트를 생성하세요."},
+                    ensure_ascii=False), "application/json; charset=utf-8", code=400)
+                return
+            # 최신순 최대 100개 (토큰 한도 보호)
+            analyzed.sort(key=lambda x: x[1].get("datetime") or "", reverse=True)
+            analyzed = analyzed[:100]
+            blocks = []
+            for hid, r in analyzed:
+                cards = " ".join(r.get("hero_cards") or [])
+                net_bb = r.get("net_bb")
+                net_s = f"{net_bb:+}bb" if net_bb is not None else "?"
+                blocks.append(
+                    f"[핸드 #{hid} | {r.get('datetime', '?')} | {r.get('hero_pos', '?')} "
+                    f"| {cards} | net {net_s}]\n{r['analysis']}"
+                )
+            user = (f"다음은 Hero의 핸드 {len(analyzed)}개에 대한 분석 모음입니다. "
+                    f"종합 리포트를 작성하세요.\n\n" + "\n\n---\n\n".join(blocks))
+            text = self._stream_ai(REPORT_SYSTEM_PROMPT, user)
+            if text:
+                DB["report"] = {
+                    "text": text,
+                    "created_at": time.strftime("%Y-%m-%d %H:%M"),
+                    "hand_count": len(analyzed),
+                }
                 store.save_db(DB_PATH, DB)
         else:
             self.send_error(404)
