@@ -1,0 +1,16 @@
+# 개인 데이터 — 핸드 DB (변환 결과 + AI 분석 포함)
+hands_db.json
+hands_db.json.tmp
+*.db.json
+
+# 내보내기 산출물
+tournament_*.md
+
+# 실제 핸드 히스토리 파일 (개인 데이터) — 샘플은 예외로 추적
+*.txt
+!sample_hand.txt
+
+# 파이썬/맥 잡파일
+__pycache__/
+*.pyc
+.DS_Store

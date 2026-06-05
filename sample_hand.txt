@@ -1,0 +1,33 @@
+CoinPoker Hand #69187300001: NLH (175/350/44) 2026/06/04 22:44:39 KST
+Tournament '₮11 Asia 6-Max Turbo' '63446' 6-max Seat #3 is the button
+Seat 1: Hero (10,000 in chips)
+Seat 2: 78c4f548 (20,122.62 in chips)
+Seat 3: 084a1d59 (11,058 in chips)
+Hero: posts ante 44
+78c4f548: posts ante 44
+084a1d59: posts ante 44
+Hero: posts small blind 175
+78c4f548: posts big blind 350
+*** HOLE CARDS ***
+Dealt to Hero [Jh Td]
+Dealt to 78c4f548
+Dealt to 084a1d59
+084a1d59: raises 350 to 700
+Hero: folds
+78c4f548: raises 1,575 to 2,275
+084a1d59: ALLIN 10,314
+78c4f548: calls 8,739
+*** FLOP *** [Jd 8c 7d]
+*** TURN *** [Jd 8c 7d] [2c]
+*** RIVER *** [Jd 8c 7d 2c] [Kc]
+*** SHOWDOWN ***
+78c4f548: shows [Ac Jc] (Flush)
+78c4f548 collected 22,335 from pot
+084a1d59: shows [Qc Qd] (One Pair)
+*** SUMMARY ***
+Total pot 22,335
+Board [ Jd 8c 7d 2c Kc ]
+Game ended: 2026/06/04 22:45:12 KST
+Seat 1: Hero folded before Flop (didn't bet)
+Seat 2: 78c4f548 showed [Ac Jc] and won (22,335) with Flush
+Seat 3: 084a1d59 showed [Qc Qd] and lost with One Pair
