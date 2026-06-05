@@ -52,11 +52,13 @@ class ClaudeCLIBackend:
     def analyze_stream(self, hand_md):
         """분석 텍스트를 생성되는 대로 chunk 단위로 yield."""
         prompt = ANALYSIS_SYSTEM_PROMPT + "\n다음 핸드를 분석하세요:\n\n" + hand_md
+        # shutil.which로 절대경로 해석(윈도우 PATH 대응), encoding 고정(윈도우 cp949 방지)
+        claude_bin = shutil.which("claude") or "claude"
         proc = subprocess.Popen(
-            ["claude", "-p", "--output-format", "stream-json",
+            [claude_bin, "-p", "--output-format", "stream-json",
              "--include-partial-messages", "--verbose"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8",
         )
         proc.stdin.write(prompt)
         proc.stdin.close()
