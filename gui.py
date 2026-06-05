@@ -36,7 +36,10 @@ ANALYSIS_SYSTEM_PROMPT = """\
 - 토너먼트이므로 스택 보존 관점도 고려하세요.
 - 결과론으로 평가하지 마세요. 결정 시점에 알 수 있던 정보만으로 판단하세요.
 - 각 스트리트 평가는 [좋음/무난/의문/실수] 중 하나로 시작하세요.
+- [좋음]/[무난] 평가는 한 줄로 끝내세요. [의문]/[실수]일 때만 근거와 더 나은 액션을 1~2문장 추가하세요.
+- 핸드 상황을 재서술하지 마세요. 바로 평가부터 시작하세요.
 - 마지막에 "## 총평"으로 핵심 교훈을 1~3개 정리하세요.
+- "## 총평" 첫 줄은 반드시 "전체 평가: [좋음]" 형식으로, Hero 플레이 전체를 [좋음/무난/의문/실수] 중 하나로 평가하세요.
 - 한국어, 마크다운 형식(## 스트리트명)으로, 간결하게 작성하세요.
 """
 
@@ -194,6 +197,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .hand-head .cards { font-weight: 700; font-size: 15px; width: 84px; letter-spacing: 1px; }
   .hand-head .tags { flex: 1; color: var(--dim); font-size: 12px; }
   .hand-head .net { font-weight: 700; font-size: 13px; width: 110px; text-align: right; }
+  .hand-head .ai-flag { width: 46px; text-align: right; font-size: 13px; letter-spacing: 1px; }
   .pos-badge { color: var(--gold); }
   .net.win { color: var(--green); } .net.lose { color: var(--red); }
   .hand-body { display: none; border-top: 1px solid var(--border);
@@ -356,6 +360,7 @@ function renderMain() {
         <span class="pos pos-badge">${h.hero_pos || '?'}</span>
         <span class="cards">${cardsHtml(h.hero_cards)}</span>
         <span class="tags">${h.blinds} · ${h.players}p${tags.length ? ' · ' + tags.join(' · ') : ''}</span>
+        <span class="ai-flag" id="flag-${h.hand_id}">${aiFlagHtml(h.hand_id)}</span>
         ${netHtml(h.net, h.net_bb)}
       </div>
       <div class="hand-body">
@@ -368,6 +373,26 @@ function renderMain() {
 
 // --- AI 분석 (스트리밍) ---
 const AI_CACHE = {};  // hand_id -> {status: 'loading'|'streaming'|'done'|'error', text, backend}
+
+// 분석 텍스트에서 전체 평가 이모지 추출
+// 1순위: 총평의 "전체 평가: [X]" / 2순위: 스트리트 평가 중 최악 등급
+const VERDICT_EMOJI = {'좋음': '✅', '무난': '🙂', '의문': '🤔', '실수': '❌'};
+function verdictEmoji(text) {
+  if (!text) return '';
+  const overall = text.match(/전체\s*평가\s*[:：]\s*\[?(좋음|무난|의문|실수)\]?/);
+  if (overall) return VERDICT_EMOJI[overall[1]];
+  const found = [...text.matchAll(/\[(좋음|무난|의문|실수)\]/g)].map(m => m[1]);
+  for (const v of ['실수', '의문', '무난', '좋음'])   // 최악 등급 우선
+    if (found.includes(v)) return VERDICT_EMOJI[v];
+  return '';
+}
+
+// 접힌 핸드 줄에 표시할 배지: 분석 완료 시 🤖 + 총평 이모지
+function aiFlagHtml(handId) {
+  const c = AI_CACHE[handId];
+  if (!c || c.status !== 'done') return '';
+  return '🤖' + verdictEmoji(c.text);
+}
 
 function aiBoxHtml(handId) {
   const c = AI_CACHE[handId];
@@ -387,6 +412,8 @@ function aiBoxHtml(handId) {
 function renderAIBox(handId) {
   const el = document.getElementById('ai-' + handId);
   if (el) el.innerHTML = aiBoxHtml(handId);
+  const flag = document.getElementById('flag-' + handId);
+  if (flag) flag.innerHTML = aiFlagHtml(handId);  // 접힌 줄 배지도 갱신
 }
 
 async function analyzeHand(handId) {

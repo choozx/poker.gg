@@ -73,7 +73,7 @@ RE_SEAT = re.compile(r"Seat (\d+): (\S+) \((" + NUM + r") in chips\)")
 RE_DEALT = re.compile(r"Dealt to (\S+)(?: \[([^\]]+)\])?")
 RE_STREET = re.compile(r"\*\*\* (FLOP|TURN|RIVER) \*\*\*.*\[([^\]]+)\]\s*$")
 RE_ACTION = re.compile(
-    r"(\S+): (folds|checks|calls|bets|raises|posts ante|posts small blind|posts big blind|ALLIN|shows)"
+    r"(\S+): (folds|checks|calls|bets|raises|posts ante|posts small blind|posts big blind|ALLIN|RETURN|shows)"
     r"(?:\s+(" + NUM + r"))?(?:\s+to\s+(" + NUM + r"))?(?:\s*\[([^\]]+)\])?(?:\s*\(([^)]+)\))?"
 )
 RE_COLLECTED = re.compile(r"(\S+) collected (" + NUM + r") from pot")
@@ -214,6 +214,10 @@ def parse_hand(text):
                 put_in = amt  # 추가 투입분
                 to_amt = my_street + amt
                 verb = "allin"
+            elif verb == "RETURN":
+                # 언콜드 베팅 반환 (상대 올인이 더 작을 때 차액 돌려받음)
+                put_in = -amt
+                verb = "return"
 
             if put_in:
                 contrib[name] = contrib.get(name, 0.0) + put_in
@@ -317,6 +321,8 @@ def render_markdown(hand, hero="Hero"):
                 line += f" raises to {chips_str(a.to_amount)} ({bb(hand, a.to_amount)})"
             elif a.verb == "allin":
                 line += f" goes ALL-IN, total {chips_str(a.to_amount)} ({bb(hand, a.to_amount)})"
+            elif a.verb == "return":
+                line += f" takes back uncalled {chips_str(-a.amount)} ({bb(hand, -a.amount)})"
 
             if a.player == hero and a.verb in ("folds", "calls", "raises", "allin", "checks", "bets"):
                 extra = ""
