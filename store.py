@@ -92,6 +92,17 @@ def tournament_list(db):
     return {"tournaments": tournaments}
 
 
+def review_hands(db):
+    """복기 추천 핸드 전체 (raw 제외, 최신순)."""
+    hands = [
+        {k: v for k, v in rec.items() if k != "raw"}
+        for rec in db["hands"].values()
+        if rec.get("review")
+    ]
+    hands.sort(key=lambda h: h.get("datetime") or "", reverse=True)
+    return {"hands": hands}
+
+
 def tournament_hands(db, tournament_id):
     """특정 토너먼트의 핸드 목록 (raw 제외, 시간순)."""
     hands = [

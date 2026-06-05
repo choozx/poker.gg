@@ -381,6 +381,15 @@ def hand_meta(h, hero="Hero"):
     no_action_fold = (
         all(a.verb == "folds" and a.street == "preflop" for a in hero_actions) and won == 0
     )
+    net_bb = round(net / h.bb, 1) if h.bb else None
+    # 복기 추천 사유 (휴리스틱) — 비어있지 않으면 복기 추천 대상
+    review = []
+    if net_bb is not None and net_bb <= -10:
+        review.append(f"큰 손실 {net_bb}bb")
+    if went_showdown and net < 0:
+        review.append("쇼다운 패배")
+    if "allin" in hero_acts and net < 0:
+        review.append("올인 패배")
     return {
         "hand_id": h.hand_id,
         "datetime": h.datetime,
@@ -389,10 +398,11 @@ def hand_meta(h, hero="Hero"):
         "hero_pos": hero_p.position if hero_p else None,
         "hero_cards": hero_p.hole_cards if hero_p else [],
         "net": net,
-        "net_bb": round(net / h.bb, 1) if h.bb else None,
+        "net_bb": net_bb,
         "vpip": any(v in ("calls", "bets", "raises", "allin") for v in hero_acts),
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,
+        "review": review,
         "markdown": render_markdown(h, hero=hero),
     }
 

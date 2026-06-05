@@ -202,6 +202,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .tourney.sel { border-color: var(--accent); background: rgba(77,163,255,.08); }
   .tourney .tname { font-weight: 600; margin-bottom: 3px; }
   .tourney .tmeta { color: var(--dim); font-size: 12px; }
+  .tourney.review { border-color: rgba(232,184,79,.45); }
+  .tourney.review.sel { border-color: var(--gold); background: rgba(232,184,79,.08); }
+  .tourney.review .tname { color: var(--gold); }
 
   #main { flex: 1; overflow-y: auto; padding: 18px 24px; }
   #mainhead { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
@@ -305,8 +308,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-let DATA = null, SEL = 0, HIDE_FOLDS = false;
+let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL === -1 이면 복기 추천 뷰
 let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
+let REVIEW_HANDS = null, REVIEW_COUNT = 0;
 
 const $ = s => document.querySelector(s);
 
@@ -368,16 +372,47 @@ function netHtml(net, netBb) {
 }
 
 function renderSidebar() {
-  $('#sidebar').innerHTML = DATA.tournaments.map((t, i) => `
+  const review = `
+    <div class="tourney review ${SEL===-1?'sel':''}" onclick="selectReview()">
+      <div class="tname">📌 복기 추천</div>
+      <div class="tmeta">큰 손실 · 쇼다운/올인 패배 핸드 ${REVIEW_COUNT}개</div>
+    </div>`;
+  $('#sidebar').innerHTML = review + DATA.tournaments.map((t, i) => `
     <div class="tourney ${i===SEL?'sel':''}" onclick="selectTourney(${i})">
       <div class="tname">${esc(t.name)}</div>
       <div class="tmeta">#${t.id} · 핸드 ${t.hand_count}개${t.analyzed ? ' · 🤖' + t.analyzed : ''}<br>${esc(t.start.slice(0,16))} ~ ${esc(t.end.slice(11,16))}</div>
     </div>`).join('');
 }
 
+// 복기 추천 뷰 — 전체 토너에서 추천 핸드만 모아서 표시
+async function selectReview() {
+  SEL = -1; renderSidebar();
+  if (!REVIEW_HANDS) {
+    $('#mainhead').innerHTML = '<h2>📌 복기 추천</h2>';
+    $('#hands').innerHTML = '<div class="ai-loading">핸드 불러오는 중</div>';
+    const res = await fetch('/api/review');
+    const data = await res.json();
+    if (SEL !== -1) return;
+    REVIEW_HANDS = data.hands;
+    for (const h of REVIEW_HANDS)
+      if (h.analysis && !AI_CACHE[h.hand_id])
+        AI_CACHE[h.hand_id] = {status: 'done', text: h.analysis, backend: '저장됨'};
+  }
+  renderMain(); $('#main').scrollTop = 0;
+}
+
+// 현재 선택된 뷰 (토너먼트 또는 복기 추천)
+function currentTourney() {
+  if (SEL === -1) {
+    const hands = REVIEW_HANDS || [];
+    return {id: 'review', name: '📌 복기 추천', hand_count: hands.length, hands};
+  }
+  return DATA.tournaments[SEL];
+}
+
 // 현재 표시 대상 핸드 (필터 적용) — 지연 로딩 전이면 빈 배열
 function visibleHands() {
-  const t = DATA.tournaments[SEL];
+  const t = currentTourney();
   const hands = (t && t.hands) || [];
   return HIDE_FOLDS ? hands.filter(h => !h.no_action_fold) : hands;
 }
@@ -385,7 +420,7 @@ function visibleHands() {
 function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
 
 function renderMain() {
-  const t = DATA.tournaments[SEL];
+  const t = currentTourney();
   const hands = visibleHands();
   const countLabel = HIDE_FOLDS
     ? `${hands.length}핸드 표시 (프리폴드 ${t.hand_count - hands.length}개 숨김)`
@@ -401,6 +436,8 @@ function renderMain() {
     const tags = [];
     if (!h.vpip) tags.push('fold');
     if (h.showdown) tags.push('showdown');
+    if (SEL === -1 && h.tournament_name) tags.unshift(esc(h.tournament_name));  // 복기 뷰: 출처 토너
+    if (h.review && h.review.length) tags.push('📌 ' + h.review.join('·'));
     return `
     <div class="hand" id="hand${i}">
       <div class="hand-head" onclick="document.getElementById('hand${i}').classList.toggle('open')">
@@ -465,10 +502,10 @@ function renderAIBox(handId) {
 }
 
 async function analyzeHand(handId) {
-  let hand = null;
+  let hand = (REVIEW_HANDS || []).find(h => h.hand_id === handId) || null;
   for (const t of DATA.tournaments) {
-    hand = (t.hands || []).find(h => h.hand_id === handId);
     if (hand) break;
+    hand = (t.hands || []).find(h => h.hand_id === handId);
   }
   if (!hand) return;
   AI_CACHE[handId] = {status: 'loading'};
@@ -550,12 +587,15 @@ async function applyData(data) {
   DATA = data; SEL = 0;
   REPORT = data.report || null;
   ANALYZED_TOTAL = data.analyzed_total || 0;
+  REVIEW_COUNT = data.review_count || 0;
+  REVIEW_HANDS = null;  // 임포트 후 다시 로드되도록 초기화
   updateReportBtn();
   const params = new URLSearchParams(location.search);
   HIDE_FOLDS = params.has('hidefolds');
   $('#drop').style.display = 'none';
   $('#layout').classList.add('active');
-  await selectTourney(0);
+  if (params.has('review')) await selectReview();
+  else await selectTourney(0);
   if (params.has('expand')) toggleAll(true);
 }
 
@@ -679,6 +719,10 @@ class Handler(BaseHTTPRequestHandler):
             resp = store.tournament_list(DB)
             resp["report"] = DB.get("report")
             resp["analyzed_total"] = sum(1 for r in DB["hands"].values() if r.get("analysis"))
+            resp["review_count"] = sum(1 for r in DB["hands"].values() if r.get("review"))
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/review":
+            resp = store.review_hands(DB)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/tournament":
             qs = parse_qs(urlparse(self.path).query)
@@ -733,6 +777,7 @@ class Handler(BaseHTTPRequestHandler):
                 resp.update(store.tournament_list(DB))
                 resp["report"] = DB.get("report")
                 resp["analyzed_total"] = sum(1 for r in DB["hands"].values() if r.get("analysis"))
+                resp["review_count"] = sum(1 for r in DB["hands"].values() if r.get("review"))
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif self.path == "/api/analyze":
             length = int(self.headers.get("Content-Length", 0))
