@@ -387,6 +387,33 @@ def hand_meta(h, hero="Hero"):
     pfr = any(
         a.street == "preflop" and a.verb in ("raises", "allin") for a in hero_actions
     )
+    # 프리플랍 히어로의 첫 자발적 액션 분석:
+    #  rfi_opp = 오픈 기회(폴드 투 히어로, 앞에 콜·레이즈 없음)
+    #  rfi     = 그 기회에 첫 레이즈했는지 (솔버 오픈 차트와 동일, rfi/rfi_opp로 봄)
+    #  pf_action = 첫 자발적 액션 분류 (open/3bet/call/allin/fold) — 액션 구성 스택바용
+    #   · open = 앞 레이즈 없이 첫 레이즈(리밋 위 이졸 포함) / 3bet = 레이즈에 맞서 레이즈
+    rfi_opp = rfi = False
+    pf_action = "fold"
+    prior_raise = prior_vol = False
+    for a in h.actions:
+        if a.street != "preflop":
+            break
+        if a.verb.startswith("posts"):
+            continue                                  # 블라인드/앤티는 자발적 액션 아님
+        if a.player == hero:
+            rfi_opp = not prior_vol                   # 폴드 투 히어로면 오픈 기회
+            if a.verb in ("raises", "bets"):
+                pf_action = "3bet" if prior_raise else "open"
+            elif a.verb == "allin":
+                pf_action = "allin"
+            elif a.verb == "calls":
+                pf_action = "call"
+            rfi = rfi_opp and a.verb in ("raises", "allin")
+            break
+        if a.verb in ("raises", "allin"):
+            prior_raise = True
+        if a.verb in ("calls", "bets", "raises", "allin"):
+            prior_vol = True                          # 앞에 자발적 참여(콜/레이즈)가 있었음
     net_bb = round(net / h.bb, 1) if h.bb else None
     # 복기 추천 사유 (휴리스틱) — 비어있지 않으면 복기 추천 대상
     review = []
@@ -407,6 +434,9 @@ def hand_meta(h, hero="Hero"):
         "net_bb": net_bb,
         "vpip": any(v in ("calls", "bets", "raises", "allin") for v in hero_acts),
         "pfr": pfr,
+        "rfi": rfi,
+        "rfi_opp": rfi_opp,
+        "pf_action": pf_action,
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,
         "review": review,

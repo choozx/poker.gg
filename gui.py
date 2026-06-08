@@ -305,6 +305,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
                line-height: 1.15; border: 1px solid transparent; }
   .hgrid .hc.pair { border-color: rgba(232,184,79,.5); }
   .hgrid .hc .lab { font-weight: 700; font-size: 11px; }
+  .hgrid .hc.mix .lab { text-shadow: 0 1px 2px rgba(0,0,0,.8); }
   .hgrid .hc .val { font-size: 10px; color: var(--text); opacity: .92; }
   .hgrid .hc.empty { opacity: .25; }
   .hgrid .hc.dim { opacity: .4; }
@@ -381,7 +382,7 @@ let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
 let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
 const SEARCH_PAGE_SIZE = 20;
-let GRID_CACHE = {}, GRID_POS = 'all', GRID_METRIC = 'vpip', STATS_TAB = 'summary';   // 통계 하위 탭
+let GRID_CACHE = {}, GRID_POS = 'all', GRID_METRIC = 'mix', STATS_TAB = 'summary';   // 통계 하위 탭
 
 const $ = s => document.querySelector(s);
 
@@ -608,6 +609,21 @@ function gridTd(cells, i, j, maxAbs) {
   if (!d || !d.n) return `<td><div class="hc empty${pairCls}"><div class="lab">${combo}</div></div></td>`;
   const n = d.n;
   const vpip = Math.round(100 * d.vpip / n), pfr = Math.round(100 * d.pfr / n);
+  const opp = d.rfi_opp || 0;
+  const rfiPct = opp ? Math.round(100 * d.rfi / opp) : null;   // RFI는 기회(폴드 투 히어로) 대비
+  // 액션 구성 모드 — 셀을 오픈/3벳/콜/올인/폴드 스택바로 채움
+  if (GRID_METRIC === 'mix') {
+    // 레이즈 계열을 옅은→진한 블루 램프로 연속 배치 (오픈→3벳→올인), 그 뒤 콜(틸)·폴드(회색)
+    const po = 100 * (d.open || 0) / n, ptb = 100 * (d.tb || 0) / n;
+    const pai = 100 * (d.allin || 0) / n, pcl = 100 * (d.call || 0) / n;
+    const s1 = po, s2 = s1 + ptb, s3 = s2 + pai, s4 = s3 + pcl;
+    const a = 0.7;   // 반투명 — 셀 배경(panel2) 위에 은은하게 얹힘, 폴드는 투명
+    const bg = `linear-gradient(90deg,rgba(124,196,255,${a}) 0 ${s1}%,rgba(74,143,224,${a}) ${s1}% ${s2}%,` +
+               `rgba(44,91,208,${a}) ${s2}% ${s3}%,rgba(45,212,167,${a}) ${s3}% ${s4}%,transparent ${s4}% 100%)`;
+    const t = `${combo} · ${n}핸드 · 오픈 ${Math.round(po)}% · 3벳 ${Math.round(ptb)}% · ` +
+              `올인 ${Math.round(pai)}% · 콜 ${Math.round(pcl)}% · 폴드 ${Math.round(100 - s4)}%`;
+    return `<td><div class="hc mix${pairCls}" style="background-image:${bg}" title="${t}"><div class="lab">${combo}</div></div></td>`;
+  }
   let val, bg, dim = '';
   if (GRID_METRIC === 'bb') {
     val = (d.bb >= 0 ? '+' : '') + Math.round(d.bb);
@@ -615,20 +631,28 @@ function gridTd(cells, i, j, maxAbs) {
     const rgb = d.bb >= 0 ? '63,191,111' : '224,85,106';
     bg = `rgba(${rgb},${(0.1 + 0.6 * t).toFixed(2)})`;
     if (n < 20) dim = ' dim';
+  } else if (GRID_METRIC === 'rfi') {
+    if (rfiPct === null) { val = '·'; bg = 'var(--panel2)'; dim = ' dim'; }   // 오픈 기회 없던 조합
+    else { val = rfiPct; bg = `rgba(77,163,255,${(rfiPct / 100 * 0.6).toFixed(2)})`; if (opp < 10) dim = ' dim'; }
   } else {
     const pct = GRID_METRIC === 'vpip' ? vpip : pfr;
     val = pct;
     bg = `rgba(77,163,255,${(pct / 100 * 0.6).toFixed(2)})`;
   }
-  const title = `${combo} · ${n}핸드 · VPIP ${vpip}% · PFR ${pfr}% · 칩EV ${d.bb >= 0 ? '+' : ''}${d.bb}bb`;
+  const rfiTxt = opp ? `${Math.round(100 * d.rfi / opp)}% (${opp}회 기회)` : '기회없음';
+  const title = `${combo} · ${n}핸드 · VPIP ${vpip}% · PFR ${pfr}% · RFI ${rfiTxt} · 칩EV ${d.bb >= 0 ? '+' : ''}${d.bb}bb`;
   return `<td><div class="hc${dim}${pairCls}" style="background:${bg}" title="${title}">
     <div class="lab">${combo}</div><div class="val">${val}</div></div></td>`;
 }
 
 function renderGrid() {
   const cells = (GRID_CACHE[GRID_POS] && GRID_CACHE[GRID_POS].cells) || {};
-  let maxAbs = 1, totalN = 0;
-  for (const k in cells) { maxAbs = Math.max(maxAbs, Math.abs(cells[k].bb)); totalN += cells[k].n; }
+  let maxAbs = 1, totalN = 0, totalOpp = 0, totalActs = 0;
+  for (const k in cells) {
+    maxAbs = Math.max(maxAbs, Math.abs(cells[k].bb));
+    totalN += cells[k].n; totalOpp += (cells[k].rfi_opp || 0);
+    totalActs += (cells[k].open || 0) + (cells[k].tb || 0) + (cells[k].call || 0) + (cells[k].allin || 0);
+  }
   let rows = '<tr><th></th>' + GRID_RANKS.map(r => `<th>${r}</th>`).join('') + '</tr>';
   for (let i = 0; i < 13; i++) {
     let tds = `<th>${GRID_RANKS[i]}</th>`;
@@ -638,22 +662,37 @@ function renderGrid() {
   const mBtn = (k, l) => `<button class="${GRID_METRIC === k ? 'primary' : ''}" onclick="setGridMetric('${k}')">${l}</button>`;
   const pBtn = (k, l) => `<button class="${GRID_POS === k ? 'primary' : ''}" onclick="setGridPos('${k}')">${l}</button>`;
   const positions = ((STATS && STATS.positions) || []).map(p => p.pos).filter(p => p !== '?');
-  const unit = GRID_METRIC === 'bb' ? '칩 EV(bb)' : (GRID_METRIC === 'vpip' ? 'VPIP%' : 'PFR%');
+  const unit = {bb: '칩 EV(bb)', rfi: 'RFI%(오픈)', mix: '액션 비율'}[GRID_METRIC];
   const posLabel = GRID_POS === 'all' ? '전체 포지션' : GRID_POS;
+  // RFI/구성 모드인데 데이터가 0 → 기존 DB에 해당 필드 없음
+  const needRebuild = (GRID_METRIC === 'rfi' && totalOpp === 0) || (GRID_METRIC === 'mix' && totalActs === 0 && totalN > 0);
+  const rebuildHint = needRebuild
+    ? `<div class="ai-error" style="color:var(--gold)">이 지표는 <code>python3 gui.py --rebuild</code>로 1회 재변환해야 표시됩니다 (기존 DB엔 해당 필드가 없음).</div>`
+    : '';
+  const chip = (c, l) => `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:11px;height:11px;border-radius:2px;background:${c};display:inline-block"></span>${l}</span>`;
+  const legend = GRID_METRIC === 'mix'
+    ? `<div style="display:flex;gap:14px;margin-bottom:10px;flex-wrap:wrap;color:var(--dim);font-size:12px">
+         ${chip('rgba(124,196,255,.7)', '오픈')} ${chip('rgba(74,143,224,.7)', '3벳')} ${chip('rgba(44,91,208,.7)', '올인')} ${chip('rgba(45,212,167,.7)', '콜')} ${chip('var(--panel2)', '폴드')}
+       </div>` : '';
+  const note = GRID_METRIC === 'mix'
+    ? ' 각 칸을 프리플랍 첫 액션 비율로 채움 (바 길이=VPIP). 칸 호버로 정확한 %.'
+    : (GRID_METRIC === 'rfi'
+      ? ' RFI는 폴드로 히어로까지 온 경우(오픈 기회) 대비 첫 레이즈 비율 — 솔버 오픈 차트와 같은 정의. 기회 10회 미만은 흐리게, 기회 없던 칸은 · 표시.'
+      : ' 포지션별로 보면 표본이 작아지니 칩 EV는 참고만 (20핸드 미만 흐리게).');
   $('#hands').innerHTML = `
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
       <span style="color:var(--dim);font-size:13px">포지션:</span>
       ${pBtn('all', '전체')} ${positions.map(p => pBtn(p, p)).join(' ')}
     </div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-      <span style="color:var(--dim);font-size:13px">색·숫자 기준:</span>
-      ${mBtn('vpip', 'VPIP')} ${mBtn('pfr', 'PFR')} ${mBtn('bb', '칩 EV')}
-      <span style="color:var(--dim);font-size:12px;margin-left:auto">${esc(posLabel)} · ${totalN.toLocaleString()}핸드 · 숫자=${unit}</span>
+      <span style="color:var(--dim);font-size:13px">표시 기준:</span>
+      ${mBtn('mix', '액션')} ${mBtn('rfi', 'RFI')} ${mBtn('bb', '칩 EV')}
+      <span style="color:var(--dim);font-size:12px;margin-left:auto">${esc(posLabel)} · ${totalN.toLocaleString()}핸드 · ${unit}</span>
     </div>
+    ${legend}${rebuildHint}
     <div class="grid-wrap"><table class="hgrid">${rows}</table></div>
     <p style="color:var(--dim);font-size:12px;margin-top:10px">
-      대각선=페어 · ↗ 수딧 · ↙ 오프수딧. 칸에 마우스를 올리면 핸드 수·VPIP·PFR·칩 EV 전체가 보입니다.
-      포지션별로 보면 표본이 작아지니 칩 EV는 참고만 (20핸드 미만 흐리게).</p>`;
+      대각선=페어 · ↗ 수딧 · ↙ 오프수딧. 칸에 마우스를 올리면 핸드 수·VPIP·PFR·RFI·칩 EV 전체가 보입니다.${note}</p>`;
 }
 
 function statCard(val, label, sub, cls) {

@@ -203,12 +203,26 @@ def hand_grid(db, pos=None):
         c = _combo(r.get("hero_cards") or [])
         if not c:
             continue
-        d = cells.setdefault(c, {"n": 0, "vpip": 0, "pfr": 0, "bb": 0.0})
+        d = cells.setdefault(c, {"n": 0, "vpip": 0, "pfr": 0, "bb": 0.0, "rfi": 0, "rfi_opp": 0,
+                                 "open": 0, "tb": 0, "call": 0, "allin": 0})
         d["n"] += 1
         if r.get("vpip"):
             d["vpip"] += 1
         if r.get("pfr"):
             d["pfr"] += 1
+        if r.get("rfi"):
+            d["rfi"] += 1
+        if r.get("rfi_opp"):                          # RFI 기회(폴드 투 히어로) — 오픈% 분모
+            d["rfi_opp"] += 1
+        act = r.get("pf_action")                      # 액션 구성 스택바 (open/3bet/call/allin)
+        if act == "open":
+            d["open"] += 1
+        elif act == "3bet":
+            d["tb"] += 1
+        elif act == "call":
+            d["call"] += 1
+        elif act == "allin":
+            d["allin"] += 1
         nb = r.get("net_bb")
         if nb is not None:
             d["bb"] += nb
