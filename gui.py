@@ -382,7 +382,7 @@ let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
 let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
 const SEARCH_PAGE_SIZE = 20;
-let GRID_CACHE = {}, GRID_POS = 'all', GRID_METRIC = 'mix', STATS_TAB = 'summary';   // 통계 하위 탭
+let GRID_CACHE = {}, GRID_POS = 'all', GRID_STACK = 'all', GRID_METRIC = 'mix', STATS_TAB = 'summary';   // 통계 하위 탭
 
 const $ = s => document.querySelector(s);
 
@@ -572,23 +572,30 @@ async function renderStatsView() {
   }
 }
 
-// 현재 선택 포지션의 그리드를 받아 캐시 (포지션별 1회만 fetch)
+// 포지션+스택 조합별 그리드를 받아 캐시 (조합당 1회만 fetch)
+function gridKey() { return GRID_POS + '|' + GRID_STACK; }
 async function ensureGrid() {
-  if (!GRID_CACHE[GRID_POS]) {
-    const url = '/api/handgrid' + (GRID_POS === 'all' ? '' : '?pos=' + encodeURIComponent(GRID_POS));
-    GRID_CACHE[GRID_POS] = await fetch(url).then(r => r.json());
+  const k = gridKey();
+  if (!GRID_CACHE[k]) {
+    const params = [];
+    if (GRID_POS !== 'all') params.push('pos=' + encodeURIComponent(GRID_POS));
+    if (GRID_STACK !== 'all') params.push('stack=' + encodeURIComponent(GRID_STACK));
+    const url = '/api/handgrid' + (params.length ? '?' + params.join('&') : '');
+    GRID_CACHE[k] = await fetch(url).then(r => r.json());
   }
-  return GRID_CACHE[GRID_POS];
+  return GRID_CACHE[k];
 }
 
-async function setGridPos(p) {
-  if (GRID_POS === p) return;
-  GRID_POS = p;
-  if (!GRID_CACHE[p]) $('#hands').innerHTML = '<div class="ai-loading">집계 중</div>';
+async function setGridFilter(kind, v) {
+  if (kind === 'pos') { if (GRID_POS === v) return; GRID_POS = v; }
+  else { if (GRID_STACK === v) return; GRID_STACK = v; }
+  if (!GRID_CACHE[gridKey()]) $('#hands').innerHTML = '<div class="ai-loading">집계 중</div>';
   await ensureGrid();
   if (SEL !== -2 || STATS_TAB !== 'grid') return;
   renderGrid();
 }
+function setGridPos(p) { return setGridFilter('pos', p); }
+function setGridStack(s) { return setGridFilter('stack', s); }
 
 // --- 스타팅 핸드 13×13 매트릭스 ---
 const GRID_RANKS = 'AKQJT98765432'.split('');
@@ -646,7 +653,7 @@ function gridTd(cells, i, j, maxAbs) {
 }
 
 function renderGrid() {
-  const cells = (GRID_CACHE[GRID_POS] && GRID_CACHE[GRID_POS].cells) || {};
+  const cells = (GRID_CACHE[gridKey()] && GRID_CACHE[gridKey()].cells) || {};
   let maxAbs = 1, totalN = 0, totalOpp = 0, totalActs = 0;
   for (const k in cells) {
     maxAbs = Math.max(maxAbs, Math.abs(cells[k].bb));
@@ -661,7 +668,10 @@ function renderGrid() {
   }
   const mBtn = (k, l) => `<button class="${GRID_METRIC === k ? 'primary' : ''}" onclick="setGridMetric('${k}')">${l}</button>`;
   const pBtn = (k, l) => `<button class="${GRID_POS === k ? 'primary' : ''}" onclick="setGridPos('${k}')">${l}</button>`;
+  const sBtn = (k, l) => `<button class="${GRID_STACK === k ? 'primary' : ''}" onclick="setGridStack('${k}')">${l}</button>`;
   const positions = ((STATS && STATS.positions) || []).map(p => p.pos).filter(p => p !== '?');
+  const stacks = [['all', '전체'], ['pf', '<15'], ['short', '15-25'], ['mid', '25-40'], ['deep', '40+']];
+  const stackLabel = {all: '전체 스택', pf: '<15bb', short: '15-25bb', mid: '25-40bb', deep: '40bb+'}[GRID_STACK];
   const unit = {bb: '칩 EV(bb)', rfi: 'RFI%(오픈)', mix: '액션 비율'}[GRID_METRIC];
   const posLabel = GRID_POS === 'all' ? '전체 포지션' : GRID_POS;
   // RFI/구성 모드인데 데이터가 0 → 기존 DB에 해당 필드 없음
@@ -684,10 +694,14 @@ function renderGrid() {
       <span style="color:var(--dim);font-size:13px">포지션:</span>
       ${pBtn('all', '전체')} ${positions.map(p => pBtn(p, p)).join(' ')}
     </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+      <span style="color:var(--dim);font-size:13px">스택(bb):</span>
+      ${stacks.map(([k, l]) => sBtn(k, l)).join(' ')}
+    </div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
       <span style="color:var(--dim);font-size:13px">표시 기준:</span>
       ${mBtn('mix', '액션')} ${mBtn('rfi', 'RFI')} ${mBtn('bb', '칩 EV')}
-      <span style="color:var(--dim);font-size:12px;margin-left:auto">${esc(posLabel)} · ${totalN.toLocaleString()}핸드 · ${unit}</span>
+      <span style="color:var(--dim);font-size:12px;margin-left:auto">${esc(posLabel)} · ${esc(stackLabel)} · ${totalN.toLocaleString()}핸드 · ${unit}</span>
     </div>
     ${legend}${rebuildHint}
     <div class="grid-wrap"><table class="hgrid">${rows}</table></div>
@@ -951,7 +965,7 @@ async function applyData(data) {
   REPORT = data.report || null;
   ANALYZED_TOTAL = data.analyzed_total || 0;
   REVIEW_COUNT = data.review_count || 0;
-  REVIEW_HANDS = null; STATS = null; GRID_CACHE = {}; GRID_POS = 'all';  // 임포트 후 다시 로드되도록 초기화
+  REVIEW_HANDS = null; STATS = null; GRID_CACHE = {}; GRID_POS = 'all'; GRID_STACK = 'all';  // 임포트 후 다시 로드되도록 초기화
   updateReportBtn();
   const params = new URLSearchParams(location.search);
   HIDE_FOLDS = params.has('hidefolds');
@@ -1093,7 +1107,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/handgrid":
             qs = parse_qs(urlparse(self.path).query)
             pos = qs.get("pos", [""])[0] or None
-            resp = store.hand_grid(DB, pos=pos)
+            stack = qs.get("stack", [""])[0] or None
+            resp = store.hand_grid(DB, pos=pos, stack=stack)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/tournament":
             qs = parse_qs(urlparse(self.path).query)

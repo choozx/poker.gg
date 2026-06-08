@@ -414,6 +414,8 @@ def hand_meta(h, hero="Hero"):
             prior_raise = True
         if a.verb in ("calls", "bets", "raises", "allin"):
             prior_vol = True                          # 앞에 자발적 참여(콜/레이즈)가 있었음
+    # 핸드 시작 시 히어로 스택(bb) — 스택 깊이 필터용
+    stack_bb = round(hero_p.chips / h.bb, 1) if hero_p and h.bb else None
     net_bb = round(net / h.bb, 1) if h.bb else None
     # 복기 추천 사유 (휴리스틱) — 비어있지 않으면 복기 추천 대상
     review = []
@@ -437,6 +439,7 @@ def hand_meta(h, hero="Hero"):
         "rfi": rfi,
         "rfi_opp": rfi_opp,
         "pf_action": pf_action,
+        "stack_bb": stack_bb,
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,
         "review": review,

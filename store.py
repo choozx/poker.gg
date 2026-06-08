@@ -192,13 +192,28 @@ def _combo(cards):
     return hi + lo + ("s" if s1 == s2 else "o")
 
 
-def hand_grid(db, pos=None):
+def _stack_bucket(sb):
+    """히어로 스택(bb) → 버킷 키. <15 푸시폴드 / 15-25 숏 / 25-40 미들 / 40+ 딥."""
+    if sb is None:
+        return None
+    if sb < 15:
+        return "pf"
+    if sb < 25:
+        return "short"
+    if sb < 40:
+        return "mid"
+    return "deep"
+
+
+def hand_grid(db, pos=None, stack=None):
     """169개 스타팅 핸드 조합별 집계 (스타팅 핸드 매트릭스용).
 
-    pos가 주어지면 해당 포지션 핸드만 집계 (포지션별 레인지 보기)."""
+    pos가 주어지면 해당 포지션, stack이 주어지면 해당 스택 버킷 핸드만 집계."""
     cells = {}
     for r in db["hands"].values():
         if pos and (r.get("hero_pos") or "") != pos:
+            continue
+        if stack and _stack_bucket(r.get("stack_bb")) != stack:
             continue
         c = _combo(r.get("hero_cards") or [])
         if not c:
