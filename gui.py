@@ -295,6 +295,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   table.stat-table tbody tr.clickable:hover { background: var(--panel2); }
   .tnum.win { color: var(--green); } .tnum.lose { color: var(--red); }
 
+  .grid-wrap { overflow-x: auto; padding-bottom: 4px; }
+  table.hgrid { border-collapse: separate; border-spacing: 2px; }
+  table.hgrid th { color: var(--dim); font-size: 11px; font-weight: 600;
+                   width: 22px; height: 22px; text-align: center; }
+  table.hgrid td { padding: 0; }
+  .hgrid .hc { width: 52px; height: 44px; border-radius: 4px; background: var(--panel2);
+               display: flex; flex-direction: column; align-items: center; justify-content: center;
+               line-height: 1.15; border: 1px solid transparent; }
+  .hgrid .hc.pair { border-color: rgba(232,184,79,.5); }
+  .hgrid .hc .lab { font-weight: 700; font-size: 11px; }
+  .hgrid .hc .val { font-size: 10px; color: var(--text); opacity: .92; }
+  .hgrid .hc.empty { opacity: .25; }
+  .hgrid .hc.dim { opacity: .4; }
+
   .tourney.search { border-color: rgba(86,211,100,.4); }
   .tourney.search.sel { border-color: var(--green); background: rgba(86,211,100,.08); }
   .tourney.search .tname { color: var(--green); }
@@ -367,6 +381,7 @@ let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
 let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
 const SEARCH_PAGE_SIZE = 20;
+let GRID_CACHE = {}, GRID_POS = 'all', GRID_METRIC = 'vpip', STATS_TAB = 'summary';   // 통계 하위 탭
 
 const $ = s => document.querySelector(s);
 
@@ -526,7 +541,7 @@ function renderSearchResults() {
     ${pager(pages)}`;
 }
 
-// 통계 대시보드 뷰 — 전체 핸드 집계
+// 통계 대시보드 뷰 — 전체 핸드 집계 (요약 / 핸드 그리드 탭)
 async function selectStats() {
   SEL = -2; renderSidebar();
   $('#mainhead').innerHTML = '<h2>📈 통계</h2>';
@@ -536,7 +551,109 @@ async function selectStats() {
     STATS = await res.json();
   }
   if (SEL !== -2) return;
-  renderStats(); $('#main').scrollTop = 0;
+  renderStatsView(); $('#main').scrollTop = 0;
+}
+
+function setStatsTab(tab) { STATS_TAB = tab; renderStatsView(); $('#main').scrollTop = 0; }
+
+async function renderStatsView() {
+  $('#mainhead').innerHTML = `
+    <h2 style="flex:0 0 auto">📈 통계</h2>
+    <button class="${STATS_TAB === 'summary' ? 'primary' : ''}" onclick="setStatsTab('summary')">요약</button>
+    <button class="${STATS_TAB === 'grid' ? 'primary' : ''}" onclick="setStatsTab('grid')">핸드 그리드</button>`;
+  if (STATS_TAB === 'grid') {
+    if (!GRID_CACHE[GRID_POS]) $('#hands').innerHTML = '<div class="ai-loading">핸드 그리드 집계 중</div>';
+    await ensureGrid();
+    if (SEL !== -2 || STATS_TAB !== 'grid') return;
+    renderGrid();
+  } else {
+    renderStats();
+  }
+}
+
+// 현재 선택 포지션의 그리드를 받아 캐시 (포지션별 1회만 fetch)
+async function ensureGrid() {
+  if (!GRID_CACHE[GRID_POS]) {
+    const url = '/api/handgrid' + (GRID_POS === 'all' ? '' : '?pos=' + encodeURIComponent(GRID_POS));
+    GRID_CACHE[GRID_POS] = await fetch(url).then(r => r.json());
+  }
+  return GRID_CACHE[GRID_POS];
+}
+
+async function setGridPos(p) {
+  if (GRID_POS === p) return;
+  GRID_POS = p;
+  if (!GRID_CACHE[p]) $('#hands').innerHTML = '<div class="ai-loading">집계 중</div>';
+  await ensureGrid();
+  if (SEL !== -2 || STATS_TAB !== 'grid') return;
+  renderGrid();
+}
+
+// --- 스타팅 핸드 13×13 매트릭스 ---
+const GRID_RANKS = 'AKQJT98765432'.split('');
+
+// 행 i, 열 j → 조합 라벨 (대각선=페어, ↗위=수딧, ↙아래=오프수딧)
+function comboLabel(i, j) {
+  const hi = GRID_RANKS[Math.min(i, j)], lo = GRID_RANKS[Math.max(i, j)];
+  if (i === j) return hi + lo;
+  return hi + lo + (i < j ? 's' : 'o');
+}
+
+function setGridMetric(m) { GRID_METRIC = m; renderGrid(); }
+
+function gridTd(cells, i, j, maxAbs) {
+  const combo = comboLabel(i, j);
+  const d = cells[combo];
+  const pairCls = i === j ? ' pair' : '';
+  if (!d || !d.n) return `<td><div class="hc empty${pairCls}"><div class="lab">${combo}</div></div></td>`;
+  const n = d.n;
+  const vpip = Math.round(100 * d.vpip / n), pfr = Math.round(100 * d.pfr / n);
+  let val, bg, dim = '';
+  if (GRID_METRIC === 'bb') {
+    val = (d.bb >= 0 ? '+' : '') + Math.round(d.bb);
+    const t = Math.min(1, Math.abs(d.bb) / maxAbs);
+    const rgb = d.bb >= 0 ? '63,191,111' : '224,85,106';
+    bg = `rgba(${rgb},${(0.1 + 0.6 * t).toFixed(2)})`;
+    if (n < 20) dim = ' dim';
+  } else {
+    const pct = GRID_METRIC === 'vpip' ? vpip : pfr;
+    val = pct;
+    bg = `rgba(77,163,255,${(pct / 100 * 0.6).toFixed(2)})`;
+  }
+  const title = `${combo} · ${n}핸드 · VPIP ${vpip}% · PFR ${pfr}% · 칩EV ${d.bb >= 0 ? '+' : ''}${d.bb}bb`;
+  return `<td><div class="hc${dim}${pairCls}" style="background:${bg}" title="${title}">
+    <div class="lab">${combo}</div><div class="val">${val}</div></div></td>`;
+}
+
+function renderGrid() {
+  const cells = (GRID_CACHE[GRID_POS] && GRID_CACHE[GRID_POS].cells) || {};
+  let maxAbs = 1, totalN = 0;
+  for (const k in cells) { maxAbs = Math.max(maxAbs, Math.abs(cells[k].bb)); totalN += cells[k].n; }
+  let rows = '<tr><th></th>' + GRID_RANKS.map(r => `<th>${r}</th>`).join('') + '</tr>';
+  for (let i = 0; i < 13; i++) {
+    let tds = `<th>${GRID_RANKS[i]}</th>`;
+    for (let j = 0; j < 13; j++) tds += gridTd(cells, i, j, maxAbs);
+    rows += `<tr>${tds}</tr>`;
+  }
+  const mBtn = (k, l) => `<button class="${GRID_METRIC === k ? 'primary' : ''}" onclick="setGridMetric('${k}')">${l}</button>`;
+  const pBtn = (k, l) => `<button class="${GRID_POS === k ? 'primary' : ''}" onclick="setGridPos('${k}')">${l}</button>`;
+  const positions = ((STATS && STATS.positions) || []).map(p => p.pos).filter(p => p !== '?');
+  const unit = GRID_METRIC === 'bb' ? '칩 EV(bb)' : (GRID_METRIC === 'vpip' ? 'VPIP%' : 'PFR%');
+  const posLabel = GRID_POS === 'all' ? '전체 포지션' : GRID_POS;
+  $('#hands').innerHTML = `
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+      <span style="color:var(--dim);font-size:13px">포지션:</span>
+      ${pBtn('all', '전체')} ${positions.map(p => pBtn(p, p)).join(' ')}
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <span style="color:var(--dim);font-size:13px">색·숫자 기준:</span>
+      ${mBtn('vpip', 'VPIP')} ${mBtn('pfr', 'PFR')} ${mBtn('bb', '칩 EV')}
+      <span style="color:var(--dim);font-size:12px;margin-left:auto">${esc(posLabel)} · ${totalN.toLocaleString()}핸드 · 숫자=${unit}</span>
+    </div>
+    <div class="grid-wrap"><table class="hgrid">${rows}</table></div>
+    <p style="color:var(--dim);font-size:12px;margin-top:10px">
+      대각선=페어 · ↗ 수딧 · ↙ 오프수딧. 칸에 마우스를 올리면 핸드 수·VPIP·PFR·칩 EV 전체가 보입니다.
+      포지션별로 보면 표본이 작아지니 칩 EV는 참고만 (20핸드 미만 흐리게).</p>`;
 }
 
 function statCard(val, label, sub, cls) {
@@ -795,7 +912,7 @@ async function applyData(data) {
   REPORT = data.report || null;
   ANALYZED_TOTAL = data.analyzed_total || 0;
   REVIEW_COUNT = data.review_count || 0;
-  REVIEW_HANDS = null; STATS = null;  // 임포트 후 다시 로드되도록 초기화
+  REVIEW_HANDS = null; STATS = null; GRID_CACHE = {}; GRID_POS = 'all';  // 임포트 후 다시 로드되도록 초기화
   updateReportBtn();
   const params = new URLSearchParams(location.search);
   HIDE_FOLDS = params.has('hidefolds');
@@ -933,6 +1050,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/stats":
             resp = store.stats(DB)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/handgrid":
+            qs = parse_qs(urlparse(self.path).query)
+            pos = qs.get("pos", [""])[0] or None
+            resp = store.hand_grid(DB, pos=pos)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/tournament":
             qs = parse_qs(urlparse(self.path).query)

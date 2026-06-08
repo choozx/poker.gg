@@ -173,3 +173,45 @@ def stats(db):
         "showdown": showdown,
         "positions": positions,
     }
+
+
+_GRID_RANKS = "AKQJT98765432"
+
+
+def _combo(cards):
+    """홀카드 2장 → 스타팅 핸드 조합 라벨 (AA / AKs / AKo). 못 읽으면 None."""
+    if len(cards) != 2:
+        return None
+    r1, s1 = cards[0][0], cards[0][1]
+    r2, s2 = cards[1][0], cards[1][1]
+    if r1 not in _GRID_RANKS or r2 not in _GRID_RANKS:
+        return None
+    hi, lo = (r1, r2) if _GRID_RANKS.index(r1) <= _GRID_RANKS.index(r2) else (r2, r1)
+    if r1 == r2:
+        return hi + lo                       # 페어
+    return hi + lo + ("s" if s1 == s2 else "o")
+
+
+def hand_grid(db, pos=None):
+    """169개 스타팅 핸드 조합별 집계 (스타팅 핸드 매트릭스용).
+
+    pos가 주어지면 해당 포지션 핸드만 집계 (포지션별 레인지 보기)."""
+    cells = {}
+    for r in db["hands"].values():
+        if pos and (r.get("hero_pos") or "") != pos:
+            continue
+        c = _combo(r.get("hero_cards") or [])
+        if not c:
+            continue
+        d = cells.setdefault(c, {"n": 0, "vpip": 0, "pfr": 0, "bb": 0.0})
+        d["n"] += 1
+        if r.get("vpip"):
+            d["vpip"] += 1
+        if r.get("pfr"):
+            d["pfr"] += 1
+        nb = r.get("net_bb")
+        if nb is not None:
+            d["bb"] += nb
+    for d in cells.values():
+        d["bb"] = round(d["bb"], 1)
+    return {"cells": cells}
