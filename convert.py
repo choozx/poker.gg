@@ -68,7 +68,9 @@ NUM = r"[\d,]+(?:\.\d+)?"
 RE_HEADER = re.compile(
     r"CoinPoker Hand #(\d+):\s*(\S+)\s*\((" + NUM + r")/(" + NUM + r")(?:/(" + NUM + r"))?\)\s*(.+)"
 )
-RE_TOURNEY = re.compile(r"Tournament '([^']*)' '(\d+)'\s*(\d+)-max Seat #(\d+) is the button")
+# 이름 캡처는 greedy(.+) — 토너 이름에 작은따옴표가 들어가도(예: "Lil' Kahuna")
+# ID가 '(\d+)'로 숫자에 한정돼 있어 마지막 따옴표에서 정확히 멈춤
+RE_TOURNEY = re.compile(r"Tournament '(.+)' '(\d+)'\s*(\d+)-max Seat #(\d+) is the button")
 RE_SEAT = re.compile(r"Seat (\d+): (\S+) \((" + NUM + r") in chips\)")
 RE_DEALT = re.compile(r"Dealt to (\S+)(?: \[([^\]]+)\])?")
 RE_STREET = re.compile(r"\*\*\* (FLOP|TURN|RIVER) \*\*\*.*\[([^\]]+)\]\s*$")
