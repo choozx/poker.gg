@@ -383,6 +383,10 @@ def hand_meta(h, hero="Hero"):
     no_action_fold = (
         all(a.verb == "folds" and a.street == "preflop" for a in hero_actions) and won == 0
     )
+    # 프리플랍 자발적 레이즈/올인 = PFR (통계용)
+    pfr = any(
+        a.street == "preflop" and a.verb in ("raises", "allin") for a in hero_actions
+    )
     net_bb = round(net / h.bb, 1) if h.bb else None
     # 복기 추천 사유 (휴리스틱) — 비어있지 않으면 복기 추천 대상
     review = []
@@ -402,6 +406,7 @@ def hand_meta(h, hero="Hero"):
         "net": net,
         "net_bb": net_bb,
         "vpip": any(v in ("calls", "bets", "raises", "allin") for v in hero_acts),
+        "pfr": pfr,
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,
         "review": review,

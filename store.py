@@ -112,3 +112,64 @@ def tournament_hands(db, tournament_id):
     ]
     hands.sort(key=lambda h: h.get("datetime") or "")
     return {"id": tournament_id, "hands": hands}
+
+
+# 포지션 정렬 순서 (얼리 → 레이트 → 블라인드)
+_POS_ORDER = ["UTG", "UTG+1", "MP1", "MP2", "MP3", "MP", "HJ", "CO",
+              "BTN", "SB(BTN)", "SB", "BB"]
+
+
+def _pos_key(pos):
+    base = (pos or "?").split("(")[0]
+    for cand in (pos, base):
+        if cand in _POS_ORDER:
+            return _POS_ORDER.index(cand)
+    return len(_POS_ORDER) + 1
+
+
+def stats(db):
+    """전체 핸드 집계 통계 (통계 대시보드용). raw 파싱 없이 메타 필드만 사용."""
+    hands = list(db["hands"].values())
+    total = len(hands)
+    by_pos, tids = {}, set()
+    vpip = pfr = pfr_known = showdown = showdown_won = 0
+
+    for h in hands:
+        net = h.get("net") or 0
+        nb = h.get("net_bb")
+        tids.add(h.get("tournament_id"))
+        if h.get("vpip"):
+            vpip += 1
+        if "pfr" in h:                       # 구 DB(rebuild 전)는 pfr 키 없음 → 집계 제외
+            pfr_known += 1
+            if h["pfr"]:
+                pfr += 1
+        if h.get("showdown"):
+            showdown += 1
+            if net > 0:
+                showdown_won += 1
+
+        # 포지션별 칩 EV(bb) — 플레이 품질 지표 (상금 아님)
+        pos = h.get("hero_pos") or "?"
+        p = by_pos.setdefault(pos, {"pos": pos, "hands": 0, "vpip": 0, "net_bb": 0.0})
+        p["hands"] += 1
+        if h.get("vpip"):
+            p["vpip"] += 1
+        if nb is not None:
+            p["net_bb"] += nb
+
+    positions = sorted(by_pos.values(), key=lambda p: _pos_key(p["pos"]))
+    for p in positions:
+        p["net_bb"] = round(p["net_bb"], 1)
+
+    return {
+        "total": total,
+        "tournaments": len(tids),
+        "vpip_pct": round(100 * vpip / total) if total else 0,
+        "pfr_pct": round(100 * pfr / pfr_known) if pfr_known else None,
+        "pfr_known": pfr_known,
+        "wtsd_pct": round(100 * showdown / vpip) if vpip else 0,
+        "wsd_pct": round(100 * showdown_won / showdown) if showdown else 0,
+        "showdown": showdown,
+        "positions": positions,
+    }

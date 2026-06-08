@@ -265,6 +265,60 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #report-body strong { color: #fff; }
   #report-body .ai-meta { margin-top: 14px; }
 
+  .tourney.stats { border-color: rgba(77,163,255,.45); }
+  .tourney.stats.sel { border-color: var(--accent); background: rgba(77,163,255,.1); }
+  .tourney.stats .tname { color: var(--accent); }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
+                gap: 10px; margin-bottom: 20px; }
+  .stat-card { background: var(--panel); border: 1px solid var(--border);
+               border-radius: 10px; padding: 12px 14px; }
+  .stat-card .v { font-size: 22px; font-weight: 700; letter-spacing: .3px; }
+  .stat-card .l { color: var(--dim); font-size: 12px; margin-top: 2px; }
+  .stat-card .sub { color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .stat-card .v.win { color: var(--green); } .stat-card .v.lose { color: var(--red); }
+
+  .stat-section { margin-bottom: 22px; }
+  .stat-section > h3 { font-size: 14px; color: var(--gold); margin-bottom: 8px; }
+  .chart-box { background: var(--panel); border: 1px solid var(--border);
+               border-radius: 10px; padding: 14px 16px; }
+  table.stat-table { width: 100%; border-collapse: collapse; font-size: 13px;
+                     background: var(--panel); border: 1px solid var(--border);
+                     border-radius: 10px; overflow: hidden; }
+  table.stat-table th, table.stat-table td { padding: 8px 12px; text-align: right;
+                     border-bottom: 1px solid var(--border); }
+  table.stat-table th { color: var(--dim); font-weight: 600; font-size: 12px;
+                        background: var(--panel2); }
+  table.stat-table td:first-child, table.stat-table th:first-child { text-align: left; }
+  table.stat-table tr:last-child td { border-bottom: none; }
+  table.stat-table tbody tr.clickable { cursor: pointer; }
+  table.stat-table tbody tr.clickable:hover { background: var(--panel2); }
+  .tnum.win { color: var(--green); } .tnum.lose { color: var(--red); }
+
+  .tourney.search { border-color: rgba(86,211,100,.4); }
+  .tourney.search.sel { border-color: var(--green); background: rgba(86,211,100,.08); }
+  .tourney.search .tname { color: var(--green); }
+
+  #tsearch { flex: 1; min-width: 180px; max-width: 360px; }
+  select.ts-sort { background: var(--panel2); border: 1px solid var(--border);
+                   color: var(--text); border-radius: 6px; padding: 5px 8px; }
+  .ts-counter { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+  .ts-card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+             padding: 11px 14px; margin-bottom: 8px; cursor: pointer; transition: border-color .1s; }
+  .ts-card:hover { border-color: var(--accent); }
+  .ts-card .ts-top { display: flex; align-items: center; gap: 8px; }
+  .ts-card .ts-name { font-weight: 600; }
+  .ts-card .ts-id { color: var(--dim); font-size: 12px; }
+  .ts-card .ts-arrow { margin-left: auto; color: var(--dim); }
+  .ts-card:hover .ts-arrow { color: var(--accent); }
+  .ts-card .ts-meta { color: var(--dim); font-size: 12px; margin-top: 3px; }
+  .ts-pager { display: flex; align-items: center; gap: 5px; justify-content: center;
+              margin: 16px 0 8px; flex-wrap: wrap; }
+  .ts-pager button { min-width: 34px; padding: 5px 9px; }
+  .ts-pager button:disabled { opacity: .4; cursor: default; }
+  .ts-pager button:disabled:hover { border-color: var(--border); color: var(--text); }
+  .ts-ellip { color: var(--dim); padding: 0 2px; }
+
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
            background: var(--accent); color: #0c1117; font-weight: 600;
            padding: 9px 20px; border-radius: 8px; opacity: 0; transition: opacity .25s; }
@@ -308,9 +362,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL === -1 이면 복기 추천 뷰
+let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기 추천, -2 통계, -3 토너 검색
 let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
-let REVIEW_HANDS = null, REVIEW_COUNT = 0;
+let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
+let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
+const SEARCH_PAGE_SIZE = 20;
 
 const $ = s => document.querySelector(s);
 
@@ -372,16 +428,165 @@ function netHtml(net, netBb) {
 }
 
 function renderSidebar() {
-  const review = `
+  // SEL >= 0 은 검색에서 연 토너먼트 핸드 뷰 → 🔍 토너먼트 항목을 활성 표시
+  const inTourney = SEL >= 0;
+  $('#sidebar').innerHTML = `
+    <div class="tourney stats ${SEL===-2?'sel':''}" onclick="selectStats()">
+      <div class="tname">📈 통계</div>
+      <div class="tmeta">포지션별 칩 EV · VPIP/PFR · WTSD</div>
+    </div>
     <div class="tourney review ${SEL===-1?'sel':''}" onclick="selectReview()">
       <div class="tname">📌 복기 추천</div>
       <div class="tmeta">큰 손실 · 쇼다운/올인 패배 핸드 ${REVIEW_COUNT}개</div>
+    </div>
+    <div class="tourney search ${(SEL===-3||inTourney)?'sel':''}" onclick="selectSearch()">
+      <div class="tname">🔍 토너먼트</div>
+      <div class="tmeta">${DATA.tournaments.length}개 · 검색해서 열기</div>
     </div>`;
-  $('#sidebar').innerHTML = review + DATA.tournaments.map((t, i) => `
-    <div class="tourney ${i===SEL?'sel':''}" onclick="selectTourney(${i})">
-      <div class="tname">${esc(t.name)}</div>
-      <div class="tmeta">#${t.id} · 핸드 ${t.hand_count}개${t.analyzed ? ' · 🤖' + t.analyzed : ''}<br>${esc(t.start.slice(0,16))} ~ ${esc(t.end.slice(11,16))}</div>
-    </div>`).join('');
+}
+
+// 토너먼트 검색 뷰 — 사이드바 대신 본문에서 검색/페이징으로 토너 열기
+function selectSearch() {
+  SEL = -3; renderSidebar();
+  $('#mainhead').innerHTML = `
+    <h2 style="flex:0 0 auto">🔍 토너먼트</h2>
+    <input type="text" id="tsearch" placeholder="이름 또는 #번호 검색..."
+       value="${esc(SEARCH_Q)}" oninput="onSearchInput(this.value)">
+    <label class="small">정렬
+      <select class="ts-sort" onchange="onSearchSort(this.value)">
+        <option value="recent">최신순</option>
+        <option value="name">이름순</option>
+        <option value="hands">핸드 많은 순</option>
+      </select>
+    </label>`;
+  document.querySelector('.ts-sort').value = SEARCH_SORT;
+  renderSearchResults();
+  $('#main').scrollTop = 0;
+  const inp = document.getElementById('tsearch');
+  if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+}
+
+function onSearchInput(v) { SEARCH_Q = v; SEARCH_PAGE = 0; renderSearchResults(); }
+function onSearchSort(v) { SEARCH_SORT = v; SEARCH_PAGE = 0; renderSearchResults(); }
+function gotoSearchPage(p) { SEARCH_PAGE = p; renderSearchResults(); $('#main').scrollTop = 0; }
+
+function filteredTournaments() {
+  let list = DATA.tournaments.slice();
+  const q = SEARCH_Q.trim().toLowerCase();
+  if (q) list = list.filter(t =>
+    (t.name || '').toLowerCase().includes(q) || String(t.id).toLowerCase().includes(q));
+  if (SEARCH_SORT === 'name') list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  else if (SEARCH_SORT === 'hands') list.sort((a, b) => b.hand_count - a.hand_count);
+  else list.sort((a, b) => (b.start || '').localeCompare(a.start || ''));
+  return list;
+}
+
+function pager(pages) {
+  if (pages <= 1) return '';
+  const cur = SEARCH_PAGE;
+  const set = new Set([0, pages - 1, cur - 1, cur, cur + 1]);
+  const nums = [...set].filter(p => p >= 0 && p < pages).sort((a, b) => a - b);
+  let html = `<div class="ts-pager">
+    <button ${cur === 0 ? 'disabled' : ''} onclick="gotoSearchPage(${cur - 1})">‹ 이전</button>`;
+  let prev = -1;
+  for (const p of nums) {
+    if (prev >= 0 && p - prev > 1) html += `<span class="ts-ellip">…</span>`;
+    html += `<button class="${p === cur ? 'primary' : ''}" onclick="gotoSearchPage(${p})">${p + 1}</button>`;
+    prev = p;
+  }
+  html += `<button ${cur === pages - 1 ? 'disabled' : ''} onclick="gotoSearchPage(${cur + 1})">다음 ›</button></div>`;
+  return html;
+}
+
+function renderSearchResults() {
+  const all = filteredTournaments();
+  const pages = Math.max(1, Math.ceil(all.length / SEARCH_PAGE_SIZE));
+  if (SEARCH_PAGE >= pages) SEARCH_PAGE = pages - 1;
+  if (SEARCH_PAGE < 0) SEARCH_PAGE = 0;
+  const start = SEARCH_PAGE * SEARCH_PAGE_SIZE;
+  const page = all.slice(start, start + SEARCH_PAGE_SIZE);
+  const rows = page.map(t => {
+    const idx = DATA.tournaments.indexOf(t);
+    const end = (t.end || '').slice(11, 16);
+    return `<div class="ts-card" onclick="selectTourney(${idx})">
+      <div class="ts-top">
+        <span class="ts-name">${esc(t.name || '')}</span>
+        <span class="ts-id">#${esc(String(t.id))}</span>
+        <span class="ts-arrow">→</span>
+      </div>
+      <div class="ts-meta">핸드 ${t.hand_count}${t.analyzed ? ' · 🤖' + t.analyzed : ''} · ${esc((t.start || '').slice(0, 16))}${end ? ' ~ ' + end : ''}</div>
+    </div>`;
+  }).join('');
+  const counter = SEARCH_Q.trim()
+    ? `${DATA.tournaments.length}개 중 <strong style="color:var(--text)">${all.length}</strong>개 검색됨`
+    : `전체 ${all.length}개`;
+  $('#hands').innerHTML = `
+    <div class="ts-counter">${counter}</div>
+    ${all.length ? rows : '<p style="color:var(--dim)">검색 결과가 없습니다.</p>'}
+    ${pager(pages)}`;
+}
+
+// 통계 대시보드 뷰 — 전체 핸드 집계
+async function selectStats() {
+  SEL = -2; renderSidebar();
+  $('#mainhead').innerHTML = '<h2>📈 통계</h2>';
+  if (!STATS) {
+    $('#hands').innerHTML = '<div class="ai-loading">집계 중</div>';
+    const res = await fetch('/api/stats');
+    STATS = await res.json();
+  }
+  if (SEL !== -2) return;
+  renderStats(); $('#main').scrollTop = 0;
+}
+
+function statCard(val, label, sub, cls) {
+  return `<div class="stat-card">
+    <div class="v ${cls || ''}">${val}</div>
+    <div class="l">${label}</div>
+    ${sub ? `<div class="sub">${sub}</div>` : ''}
+  </div>`;
+}
+
+function bbCell(v) {
+  const cls = v >= 0 ? 'win' : 'lose';
+  return `<span class="tnum ${cls}">${v >= 0 ? '+' : ''}${v.toLocaleString()}</span>`;
+}
+
+function renderStats() {
+  const s = STATS;
+  if (!s || !s.total) {
+    $('#hands').innerHTML = '<p style="color:var(--dim)">집계할 핸드가 없습니다.</p>';
+    return;
+  }
+  const pfr = s.pfr_pct === null
+    ? statCard('—', 'PFR', '<code>--rebuild</code> 후 표시')
+    : statCard(s.pfr_pct + '%', 'PFR',
+        s.pfr_known < s.total ? `${s.pfr_known.toLocaleString()}핸드 기준` : '프리플랍 레이즈');
+
+  const cards = [
+    statCard(s.total.toLocaleString(), '핸드', `${s.tournaments}개 토너먼트`),
+    statCard(s.vpip_pct + '%', 'VPIP', '자발적 팟 참여'),
+    pfr,
+    statCard(s.wtsd_pct + '%', 'WTSD', 'VPIP 대비 쇼다운'),
+    statCard(s.wsd_pct + '%', 'W$SD', `쇼다운 ${s.showdown}회 중 승`),
+  ].join('');
+
+  const posRows = s.positions.map(p => {
+    const vpip = p.hands ? Math.round(100 * p.vpip / p.hands) : 0;
+    return `<tr>
+      <td>${esc(p.pos)}</td><td>${p.hands.toLocaleString()}</td>
+      <td>${vpip}%</td><td>${bbCell(p.net_bb)}</td></tr>`;
+  }).join('');
+
+  $('#hands').innerHTML = `
+    <div class="stats-grid">${cards}</div>
+    <div class="stat-section">
+      <h3>포지션별 <span style="color:var(--dim);font-size:12px;font-weight:400">(칩 EV — 플레이 품질 지표, 상금 아님)</span></h3>
+      <table class="stat-table">
+        <thead><tr><th>포지션</th><th>핸드</th><th>VPIP</th><th>칩 EV(bb)</th></tr></thead>
+        <tbody>${posRows}</tbody>
+      </table>
+    </div>`;
 }
 
 // 복기 추천 뷰 — 전체 토너에서 추천 핸드만 모아서 표시
@@ -425,7 +630,9 @@ function renderMain() {
   const countLabel = HIDE_FOLDS
     ? `${hands.length}핸드 표시 (프리폴드 ${t.hand_count - hands.length}개 숨김)`
     : `${t.hand_count}핸드`;
+  const backBtn = SEL >= 0 ? `<button onclick="selectSearch()">← 검색으로</button>` : '';
   $('#mainhead').innerHTML = `
+    ${backBtn}
     <h2>${esc(t.name)} <span style="color:var(--dim);font-size:13px">#${t.id} · ${countLabel}</span></h2>
     <button onclick="toggleFolds()" class="${HIDE_FOLDS ? 'primary' : ''}">${HIDE_FOLDS ? '✓ ' : ''}프리폴드 숨기기</button>
     <button onclick="toggleAll(true)">모두 펼치기</button>
@@ -588,15 +795,15 @@ async function applyData(data) {
   REPORT = data.report || null;
   ANALYZED_TOTAL = data.analyzed_total || 0;
   REVIEW_COUNT = data.review_count || 0;
-  REVIEW_HANDS = null;  // 임포트 후 다시 로드되도록 초기화
+  REVIEW_HANDS = null; STATS = null;  // 임포트 후 다시 로드되도록 초기화
   updateReportBtn();
   const params = new URLSearchParams(location.search);
   HIDE_FOLDS = params.has('hidefolds');
   $('#drop').style.display = 'none';
   $('#layout').classList.add('active');
   if (params.has('review')) await selectReview();
-  else await selectTourney(0);
-  if (params.has('expand')) toggleAll(true);
+  else if (params.has('search')) selectSearch();
+  else await selectStats();
 }
 
 async function importText(text) {
@@ -723,6 +930,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/review":
             resp = store.review_hands(DB)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/stats":
+            resp = store.stats(DB)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/tournament":
             qs = parse_qs(urlparse(self.path).query)
