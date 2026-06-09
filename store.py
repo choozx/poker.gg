@@ -12,7 +12,7 @@ import re
 import threading
 import time
 
-from convert import hand_meta, parse_hand, split_hands
+from convert import hand_meta, is_excluded_game, parse_hand, split_hands
 
 _SAVE_LOCK = threading.Lock()
 HAND_ID_RE = re.compile(r"CoinPoker Hand #(\d+)")
@@ -54,6 +54,8 @@ def import_text(db, text, hero="Hero"):
         m = HAND_ID_RE.match(raw.strip())
         if not m:
             continue
+        if is_excluded_game(raw):       # PLO 등 비NLH 핸드는 아예 받지 않음
+            continue
         hand_id = m.group(1)
         if hand_id in db["hands"]:
             skipped += 1
@@ -64,8 +66,11 @@ def import_text(db, text, hero="Hero"):
 
 
 def rebuild(db, hero="Hero"):
-    """저장된 원본(raw)으로 전체 재변환. AI 분석 결과는 유지."""
+    """저장된 원본(raw)으로 전체 재변환. AI 분석 결과는 유지. 비NLH(PLO 등)는 퍼지."""
     for hand_id, rec in list(db["hands"].items()):
+        if is_excluded_game(rec["raw"]):    # 기존 DB에 들어와 있던 PLO 등 제거
+            del db["hands"][hand_id]
+            continue
         new = build_record(rec["raw"], hero)
         if rec.get("analysis"):
             new["analysis"] = rec["analysis"]
@@ -203,6 +208,21 @@ def _stack_bucket(sb):
     if sb < 40:
         return "mid"
     return "deep"
+
+
+def hands_by_combo(db, combo, pos=None, stack=None):
+    """특정 스타팅 핸드 조합(AA/AKs/AKo)의 핸드 목록 (raw 제외, 시간순).
+
+    pos/stack 필터는 hand_grid와 동일 — 그리드 칸 클릭 드릴다운용."""
+    hands = [
+        {k: v for k, v in r.items() if k != "raw"}
+        for r in db["hands"].values()
+        if _combo(r.get("hero_cards") or []) == combo
+        and not (pos and (r.get("hero_pos") or "") != pos)
+        and not (stack and _stack_bucket(r.get("stack_bb")) != stack)
+    ]
+    hands.sort(key=lambda h: h.get("datetime") or "")
+    return {"combo": combo, "pos": pos, "stack": stack, "hands": hands}
 
 
 def hand_grid(db, pos=None, stack=None):

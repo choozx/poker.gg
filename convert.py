@@ -80,10 +80,23 @@ RE_ACTION = re.compile(
 )
 RE_COLLECTED = re.compile(r"(\S+) collected (" + NUM + r") from pot")
 RE_TOTAL_POT = re.compile(r"Total pot (" + NUM + r")")
+# 헤더의 게임 토큰만 가볍게 추출 (NLH / "PLO 5" 등). non-greedy로 블라인드 괄호 앞에서 멈춤
+RE_GAME = re.compile(r"CoinPoker Hand #\d+:\s*(.+?)\s*\(")
 
 
 def fnum(s):
     return float(s.replace(",", "")) if s else 0.0
+
+
+def hand_game(raw):
+    m = RE_GAME.match(raw.lstrip())
+    return m.group(1) if m else ""
+
+
+def is_excluded_game(raw):
+    """NLH가 아닌 게임(PLO/오마하 등)이면 True — 이 앱은 NLH 토너먼트 전용."""
+    g = hand_game(raw).upper()
+    return "PLO" in g or "OMAHA" in g
 
 
 def assign_positions(players, button_seat):
@@ -192,7 +205,10 @@ def parse_hand(text):
             cards, rank = m.group(5), m.group(6)
 
             if verb == "shows":
-                hand.showdown.append((name, cards.split() if cards else [], rank or ""))
+                # 멀티웨이 올인 사이드팟: CoinPoker는 한 명이 여러 팟을 먹으면
+                # collected 줄마다 shows를 반복 출력 → 플레이어당 1회만 기록
+                if not any(s[0] == name for s in hand.showdown):
+                    hand.showdown.append((name, cards.split() if cards else [], rank or ""))
                 continue
 
             if name not in players_by_name:
@@ -220,6 +236,12 @@ def parse_hand(text):
                 # 언콜드 베팅 반환 (상대 올인이 더 작을 때 차액 돌려받음)
                 put_in = -amt
                 verb = "return"
+
+            # 이미 올인한 플레이어 뒤에 명목 블라인드 줄이 더 찍히는 경우 등(앤티로 올인 →
+            # 이후 'posts big blind' 줄), 시작 스택을 넘는 투입은 불가 — 남은 스택으로 클램프
+            if put_in > 0:
+                remaining = players_by_name[name].chips - contrib.get(name, 0.0)
+                put_in = max(0.0, min(put_in, remaining))
 
             if put_in:
                 contrib[name] = contrib.get(name, 0.0) + put_in

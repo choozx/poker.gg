@@ -377,7 +377,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기 추천, -2 통계, -3 토너 검색
+let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기 추천, -2 통계, -3 토너 검색, -4 그리드 드릴다운
+let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
 let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
 let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
@@ -447,7 +448,7 @@ function renderSidebar() {
   // SEL >= 0 은 검색에서 연 토너먼트 핸드 뷰 → 🔍 토너먼트 항목을 활성 표시
   const inTourney = SEL >= 0;
   $('#sidebar').innerHTML = `
-    <div class="tourney stats ${SEL===-2?'sel':''}" onclick="selectStats()">
+    <div class="tourney stats ${(SEL===-2||SEL===-4)?'sel':''}" onclick="selectStats()">
       <div class="tname">📈 통계</div>
       <div class="tmeta">포지션별 칩 EV · VPIP/PFR · WTSD</div>
     </div>
@@ -629,7 +630,7 @@ function gridTd(cells, i, j, maxAbs) {
                `rgba(44,91,208,${a}) ${s2}% ${s3}%,rgba(45,212,167,${a}) ${s3}% ${s4}%,transparent ${s4}% 100%)`;
     const t = `${combo} · ${n}핸드 · 오픈 ${Math.round(po)}% · 3벳 ${Math.round(ptb)}% · ` +
               `올인 ${Math.round(pai)}% · 콜 ${Math.round(pcl)}% · 폴드 ${Math.round(100 - s4)}%`;
-    return `<td><div class="hc mix${pairCls}" style="background-image:${bg}" title="${t}"><div class="lab">${combo}</div></div></td>`;
+    return `<td><div class="hc mix${pairCls}" style="background-image:${bg};cursor:pointer" title="${t} — 클릭하면 핸드 보기" onclick="drillCombo('${combo}')"><div class="lab">${combo}</div></div></td>`;
   }
   let val, bg, dim = '';
   if (GRID_METRIC === 'bb') {
@@ -648,7 +649,7 @@ function gridTd(cells, i, j, maxAbs) {
   }
   const rfiTxt = opp ? `${Math.round(100 * d.rfi / opp)}% (${opp}회 기회)` : '기회없음';
   const title = `${combo} · ${n}핸드 · VPIP ${vpip}% · PFR ${pfr}% · RFI ${rfiTxt} · 칩EV ${d.bb >= 0 ? '+' : ''}${d.bb}bb`;
-  return `<td><div class="hc${dim}${pairCls}" style="background:${bg}" title="${title}">
+  return `<td><div class="hc${dim}${pairCls}" style="background:${bg};cursor:pointer" title="${title} — 클릭하면 핸드 보기" onclick="drillCombo('${combo}')">
     <div class="lab">${combo}</div><div class="val">${val}</div></div></td>`;
 }
 
@@ -706,7 +707,7 @@ function renderGrid() {
     ${legend}${rebuildHint}
     <div class="grid-wrap"><table class="hgrid">${rows}</table></div>
     <p style="color:var(--dim);font-size:12px;margin-top:10px">
-      대각선=페어 · ↗ 수딧 · ↙ 오프수딧. 칸에 마우스를 올리면 핸드 수·VPIP·PFR·RFI·칩 EV 전체가 보입니다.${note}</p>`;
+      대각선=페어 · ↗ 수딧 · ↙ 오프수딧. 칸에 마우스를 올리면 핸드 수·VPIP·PFR·RFI·칩 EV 전체가, <strong style="color:var(--text)">클릭하면 해당 조합 핸드 목록</strong>이 열립니다.${note}</p>`;
 }
 
 function statCard(val, label, sub, cls) {
@@ -776,12 +777,13 @@ async function selectReview() {
   renderMain(); $('#main').scrollTop = 0;
 }
 
-// 현재 선택된 뷰 (토너먼트 또는 복기 추천)
+// 현재 선택된 뷰 (토너먼트 / 복기 추천 / 그리드 드릴다운)
 function currentTourney() {
   if (SEL === -1) {
     const hands = REVIEW_HANDS || [];
     return {id: 'review', name: '📌 복기 추천', hand_count: hands.length, hands};
   }
+  if (SEL === -4) return DRILL || {id: 'drill', name: '🃏', hand_count: 0, hands: []};
   return DATA.tournaments[SEL];
 }
 
@@ -800,7 +802,8 @@ function renderMain() {
   const countLabel = HIDE_FOLDS
     ? `${hands.length}핸드 표시 (프리폴드 ${t.hand_count - hands.length}개 숨김)`
     : `${t.hand_count}핸드`;
-  const backBtn = SEL >= 0 ? `<button onclick="selectSearch()">← 검색으로</button>` : '';
+  const backBtn = SEL === -4 ? `<button onclick="backToGrid()">← 그리드로</button>`
+    : SEL >= 0 ? `<button onclick="selectSearch()">← 검색으로</button>` : '';
   $('#mainhead').innerHTML = `
     ${backBtn}
     <h2>${esc(t.name)} <span style="color:var(--dim);font-size:13px">#${t.id} · ${countLabel}</span></h2>
@@ -944,6 +947,29 @@ function toggleAll(open) {
   document.querySelectorAll('.hand').forEach(el => el.classList.toggle('open', open));
 }
 
+// 그리드 칸 클릭 → 해당 조합 핸드 목록 (현재 포지션·스택 필터 적용)
+const STACK_LABEL = {pf: '<15bb', short: '15-25bb', mid: '25-40bb', deep: '40bb+'};
+async function drillCombo(combo) {
+  const pos = GRID_POS, stack = GRID_STACK;   // 그리드와 같은 필터로 좁혀서 조회
+  const params = ['combo=' + encodeURIComponent(combo)];
+  if (pos !== 'all') params.push('pos=' + encodeURIComponent(pos));
+  if (stack !== 'all') params.push('stack=' + encodeURIComponent(stack));
+  const filterLabel = [pos !== 'all' ? pos : null, stack !== 'all' ? STACK_LABEL[stack] : null]
+    .filter(Boolean).join(' · ');
+  const name = `🃏 ${combo}${filterLabel ? ' · ' + filterLabel : ''}`;
+  SEL = -4; DRILL = null; renderSidebar();
+  $('#mainhead').innerHTML = `<button onclick="backToGrid()">← 그리드로</button><h2>${esc(name)}</h2>`;
+  $('#hands').innerHTML = '<div class="ai-loading">핸드 불러오는 중</div>';
+  const data = await fetch('/api/handsby?' + params.join('&')).then(r => r.json());
+  if (SEL !== -4) return;   // 로딩 중 다른 뷰로 이동함
+  for (const h of data.hands)
+    if (h.analysis && !AI_CACHE[h.hand_id])
+      AI_CACHE[h.hand_id] = {status: 'done', text: h.analysis, backend: '저장됨'};
+  DRILL = {id: 'drill', name, hand_count: data.hands.length, hands: data.hands};
+  renderMain(); $('#main').scrollTop = 0;
+}
+function backToGrid() { STATS_TAB = 'grid'; selectStats(); }
+
 function tourneyMd() {
   // 필터가 켜져 있으면 표시 중인 핸드만 복사/다운로드
   return visibleHands().map(h => h.markdown).join('\n---\n\n');
@@ -952,7 +978,7 @@ function copyMd() {
   navigator.clipboard.writeText(tourneyMd()).then(() => toast('복사 완료 — AI에게 붙여넣으세요'));
 }
 function downloadMd() {
-  const t = DATA.tournaments[SEL];
+  const t = currentTourney();
   const blob = new Blob([tourneyMd()], {type: 'text/markdown'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1109,6 +1135,13 @@ class Handler(BaseHTTPRequestHandler):
             pos = qs.get("pos", [""])[0] or None
             stack = qs.get("stack", [""])[0] or None
             resp = store.hand_grid(DB, pos=pos, stack=stack)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/handsby":
+            qs = parse_qs(urlparse(self.path).query)
+            combo = qs.get("combo", [""])[0]
+            pos = qs.get("pos", [""])[0] or None
+            stack = qs.get("stack", [""])[0] or None
+            resp = store.hands_by_combo(DB, combo, pos=pos, stack=stack)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/tournament":
             qs = parse_qs(urlparse(self.path).query)
