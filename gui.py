@@ -861,8 +861,11 @@ function tourneyStackChart(allHands) {
     .map(seg => `<polyline points="${seg.map(i => `${X(i)},${Y(drawPts[i])}`).join(' ')}"
       fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`)
     .join('');
-  const dots = rebuyDots.map(i =>
-    `<circle cx="${X(i)}" cy="${Y(drawPts[i])}" r="4" fill="var(--bg)" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`).join('');
+  const dots = rebuyDots.map(i => {
+    const cx = parseFloat(X(i)), cy = parseFloat(Y(drawPts[i])), s = 5;
+    return `<polygon points="${cx},${cy-s} ${cx+s},${cy} ${cx},${cy+s} ${cx-s},${cy}"
+      fill="${color}" vector-effect="non-scaling-stroke"/>`;
+  }).join('');
   const rebuyLabel = rebuyCount
     ? ` · <span style="color:var(--gold)">리바이 ${rebuyCount}회</span>` : '';
   return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
