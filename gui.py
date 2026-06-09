@@ -381,6 +381,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤
 let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
 let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null;
+let BANK_PAGE = 0;
+const BANK_PAGE_SIZE = 50;
 let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
 let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
@@ -983,8 +985,24 @@ async function selectBankroll() {
   if (!BANKROLL) $('#hands').innerHTML = '<div class="ai-loading">집계 중</div>';
   const data = await fetch('/api/bankroll').then(r => r.json());
   if (SEL !== -5) return;
-  BANKROLL = data; renderBankroll(); $('#main').scrollTop = 0;
+  BANKROLL = data; BANK_PAGE = 0; renderBankroll(); $('#main').scrollTop = 0;
 }
+
+// 뱅크롤 페이지네이션 (50개씩)
+function bankPager(pages) {
+  if (pages <= 1) return '';
+  const cur = BANK_PAGE;
+  const nums = [...new Set([0, pages - 1, cur - 1, cur, cur + 1])].filter(p => p >= 0 && p < pages).sort((a, b) => a - b);
+  let html = `<div class="ts-pager"><button ${cur === 0 ? 'disabled' : ''} onclick="bankGotoPage(${cur - 1})">‹ 이전</button>`;
+  let prev = -1;
+  for (const p of nums) {
+    if (prev >= 0 && p - prev > 1) html += `<span class="ts-ellip">…</span>`;
+    html += `<button class="${p === cur ? 'primary' : ''}" onclick="bankGotoPage(${p})">${p + 1}</button>`;
+    prev = p;
+  }
+  return html + `<button ${cur === pages - 1 ? 'disabled' : ''} onclick="bankGotoPage(${cur + 1})">다음 ›</button></div>`;
+}
+function bankGotoPage(p) { BANK_PAGE = p; renderBankroll(); $('#main').scrollTop = 0; }
 
 function bankMoney(v, plus) {
   const c = v >= 0 ? 'var(--green)' : 'var(--red)';
@@ -1070,7 +1088,7 @@ async function bankDelete(id) {
   }).then(r => r.json());
   BANKROLL = data; renderBankroll(); toast('삭제됨');
 }
-function bankSetFilter(f) { BANK_FILTER = f; renderBankroll(); }
+function bankSetFilter(f) { BANK_FILTER = f; BANK_PAGE = 0; renderBankroll(); }
 
 // 뱅크롤 행 클릭 → 그 토너 핸드 보기 (이미 있는 토너 뷰 재사용)
 function openTournamentById(tid) {
@@ -1131,21 +1149,25 @@ function renderBankroll() {
   </div>`;
 
   const fBtn = (k, l) => `<button class="${BANK_FILTER===k?'primary':''}" onclick="bankSetFilter('${k}')">${l}</button>`;
-  let bodyRows, countLabel;
-  if (BANK_FILTER === 'all') {                 // 캠페인 트리 (세틀은 본토너 밑에 접힘)
-    bodyRows = b.tree.map(n => {
-      const kids = n.children || [];
-      return bankRowTr(n, kids.length ? {campId: n.id, nKids: kids.length} : {})
-        + kids.map(c => bankRowTr(c, {isChild: true, kidOf: n.id})).join('');
-    }).join('');
-    countLabel = `${b.tree.length}개 캠페인`;
-  } else {                                      // ITM/미매칭 = 평면 필터 목록
-    let list = b.entries.slice().reverse();
-    if (BANK_FILTER === 'unmatched') list = list.filter(e => !e.tournament_id);
-    else if (BANK_FILTER === 'itm') list = list.filter(e => e.cash > 0);
-    bodyRows = list.map(e => bankRowTr(e, {})).join('');
-    countLabel = `${list.length}건`;
-  }
+  // 페이징 대상: 트리는 루트, 필터는 평면 엔트리 (50개씩)
+  const isTree = BANK_FILTER === 'all';
+  let items = isTree ? b.tree : b.entries.slice().reverse();
+  if (BANK_FILTER === 'unmatched') items = items.filter(e => !e.tournament_id);
+  else if (BANK_FILTER === 'itm') items = items.filter(e => e.cash > 0);
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / BANK_PAGE_SIZE));
+  if (BANK_PAGE >= pages) BANK_PAGE = pages - 1;
+  if (BANK_PAGE < 0) BANK_PAGE = 0;
+  const pageItems = items.slice(BANK_PAGE * BANK_PAGE_SIZE, (BANK_PAGE + 1) * BANK_PAGE_SIZE);
+  const bodyRows = isTree
+    ? pageItems.map(n => {
+        const kids = n.children || [];
+        return bankRowTr(n, kids.length ? {campId: n.id, nKids: kids.length} : {})
+          + kids.map(c => bankRowTr(c, {isChild: true, kidOf: n.id})).join('');
+      }).join('')
+    : pageItems.map(e => bankRowTr(e, {})).join('');
+  const countLabel = (isTree ? `${total}개 캠페인` : `${total}건`)
+    + (pages > 1 ? ` · ${BANK_PAGE + 1}/${pages}p` : '');
   const table = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
     <tr style="color:var(--dim);text-align:left;border-bottom:1px solid var(--border)">
       <th style="padding:6px 8px">날짜</th><th style="padding:6px 8px">토너먼트</th>
@@ -1184,7 +1206,7 @@ function renderBankroll() {
     + `<div style="display:flex;gap:6px;margin-bottom:8px"><span style="color:var(--dim);font-size:13px;align-self:center">보기:</span>
        ${fBtn('all','캠페인 트리')} ${fBtn('itm','ITM만')} ${fBtn('unmatched','미매칭만')}
        <span style="margin-left:auto;color:var(--dim);font-size:12px;align-self:center">${countLabel} 표시</span></div>`
-    + unmatchedNote + table + unlogged;
+    + unmatchedNote + table + bankPager(pages) + unlogged;
 }
 
 function tourneyMd() {
