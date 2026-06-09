@@ -813,7 +813,7 @@ function detectRebuys(allHands) {
   const ids = new Set();
   for (let i = 0; i < pairs.length - 1; i++) {
     const expected = Math.max(0, pairs[i].chips + (pairs[i].hand.net || 0));
-    if (pairs[i + 1].chips > expected + 100) ids.add(pairs[i + 1].hand.hand_id);
+    if (pairs[i + 1].chips > expected + 100) ids.add(pairs[i].hand.hand_id);
   }
   return ids;
 }
