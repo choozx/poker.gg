@@ -1138,7 +1138,6 @@ function bankToggle(id) {
 function renderBankroll() {
   const b = BANKROLL;
   $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">💰 뱅크롤</h2>
-    <span style="color:var(--dim);font-size:12px">실제 돈($) · 칩 EV(bb)와 별개</span>
     <button class="primary" style="margin-left:auto" onclick="bankShowForm()">➕ 결과 입력</button>`;
   const cards = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
     ${statCard(bankMoney(b.profit, true), '순손익', `비용 $${b.total_cost} · 상금 $${b.total_cash}`)}
