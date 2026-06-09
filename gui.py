@@ -18,6 +18,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import bankroll
 import store
 
 
@@ -377,8 +378,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기 추천, -2 통계, -3 토너 검색, -4 그리드 드릴다운
+let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤
 let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
+let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null;
 let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
 let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
@@ -451,6 +453,10 @@ function renderSidebar() {
     <div class="tourney stats ${(SEL===-2||SEL===-4)?'sel':''}" onclick="selectStats()">
       <div class="tname">📈 통계</div>
       <div class="tmeta">포지션별 칩 EV · VPIP/PFR · WTSD</div>
+    </div>
+    <div class="tourney ${SEL===-5?'sel':''}" style="border-color:rgba(63,191,111,.4)" onclick="selectBankroll()">
+      <div class="tname">💰 뱅크롤</div>
+      <div class="tmeta">실제 손익($) · ROI · 토너 결과 입력</div>
     </div>
     <div class="tourney review ${SEL===-1?'sel':''}" onclick="selectReview()">
       <div class="tname">📌 복기 추천</div>
@@ -970,6 +976,191 @@ async function drillCombo(combo) {
 }
 function backToGrid() { STATS_TAB = 'grid'; selectStats(); }
 
+// --- 💰 뱅크롤 (실제 돈 — 칩 EV와 별개 도메인) ---
+async function selectBankroll() {
+  SEL = -5; renderSidebar();
+  $('#mainhead').innerHTML = '<h2>💰 뱅크롤</h2>';
+  if (!BANKROLL) $('#hands').innerHTML = '<div class="ai-loading">집계 중</div>';
+  const data = await fetch('/api/bankroll').then(r => r.json());
+  if (SEL !== -5) return;
+  BANKROLL = data; renderBankroll(); $('#main').scrollTop = 0;
+}
+
+function bankMoney(v, plus) {
+  const c = v >= 0 ? 'var(--green)' : 'var(--red)';
+  const s = v > 0 && plus ? '+' : (v < 0 ? '−' : '');
+  return `<span style="color:${c}">${s}$${Math.abs(v).toFixed(2)}</span>`;
+}
+function bankBB(v) {
+  if (v === null || v === undefined) return '<span style="color:var(--dim)">—</span>';
+  const c = v >= 0 ? 'var(--green)' : 'var(--red)';
+  return `<span style="color:${c}">${v >= 0 ? '+' : ''}${v}</span>`;
+}
+function bankAutoBuyin() {
+  const m = ($('#bf-name').value || '').match(/₮\s*([0-9]+(?:\.[0-9]+)?)/);
+  if (m) { $('#bf-buyin').value = parseFloat(m[1]); bankRecost(); }
+}
+function bankRecost() {
+  const bi = +$('#bf-buyin').value || 0, en = +$('#bf-entries').value || 1;
+  $('#bf-cost').value = (bi * en).toFixed(2);
+}
+
+// 누적 손익 라인 (inline SVG)
+function bankSpark(entries) {
+  if (entries.length < 2) return '';
+  const ys = entries.map(e => e.cum_pnl);
+  const mn = Math.min(0, ...ys), mx = Math.max(0, ...ys), W = 800, H = 90, n = ys.length;
+  const X = i => (i / (n - 1) * W).toFixed(1);
+  const Y = v => (H - (v - mn) / ((mx - mn) || 1) * H).toFixed(1);
+  const pts = ys.map((v, i) => `${X(i)},${Y(v)}`).join(' ');
+  const last = ys[ys.length - 1];
+  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
+    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">누적 손익 (${entries[0].date} ~ ${entries[n-1].date})</div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:90px;display:block">
+      <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
+      <polyline points="${pts}" fill="none" stroke="${last>=0?'var(--green)':'var(--red)'}" stroke-width="2" vector-effect="non-scaling-stroke"/>
+    </svg>
+  </div>`;
+}
+
+function bankForm() {
+  const fv = BANK_EDIT ? (BANKROLL.entries.find(e => e.id === BANK_EDIT) || {}) : (BANK_PREFILL || {});
+  const v = (k, d) => fv[k] !== undefined && fv[k] !== null ? esc(String(fv[k])) : (d || '');
+  const inp = (id, ph, val, extra = '') => `<input id="bf-${id}" placeholder="${ph}" value="${val}" ${extra}
+     style="background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:13px">`;
+  return `<div style="background:var(--panel);border:1px solid var(--accent);border-radius:9px;padding:14px;margin-bottom:14px">
+    <input type="hidden" id="bf-id" value="${BANK_EDIT || ''}">
+    <div style="font-weight:600;margin-bottom:10px">${BANK_EDIT ? '✏️ 결과 수정' : '➕ 토너 결과 입력'}</div>
+    <div style="display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center;max-width:640px">
+      <label class="small">날짜</label>${inp('date', 'YYYY-MM-DD', v('date'), 'type="date"')}
+      <label class="small">토너먼트명</label>${inp('name', '예: ₮5.50 Turbo', v('name'), 'oninput="bankAutoBuyin()"')}
+      <label class="small">바이인 ($)</label>${inp('buyin', '0', v('buyin'), 'type="number" step="0.01" oninput="bankRecost()"')}
+      <label class="small">바이인/리바이 횟수</label>${inp('entries', '1', v('entries', '1'), 'type="number" min="1" oninput="bankRecost()"')}
+      <label class="small">총 비용 ($)</label>${inp('cost', '자동', v('cost'), 'type="number" step="0.01"')}
+      <label class="small">상금 ($)</label>${inp('cash', '0', v('cash'), 'type="number" step="0.01"')}
+      <label class="small">순위</label>${inp('rank', '선택', v('rank'))}
+      <label class="small">메모</label>${inp('memo', '선택', v('memo'))}
+    </div>
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="primary" onclick="bankSave()">${BANK_EDIT ? '저장' : '추가'}</button>
+      <button onclick="bankCancel()">취소</button>
+    </div>
+  </div>`;
+}
+function bankShowForm() { BANK_SHOWFORM = true; BANK_EDIT = null; BANK_PREFILL = null; renderBankroll(); }
+function bankCancel() { BANK_SHOWFORM = false; BANK_EDIT = null; BANK_PREFILL = null; renderBankroll(); }
+function bankEdit(id) { BANK_EDIT = id; BANK_SHOWFORM = true; BANK_PREFILL = null; renderBankroll(); $('#main').scrollTop = 0; }
+function bankPrefill(name, date, buyin) {
+  BANK_PREFILL = {name, date, buyin}; BANK_SHOWFORM = true; BANK_EDIT = null; renderBankroll(); $('#main').scrollTop = 0;
+}
+async function bankSave() {
+  const num = id => $('#bf-' + id).value === '' ? undefined : +$('#bf-' + id).value;
+  const body = {
+    id: $('#bf-id').value || undefined,
+    date: $('#bf-date').value, name: $('#bf-name').value.trim(),
+    buyin: num('buyin'), entries: num('entries'), cost: num('cost'),
+    cash: num('cash') || 0, rank: $('#bf-rank').value, memo: $('#bf-memo').value,
+  };
+  if (!body.name) { toast('토너먼트명을 입력하세요'); return; }
+  const data = await fetch('/api/bankroll/entry', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  }).then(r => r.json());
+  BANKROLL = data; BANK_SHOWFORM = false; BANK_EDIT = null; BANK_PREFILL = null;
+  renderBankroll(); toast(body.id ? '수정됨' : '추가됨');
+}
+async function bankDelete(id) {
+  if (!confirm('이 기록을 삭제할까요?')) return;
+  const data = await fetch('/api/bankroll/delete', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}),
+  }).then(r => r.json());
+  BANKROLL = data; renderBankroll(); toast('삭제됨');
+}
+function bankSetFilter(f) { BANK_FILTER = f; renderBankroll(); }
+
+// 뱅크롤 행 클릭 → 그 토너 핸드 보기 (이미 있는 토너 뷰 재사용)
+function openTournamentById(tid) {
+  const i = DATA.tournaments.findIndex(t => t.id === tid);
+  if (i >= 0) selectTourney(i); else toast('연결된 핸드가 없습니다');
+}
+
+function renderBankroll() {
+  const b = BANKROLL;
+  $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">💰 뱅크롤</h2>
+    <span style="color:var(--dim);font-size:12px">실제 돈($) · 칩 EV(bb)와 별개</span>
+    <button class="primary" style="margin-left:auto" onclick="bankShowForm()">➕ 결과 입력</button>`;
+  const cards = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+    ${statCard(bankMoney(b.profit, true), '순손익', `비용 $${b.total_cost} · 상금 $${b.total_cash}`)}
+    ${statCard((b.roi>=0?'+':'') + b.roi + '%', 'ROI', '상금/비용')}
+    ${statCard(b.itm_pct + '%', 'ITM', `상금권 ${b.n_paid}토너 중`)}
+    ${statCard(b.n, '토너 수', `평균 바이인 $${b.avg_buyin}`)}
+    ${statCard('$' + b.biggest_cash.toFixed(2), '최고 상금', '단일 토너')}
+  </div>`;
+
+  let list = b.entries.slice().reverse();   // 최신순
+  if (BANK_FILTER === 'unmatched') list = list.filter(e => !e.tournament_id);
+  else if (BANK_FILTER === 'itm') list = list.filter(e => e.cash > 0);
+  const fBtn = (k, l) => `<button class="${BANK_FILTER===k?'primary':''}" onclick="bankSetFilter('${k}')">${l}</button>`;
+
+  const rows = list.map(e => {
+    const linked = !!e.tournament_id;
+    const badge = linked
+      ? `<span style="color:var(--accent);cursor:pointer" onclick="openTournamentById('${e.tournament_id}')">${e.hands}핸드 ›</span>`
+      : `<span style="color:var(--gold)" title="연결된 핸드 없음">핸드없음</span>`;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:6px 8px;white-space:nowrap;color:var(--dim)">${esc(e.date || '')}</td>
+      <td style="padding:6px 8px">${esc(e.name)}${e.entries>1?` <span style="color:var(--dim)">×${e.entries}</span>`:''}${e.rank?` <span style="color:var(--dim)">${esc(e.rank)}</span>`:''}</td>
+      <td style="padding:6px 8px;text-align:right;color:var(--dim)">$${e.cost.toFixed(2)}</td>
+      <td style="padding:6px 8px;text-align:right">${e.cash?('$'+e.cash.toFixed(2)):'<span style="color:var(--dim)">-</span>'}</td>
+      <td style="padding:6px 8px;text-align:right;font-weight:600">${bankMoney(e.pnl, true)}</td>
+      <td style="padding:6px 8px;text-align:right">${bankBB(e.net_bb)}</td>
+      <td style="padding:6px 8px;text-align:right;font-size:12px">${badge}</td>
+      <td style="padding:6px 8px;text-align:right;white-space:nowrap">
+        <a href="#" style="color:var(--dim);font-size:12px" onclick="event.preventDefault();bankEdit('${e.id}')">수정</a>
+        <a href="#" style="color:var(--dim);font-size:12px;margin-left:6px" onclick="event.preventDefault();bankDelete('${e.id}')">삭제</a>
+      </td></tr>`;
+  }).join('');
+
+  const table = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+    <tr style="color:var(--dim);text-align:left;border-bottom:1px solid var(--border)">
+      <th style="padding:6px 8px">날짜</th><th style="padding:6px 8px">토너먼트</th>
+      <th style="padding:6px 8px;text-align:right">비용</th><th style="padding:6px 8px;text-align:right">상금</th>
+      <th style="padding:6px 8px;text-align:right">손익</th><th style="padding:6px 8px;text-align:right" title="그 토너 칩 EV 합">칩EV(bb)</th>
+      <th style="padding:6px 8px;text-align:right">핸드</th><th></th></tr>
+    ${rows}</table></div>`;
+
+  // 역방향: 핸드는 있는데 기록 없는 유료 토너 ($0 프리롤 제외).
+  // 티켓 입장(세틀에서 올라옴)은 버스트면 기록 불필요(돈 누락 아님) → 별도 그룹으로, 바이인 0 프리필.
+  const ulPaid = b.unlogged.filter(u => u.buyin > 0);
+  const ulTicket = ulPaid.filter(u => u.ticket);
+  const ulReal = ulPaid.filter(u => !u.ticket);
+  const ulRow = (u, prefBuyin) => `
+        <div style="display:flex;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
+          <span style="color:var(--dim);width:90px">${esc(u.start)}</span>
+          <span style="flex:1">${esc(u.name)}</span>
+          <span style="color:var(--dim)">${u.hands}핸드 · 칩EV ${bankBB(u.net_bb)}</span>
+          <button onclick="bankPrefill('${esc(u.name).replace(/'/g,'')}','${u.start}',${prefBuyin})">+ 본토너 기록</button>
+        </div>`;
+  const ulTicketBlock = ulTicket.length ? `
+    <details style="margin-top:18px"><summary style="cursor:pointer;color:var(--green)">🎟 티켓 입장 (세틀에서 올라옴 · 버스트면 기록 불필요) ${ulTicket.length}개</summary>
+      <div style="margin-top:8px;font-size:12px;color:var(--dim)">바이인 0(티켓)으로 채워집니다. ITM 했던 것만 상금 입력해 누락분 보정하세요.</div>
+      <div style="margin-top:6px;font-size:13px">${ulTicket.slice(0,60).map(u => ulRow(u, 0)).join('')}</div></details>` : '';
+  const ulRealBlock = ulReal.length ? `
+    <details style="margin-top:14px"><summary style="cursor:pointer;color:var(--gold)">⚠ 핸드는 있는데 기록 없는 현금 토너 ${ulReal.length}개 (점검)</summary>
+      <div style="margin-top:8px;font-size:13px">${ulReal.slice(0,60).map(u => ulRow(u, u.buyin)).join('')}</div></details>` : '';
+  const unlogged = ulTicketBlock + ulRealBlock;
+
+  const unmatchedNote = b.unmatched.length
+    ? `<div style="color:var(--dim);font-size:12px;margin:10px 0">매칭 안 된 ${b.unmatched.length}건은 '핸드없음'으로 표시 — 새틀라이트/PLO/미기록 핸드라 정상입니다. 손익 합계엔 모두 포함됩니다.</div>`
+    : '';
+
+  const form = BANK_SHOWFORM ? bankForm() : '';
+  $('#hands').innerHTML = cards + bankSpark(b.entries) + form
+    + `<div style="display:flex;gap:6px;margin-bottom:8px"><span style="color:var(--dim);font-size:13px;align-self:center">필터:</span>
+       ${fBtn('all','전체')} ${fBtn('itm','ITM만')} ${fBtn('unmatched','미매칭만')}
+       <span style="margin-left:auto;color:var(--dim);font-size:12px;align-self:center">${list.length}건 표시</span></div>`
+    + unmatchedNote + table + unlogged;
+}
+
 function tourneyMd() {
   // 필터가 켜져 있으면 표시 중인 핸드만 복사/다운로드
   return visibleHands().map(h => h.markdown).join('\n---\n\n');
@@ -1148,6 +1339,9 @@ class Handler(BaseHTTPRequestHandler):
             tid = qs.get("id", [""])[0]
             resp = store.tournament_hands(DB, tid)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/bankroll":
+            resp = bankroll.summary(DB)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         else:
             self.send_error(404)
 
@@ -1251,6 +1445,23 @@ class Handler(BaseHTTPRequestHandler):
                     "hand_count": len(analyzed),
                 }
                 store.save_db(DB_PATH, DB)
+        elif self.path in ("/api/bankroll/entry", "/api/bankroll/delete"):
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+            except ValueError:
+                self._send(json.dumps({"error": "잘못된 요청"}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=400)
+                return
+            if self.path == "/api/bankroll/delete":
+                bankroll.delete_entry(DB, body.get("id"))
+            elif body.get("id"):
+                bankroll.update_entry(DB, body["id"], body)
+            else:
+                bankroll.add_entry(DB, body)
+            store.save_db(DB_PATH, DB)
+            self._send(json.dumps(bankroll.summary(DB), ensure_ascii=False),
+                       "application/json; charset=utf-8")
         else:
             self.send_error(404)
 

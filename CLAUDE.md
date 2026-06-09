@@ -38,6 +38,26 @@ Three modules, strict dependency direction `convert ← store ← gui`:
   (`stats`, `hand_grid`, `tournament_list`, `review_hands`). Imports from `convert` only.
 - **`gui.py`** — the HTTP server (`http.server`, threaded) **and the entire frontend**, which lives
   as one big `INDEX_HTML` string (HTML+CSS+vanilla JS). Also holds the AI backends and prompts.
+- **`bankroll.py`** — the **real-money** domain (kept strictly separate from chip EV; see below).
+
+### Bankroll (real money) — a parallel domain to the hands
+
+`bankroll.py` tracks actual tournament results (buy-in/cash/profit, in USD/₮) at
+`db["bankroll"]["entries"]` — **deliberately separate from chip EV (`net_bb`)**, since the app's
+core principle is that tournament chips ≠ money. It was seeded **once** by migrating the user's
+Google Sheet (`migrate_from_sheet`, ID in `SHEET_ID`, read via stdlib `urllib`+`zipfile`); the app
+is now the source of truth — **do not re-run migration**, it replaces `db["bankroll"]` wholesale.
+
+Each entry is matched to a hand-history tournament (`tournament_id`) to join money ↔ play quality
+(the 💰 뱅크롤 tab: summary, cumulative P&L, per-tournament drill-through). Matching is the subtle
+part — sheet rows have no tournament ID, so they're paired by name+date via an order-preserving
+alignment (`_align`, Needleman-Wunsch over dates) per `_match_key` group, with: chronological
+ordering (the sheet is time-sorted), a `_session_date` shift (a hand dealt just after midnight
+belongs to the previous day's tournament-start session), generic-`freeroll` grouping, satellite
+detection (`is_satellite`/`is_ticket_entry` — a name's ₮ is the *destination*, not the buy-in), and
+same-day deep-run preference (cashed rows resist being left unmatched). `set_override` force-links a
+specific entry and survives migration. API: `GET /api/bankroll`, `POST /api/bankroll/entry` and
+`/api/bankroll/delete`.
 
 ### The key invariant: metadata is frozen at import time
 
