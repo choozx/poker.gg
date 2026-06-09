@@ -832,7 +832,7 @@ function tourneyStackChart(allHands) {
   const rebuys = [];
   for (let i = 0; i < valid.length - 1; i++) {
     const expected = Math.max(0, pts[i] + (valid[i].net || 0));
-    if (pts[i + 1] > expected + 100) rebuys.push({idx: i + 1, from: expected, to: pts[i + 1]});
+    if (pts[i + 1] > expected + 100) rebuys.push({idx: i, from: expected, to: pts[i]});
   }
   const W = 800, H = 80;
   const mn = Math.min(...pts), mx = Math.max(...pts), range = mx - mn || 1;
