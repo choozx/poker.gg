@@ -29,11 +29,12 @@ _R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 # 이름/숫자 정규화 & 매칭
 # ---------------------------------------------------------------------------
 
-_SAT_RE = re.compile(r"seats?\s+to|sat\s+to|\bstep\b|ticket|freeroll|\btmt\b", re.I)
+_SAT_RE = re.compile(r"seats?\s+to|sat\s+to|\bstep\b|ticket|\btmt\b", re.I)
 
 
 def is_satellite(name):
-    """새틀라이트/티켓/스텝성 토너 — 이름의 ₮는 *목적지* 값이라 바이인이 아님."""
+    """새틀라이트/티켓/스텝성 토너 — 이름의 ₮는 *목적지* 값이라 바이인이 아님.
+    프리롤은 세틀이 아님(본선에 올라가는 구조가 아니라 그냥 무료 토너) → 제외."""
     return bool(_SAT_RE.search(name or ""))
 
 
@@ -101,6 +102,14 @@ def _session_date(dt_str, cutoff=5):
 def _days_apart(a, b):
     try:
         return abs((datetime.date.fromisoformat(a) - datetime.date.fromisoformat(b)).days)
+    except ValueError:
+        return 999
+
+
+def _date_gap(earlier, later):
+    """later − earlier (일). 음수면 later가 더 이른 날짜."""
+    try:
+        return (datetime.date.fromisoformat(later) - datetime.date.fromisoformat(earlier)).days
     except ValueError:
         return 999
 
@@ -405,6 +414,57 @@ def update_entry(db, entry_id, fields):
     return None
 
 
+def add_from_hands(db, include_freerolls=True):
+    """핸드 DB엔 있는데 뱅크롤에 없는 토너를 엔트리로 보강(핸드 기준 뱅크롤). 임포트 시 자동 호출.
+
+    비용(cost) 자동 결정:
+    - 본게임: 기본 **현금 입장 → 바이인**. 단 같은 타겟 '이긴 세틀'이 있으면 티켓 입장 → 0.
+    - 세틀: 같은 이름 기존 엔트리의 바이인으로 추론(없으면 0 → 수동 확인).
+    - 프리롤: 0.
+    cash(상금)는 항상 0 — 데이터에 없으니 사용자가 직접 입력. 날짜는 세션(시작)일.
+    추가된 개수 반환. (이미 있는 토너는 건너뜀 → 여러 번 호출 안전)"""
+    b = _bank(db)
+    ht = hand_tournaments(db)
+    by_tid = _hands_by_tid(db)
+    matched = {e.get("tournament_id") for e in b["entries"] if e.get("tournament_id")}
+    sib_buyin = {}                                   # 세틀 바이인 추론용 (이름별)
+    for e in b["entries"]:
+        if is_satellite(e["name"]) and e.get("buyin"):
+            sib_buyin.setdefault(_norm(e["name"]), e["buyin"])
+    # 이긴 세틀의 목적지 → 그 본선은 티켓 입장(비용 0). 핸드로 판정(엔트리 아니어도 됨).
+    won_targets = []
+    for tid2, t2 in ht.items():
+        if is_satellite(t2["name"]) and _sat_outcome(by_tid, tid2) == "won":
+            tg = _sat_target(t2["name"])
+            if tg:
+                won_targets.append((tg[0], tg[1], _session_date(t2["start"])))
+    added = 0
+    for tid, t in sorted(ht.items(), key=lambda x: x[1]["start"]):
+        if not tid or tid in matched:
+            continue
+        is_free = bool(re.search(r"freeroll", t["name"], re.I))
+        if is_free and not include_freerolls:
+            continue
+        d = _session_date(t["start"])
+        if is_free:
+            buyin = 0.0
+        elif is_satellite(t["name"]):
+            buyin = sib_buyin.get(_norm(t["name"]), 0.0)
+        else:
+            bi = parse_buyin(t["name"])                  # 본게임 기본 = 현금 바이인
+            ut = _tokens(t["name"])
+            ticket = any(tok and tok <= ut and abs(val - bi) < 0.5 and _days_apart(wd, d) <= 1
+                         for val, tok, wd in won_targets)
+            buyin = 0.0 if ticket else bi                # 같은 타겟 이긴 세틀 있으면 티켓 입장 → 0
+        b["entries"].append({
+            "id": _new_id(b), "date": d, "name": t["name"],
+            "buyin": buyin, "entries": 1, "cost": buyin, "cash": 0.0, "pnl": round(-buyin, 2),
+            "rank": "", "memo": "핸드기준 추가", "tournament_id": tid, "source": "hand",
+        })
+        added += 1
+    return added
+
+
 def delete_entry(db, entry_id):
     b = _bank(db)
     n = len(b["entries"])
@@ -428,6 +488,124 @@ def _normalize_entry(db, e):
         idx = _build_index(hand_tournaments(db))
         e["tournament_id"] = match_tid(idx, e["name"], e["date"])
     return e
+
+
+# ---------------------------------------------------------------------------
+# 캠페인 트리 (세틀 ↔ 본토너)
+# ---------------------------------------------------------------------------
+
+_STEP_RE = re.compile(r"step\s*\[?\s*(\d+)", re.I)
+
+
+def _sat_target(name):
+    """세틀 이름의 목적지 (바이인값, 토큰셋). 못 읽으면 None."""
+    m = _SAT_TGT_RE.search(name or "")
+    return (float(m.group(1)), _tokens(m.group(2))) if m else None
+
+
+def _tier(name):
+    """본선까지의 '가까움' 점수 — 높을수록 본선에 가까움.
+    'Step [k]'는 번호가 클수록 먼 하위 단계(Step4 → Step3 → Step2 → … → 본선) → -k.
+    일반 'N Seats to'(스텝 아닌 세틀)는 본선 직전 단계라 0 (어떤 스텝보다 본선에 가까움)."""
+    m = _STEP_RE.search(name or "")
+    return -int(m.group(1)) if m else 0
+
+
+def _hands_by_tid(db):
+    """토너ID → Hero 핸드(시각순). 핸드ID는 시간순이 아님(리바이 시 시리즈 섞임) → datetime 정렬."""
+    by = defaultdict(list)
+    for h in db["hands"].values():
+        if h.get("tournament_id"):
+            by[h["tournament_id"]].append(h)
+    for v in by.values():
+        v.sort(key=lambda h: h.get("datetime") or "")
+    return by
+
+
+def _sat_outcome(by_tid, tid):
+    """세틀 최종결과: 'lost'(마지막 핸드에 스택 거의 다 잃고 탈락) / 'won'(생존=시트) / None(핸드없음).
+    리바이로 중간 버스트가 있어도 *마지막 핸드*만 보므로 최종 결과가 정확."""
+    hs = by_tid.get(tid)
+    if not hs:
+        return None
+    last = hs[-1]
+    st, nb = last.get("stack_bb"), last.get("net_bb")
+    if not st or nb is None:
+        return None
+    return "lost" if nb <= -st * 0.9 else "won"
+
+
+def campaigns(db):
+    """세틀↔본토너 캠페인 트리. [{...entry, children:[...], is_sat}] (루트 날짜 역순).
+
+    - 본토너를 쳤으면 본토너=루트, 그 타겟을 노린 세틀들=자식(평평).
+    - 본토너 미도달 세틀: 같은 목적지 그룹이 2단계+(올라감 추론)이면 트리(최고단계=루트),
+      단일 단계(버스트)면 각자 일반 행.
+    돈 합계는 트리와 무관(엔트리 전체 집계) — 표시 구조일 뿐."""
+    b = db.get("bankroll") or {}
+    entries = sorted(b.get("entries", []), key=lambda e: (e.get("date") or "", e.get("id")))
+    ht = hand_tournaments(db)
+
+    # 세틀 최종결과 판정용: 토너별 Hero 핸드(시간순)
+    by_tid = _hands_by_tid(db)
+
+    def outcome(e):
+        return _sat_outcome(by_tid, e.get("tournament_id"))
+
+    def deco(e):
+        t = ht.get(e.get("tournament_id"))
+        return {**e, "hands": t["hands"] if t else 0, "net_bb": t["net_bb"] if t else None,
+                "is_sat": is_satellite(e["name"]),
+                "outcome": outcome(e) if is_satellite(e["name"]) else None, "children": []}
+
+    mains = [e for e in entries if not is_satellite(e["name"])]
+    sats = [e for e in entries if is_satellite(e["name"])]
+
+    kids, orphans = defaultdict(list), []
+    for s in sats:
+        tgt = _sat_target(s["name"])
+        best, bd = None, 99
+        # 진 세틀은 *본선*엔 안 붙음(못 먹였으니). 단 다단계 climb엔 참여 — 상위 단계를 쳤으면
+        # 하위 단계를 땄다는 증거라, 같은 타겟 단계 체인은 win/loss 무관하게 묶음.
+        if outcome(s) != "lost" and tgt:
+            val, dt = tgt
+            for m in mains:
+                if dt and dt <= _tokens(m["name"]) and abs((parse_buyin(m["name"]) or val) - val) < 0.5:
+                    gap = _date_gap(s["date"], m["date"])   # 본토너 − 세틀 (세틀이 먼저여야)
+                    if 0 <= gap <= 1 and gap < bd:          # 같은 날(+자정 슬랙), 가장 가까운 본토너
+                        best, bd = m, gap
+        kids[best["id"]].append(s) if best else orphans.append(s)
+
+    # 자식 정렬: 본선에 가까운 단계가 위(세틀 < Step2 < Step3 < Step4 순으로 아래), 같으면 비싼 바이인 위.
+    def _kid_sort(lst):
+        return sorted(lst, key=lambda e: (-_tier(e["name"]), -(e.get("buyin") or 0), e.get("date") or ""))
+
+    roots = []
+    for m in mains:
+        node = deco(m)
+        node["children"] = [deco(s) for s in _kid_sort(kids.get(m["id"], []))]
+        roots.append(node)
+
+    groups = defaultdict(list)                                   # 고아 세틀: 목적지별
+    for s in orphans:
+        tgt = _sat_target(s["name"])
+        groups[(round(tgt[0], 2), frozenset(tgt[1])) if tgt else ("?", s["id"])].append(s)
+    for grp in groups.values():
+        gs = sorted(grp, key=lambda e: e.get("date") or "")
+        top = max(grp, key=lambda s: (_tier(s["name"]), s.get("date") or ""))
+        kids2 = [s for s in gs if s["id"] != top["id"] and _date_gap(s["date"], top["date"]) >= 0]
+        span = _date_gap(gs[0]["date"], gs[-1]["date"])
+        # 진짜 다단계 climb만 트리: 2단계+ · 짧은 기간(≤3일) · 나머지가 전부 최고단계보다 먼저.
+        # (별개 날짜의 독립 시도는 각자 일반 행 — 본토너 미도달 세틀은 떨어진 것)
+        if len({_tier(s["name"]) for s in grp}) > 1 and span <= 3 and len(kids2) == len(grp) - 1:
+            node = deco(top)
+            node["children"] = [deco(s) for s in _kid_sort(kids2)]
+            roots.append(node)
+        else:
+            roots.extend(deco(s) for s in grp)
+
+    roots.sort(key=lambda n: (n.get("date") or ""), reverse=True)
+    return roots
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +660,7 @@ def summary(db):
         "unmatched": [r for r in rows if not r.get("tournament_id")],
         "unlogged": unlogged,
         "entries": rows,
+        "tree": campaigns(db),
     }
 
 

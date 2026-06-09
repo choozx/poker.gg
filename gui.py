@@ -991,11 +991,6 @@ function bankMoney(v, plus) {
   const s = v > 0 && plus ? '+' : (v < 0 ? '−' : '');
   return `<span style="color:${c}">${s}$${Math.abs(v).toFixed(2)}</span>`;
 }
-function bankBB(v) {
-  if (v === null || v === undefined) return '<span style="color:var(--dim)">—</span>';
-  const c = v >= 0 ? 'var(--green)' : 'var(--red)';
-  return `<span style="color:${c}">${v >= 0 ? '+' : ''}${v}</span>`;
-}
 function bankAutoBuyin() {
   const m = ($('#bf-name').value || '').match(/₮\s*([0-9]+(?:\.[0-9]+)?)/);
   if (m) { $('#bf-buyin').value = parseFloat(m[1]); bankRecost(); }
@@ -1083,6 +1078,45 @@ function openTournamentById(tid) {
   if (i >= 0) selectTourney(i); else toast('연결된 핸드가 없습니다');
 }
 
+// 캠페인 트리: 부모(본토너/최고단계)는 토글, 자식(세틀)은 기본 접힘. 각 행은 제 숫자만(#2 후자).
+function bankRowTr(e, opts) {
+  opts = opts || {};
+  const badge = e.tournament_id
+    ? `<span style="color:var(--accent);cursor:pointer" onclick="openTournamentById('${e.tournament_id}')">${e.hands}핸드 ›</span>`
+    : `<span style="color:var(--gold)" title="연결된 핸드 없음">핸드없음</span>`;
+  let name;
+  if (opts.nKids) {
+    name = `<span id="tw-${opts.campId}" onclick="bankToggle('${opts.campId}')" style="cursor:pointer;color:var(--dim);user-select:none;margin-right:5px">▶</span>${esc(e.name)}<span style="color:var(--dim);font-size:11px"> · 세틀 ${opts.nKids}</span>`;
+  } else if (opts.isChild) {
+    name = `<span style="color:var(--dim);margin-left:16px">└ ${esc(e.name)}</span>`;
+  } else {
+    name = esc(e.name);
+  }
+  const oc = e.is_sat && e.outcome ? (e.outcome === 'won'
+    ? ` <span style="color:var(--green);font-size:11px" title="세틀에서 살아남아 시트 획득(핸드 판정)">🎟 시트</span>`
+    : ` <span style="color:var(--dim);font-size:11px" title="세틀에서 버스트(핸드 판정)">버스트</span>`) : '';
+  const extra = `${e.entries>1?` <span style="color:var(--dim)">×${e.entries}</span>`:''}${e.rank?` <span style="color:var(--dim)">${esc(e.rank)}</span>`:''}`;
+  const hide = opts.isChild ? 'display:none;background:rgba(0,0,0,.15);' : '';
+  return `<tr class="${opts.isChild?('kid-'+opts.kidOf):''}" style="border-bottom:1px solid var(--border);${hide}">
+    <td style="padding:6px 8px;white-space:nowrap;color:var(--dim)">${esc(e.date || '')}</td>
+    <td style="padding:6px 8px">${name}${oc}${extra}</td>
+    <td style="padding:6px 8px;text-align:right;color:var(--dim)">$${e.cost.toFixed(2)}</td>
+    <td style="padding:6px 8px;text-align:right">${e.cash?('$'+e.cash.toFixed(2)):'<span style="color:var(--dim)">-</span>'}</td>
+    <td style="padding:6px 8px;text-align:right;font-weight:600">${bankMoney(e.pnl, true)}</td>
+    <td style="padding:6px 8px;text-align:right;font-size:12px">${badge}</td>
+    <td style="padding:6px 8px;text-align:right;white-space:nowrap">
+      <a href="#" style="color:var(--dim);font-size:12px" onclick="event.preventDefault();bankEdit('${e.id}')">수정</a>
+      <a href="#" style="color:var(--dim);font-size:12px;margin-left:6px" onclick="event.preventDefault();bankDelete('${e.id}')">삭제</a>
+    </td></tr>`;
+}
+function bankToggle(id) {
+  const kids = document.querySelectorAll('.kid-' + id);
+  const tw = document.getElementById('tw-' + id);
+  const open = tw.textContent === '▼';
+  kids.forEach(k => k.style.display = open ? 'none' : 'table-row');
+  tw.textContent = open ? '▶' : '▼';
+}
+
 function renderBankroll() {
   const b = BANKROLL;
   $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">💰 뱅크롤</h2>
@@ -1096,37 +1130,29 @@ function renderBankroll() {
     ${statCard('$' + b.biggest_cash.toFixed(2), '최고 상금', '단일 토너')}
   </div>`;
 
-  let list = b.entries.slice().reverse();   // 최신순
-  if (BANK_FILTER === 'unmatched') list = list.filter(e => !e.tournament_id);
-  else if (BANK_FILTER === 'itm') list = list.filter(e => e.cash > 0);
   const fBtn = (k, l) => `<button class="${BANK_FILTER===k?'primary':''}" onclick="bankSetFilter('${k}')">${l}</button>`;
-
-  const rows = list.map(e => {
-    const linked = !!e.tournament_id;
-    const badge = linked
-      ? `<span style="color:var(--accent);cursor:pointer" onclick="openTournamentById('${e.tournament_id}')">${e.hands}핸드 ›</span>`
-      : `<span style="color:var(--gold)" title="연결된 핸드 없음">핸드없음</span>`;
-    return `<tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:6px 8px;white-space:nowrap;color:var(--dim)">${esc(e.date || '')}</td>
-      <td style="padding:6px 8px">${esc(e.name)}${e.entries>1?` <span style="color:var(--dim)">×${e.entries}</span>`:''}${e.rank?` <span style="color:var(--dim)">${esc(e.rank)}</span>`:''}</td>
-      <td style="padding:6px 8px;text-align:right;color:var(--dim)">$${e.cost.toFixed(2)}</td>
-      <td style="padding:6px 8px;text-align:right">${e.cash?('$'+e.cash.toFixed(2)):'<span style="color:var(--dim)">-</span>'}</td>
-      <td style="padding:6px 8px;text-align:right;font-weight:600">${bankMoney(e.pnl, true)}</td>
-      <td style="padding:6px 8px;text-align:right">${bankBB(e.net_bb)}</td>
-      <td style="padding:6px 8px;text-align:right;font-size:12px">${badge}</td>
-      <td style="padding:6px 8px;text-align:right;white-space:nowrap">
-        <a href="#" style="color:var(--dim);font-size:12px" onclick="event.preventDefault();bankEdit('${e.id}')">수정</a>
-        <a href="#" style="color:var(--dim);font-size:12px;margin-left:6px" onclick="event.preventDefault();bankDelete('${e.id}')">삭제</a>
-      </td></tr>`;
-  }).join('');
-
+  let bodyRows, countLabel;
+  if (BANK_FILTER === 'all') {                 // 캠페인 트리 (세틀은 본토너 밑에 접힘)
+    bodyRows = b.tree.map(n => {
+      const kids = n.children || [];
+      return bankRowTr(n, kids.length ? {campId: n.id, nKids: kids.length} : {})
+        + kids.map(c => bankRowTr(c, {isChild: true, kidOf: n.id})).join('');
+    }).join('');
+    countLabel = `${b.tree.length}개 캠페인`;
+  } else {                                      // ITM/미매칭 = 평면 필터 목록
+    let list = b.entries.slice().reverse();
+    if (BANK_FILTER === 'unmatched') list = list.filter(e => !e.tournament_id);
+    else if (BANK_FILTER === 'itm') list = list.filter(e => e.cash > 0);
+    bodyRows = list.map(e => bankRowTr(e, {})).join('');
+    countLabel = `${list.length}건`;
+  }
   const table = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
     <tr style="color:var(--dim);text-align:left;border-bottom:1px solid var(--border)">
       <th style="padding:6px 8px">날짜</th><th style="padding:6px 8px">토너먼트</th>
       <th style="padding:6px 8px;text-align:right">비용</th><th style="padding:6px 8px;text-align:right">상금</th>
-      <th style="padding:6px 8px;text-align:right">손익</th><th style="padding:6px 8px;text-align:right" title="그 토너 칩 EV 합">칩EV(bb)</th>
+      <th style="padding:6px 8px;text-align:right">손익</th>
       <th style="padding:6px 8px;text-align:right">핸드</th><th></th></tr>
-    ${rows}</table></div>`;
+    ${bodyRows}</table></div>`;
 
   // 역방향: 핸드는 있는데 기록 없는 유료 토너 ($0 프리롤 제외).
   // 티켓 입장(세틀에서 올라옴)은 버스트면 기록 불필요(돈 누락 아님) → 별도 그룹으로, 바이인 0 프리필.
@@ -1137,7 +1163,7 @@ function renderBankroll() {
         <div style="display:flex;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
           <span style="color:var(--dim);width:90px">${esc(u.start)}</span>
           <span style="flex:1">${esc(u.name)}</span>
-          <span style="color:var(--dim)">${u.hands}핸드 · 칩EV ${bankBB(u.net_bb)}</span>
+          <span style="color:var(--dim)">${u.hands}핸드</span>
           <button onclick="bankPrefill('${esc(u.name).replace(/'/g,'')}','${u.start}',${prefBuyin})">+ 본토너 기록</button>
         </div>`;
   const ulTicketBlock = ulTicket.length ? `
@@ -1155,9 +1181,9 @@ function renderBankroll() {
 
   const form = BANK_SHOWFORM ? bankForm() : '';
   $('#hands').innerHTML = cards + bankSpark(b.entries) + form
-    + `<div style="display:flex;gap:6px;margin-bottom:8px"><span style="color:var(--dim);font-size:13px;align-self:center">필터:</span>
-       ${fBtn('all','전체')} ${fBtn('itm','ITM만')} ${fBtn('unmatched','미매칭만')}
-       <span style="margin-left:auto;color:var(--dim);font-size:12px;align-self:center">${list.length}건 표시</span></div>`
+    + `<div style="display:flex;gap:6px;margin-bottom:8px"><span style="color:var(--dim);font-size:13px;align-self:center">보기:</span>
+       ${fBtn('all','캠페인 트리')} ${fBtn('itm','ITM만')} ${fBtn('unmatched','미매칭만')}
+       <span style="margin-left:auto;color:var(--dim);font-size:12px;align-self:center">${countLabel} 표시</span></div>`
     + unmatchedNote + table + unlogged;
 }
 
@@ -1201,7 +1227,8 @@ async function importText(text) {
   const data = await res.json();
   if (data.error) { toast(data.error); return; }
   applyData(data);
-  toast(`신규 ${data.added}개 추가 · 기존 ${data.skipped}개 스킵`);
+  toast(`신규 ${data.added}개 추가 · 기존 ${data.skipped}개 스킵`
+    + (data.bankroll_added ? ` · 뱅크롤 ${data.bankroll_added}토너 추가(상금 입력 필요)` : ''));
 }
 
 async function loadFiles(files) {
@@ -1381,12 +1408,14 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             text = self.rfile.read(length).decode("utf-8", errors="replace")
             added, skipped = store.import_text(DB, text, hero=hero)
+            bank_added = 0
             if added:
+                bank_added = bankroll.add_from_hands(DB)   # 새 핸드 토너를 뱅크롤에 자동 추가(상금은 수동 입력)
                 store.save_db(DB_PATH, DB)
             if not added and not skipped:
                 resp = {"error": "핸드를 찾지 못했습니다. 'CoinPoker Hand #' 로 시작하는 로그인지 확인하세요."}
             else:
-                resp = {"added": added, "skipped": skipped}
+                resp = {"added": added, "skipped": skipped, "bankroll_added": bank_added}
                 resp.update(store.tournament_list(DB))
                 resp["report"] = DB.get("report")
                 resp["analyzed_total"] = sum(1 for r in DB["hands"].values() if r.get("analysis"))
