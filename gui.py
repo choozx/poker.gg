@@ -813,7 +813,8 @@ function detectRebuys(allHands) {
   const ids = new Set();
   for (let i = 0; i < pairs.length - 1; i++) {
     const expected = Math.max(0, pairs[i].chips + (pairs[i].hand.net || 0));
-    if (pairs[i + 1].chips > expected + 100) ids.add(pairs[i].hand.hand_id);
+    const bbVal = parseFloat((pairs[i].hand.blinds || '').split('/')[1]) || 100;
+    if (pairs[i + 1].chips > expected + bbVal * 2) ids.add(pairs[i].hand.hand_id);
   }
   return ids;
 }
@@ -838,7 +839,8 @@ function tourneyStackChart(allHands) {
     drawPts.push(pts[i]);
     segments[segments.length - 1].push(idx);
     const end = Math.max(0, pts[i] + (valid[i].net || 0));
-    if (i < valid.length - 1 && pts[i + 1] > end + 100) {
+    const bbVal = parseFloat((valid[i].blinds || '').split('/')[1]) || 100;
+    if (i < valid.length - 1 && pts[i + 1] > end + bbVal * 2) {
       const bustIdx = drawPts.length;
       drawPts.push(end);                         // 버스트 → 0
       segments[segments.length - 1].push(bustIdx);
