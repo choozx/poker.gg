@@ -804,6 +804,36 @@ function visibleHands() {
 
 function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
 
+// 토너먼트 스택 변화 차트 (절대 칩량)
+function tourneyStackChart(allHands) {
+  const fmt = v => v >= 1000 ? (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(v));
+  const pts = allHands
+    .filter(h => h.stack_bb != null && h.blinds)
+    .map(h => {
+      const bbVal = parseFloat((h.blinds || '').split('/')[1]) || 0;
+      return bbVal ? Math.round(h.stack_bb * bbVal) : null;
+    })
+    .filter(v => v != null);
+  if (pts.length < 2) return '';
+  const W = 800, H = 80;
+  const mn = Math.min(...pts), mx = Math.max(...pts), range = mx - mn || 1;
+  const X = i => (i / (pts.length - 1) * W).toFixed(1);
+  const Y = v => (H - (v - mn) / range * H).toFixed(1);
+  const start = pts[0], last = pts[pts.length - 1];
+  const color = last >= start ? 'var(--green)' : 'var(--red)';
+  const polyPts = pts.map((v, i) => `${X(i)},${Y(v)}`).join(' ');
+  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
+    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">스택 변화 · ${pts.length}핸드 ·
+      시작 <b style="color:var(--text)">${fmt(start)}</b> → 최종 <b style="color:${color}">${fmt(last)}</b> chips</div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:80px;display:block">
+      <line x1="0" y1="${Y(start)}" x2="${W}" y2="${Y(start)}"
+            stroke="var(--border)" stroke-width="1" stroke-dasharray="4,3"/>
+      <polyline points="${polyPts}" fill="none" stroke="${color}"
+                stroke-width="2" vector-effect="non-scaling-stroke"/>
+    </svg>
+  </div>`;
+}
+
 function renderMain() {
   const t = currentTourney();
   const hands = visibleHands();
@@ -820,7 +850,7 @@ function renderMain() {
     <button onclick="toggleAll(false)">모두 접기</button>
     <button onclick="copyMd()">📋 마크다운 복사</button>
     <button class="primary" onclick="downloadMd()">⬇ .md 다운로드</button>`;
-  $('#hands').innerHTML = hands.map((h, i) => {
+  $('#hands').innerHTML = tourneyStackChart(t.hands || []) + hands.map((h, i) => {
     const tags = [];
     if (!h.vpip) tags.push('fold');
     if (h.showdown) tags.push('showdown');
