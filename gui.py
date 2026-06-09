@@ -862,7 +862,7 @@ function tourneyStackChart(allHands) {
       fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`)
     .join('');
   const dots = rebuyDots.map(i => {
-    const cx = parseFloat(X(i)), cy = parseFloat(Y(drawPts[i])), s = 5;
+    const cx = parseFloat(X(i)), cy = parseFloat(Y(drawPts[i])), s = 2.5;
     return `<polygon points="${cx},${cy-s} ${cx+s},${cy} ${cx},${cy+s} ${cx-s},${cy}"
       fill="${color}" vector-effect="non-scaling-stroke"/>`;
   }).join('');
