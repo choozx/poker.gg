@@ -852,7 +852,7 @@ function tourneyStackChart(allHands) {
   const finalIdx = drawPts.length;
   drawPts.push(Math.max(0, pts[pts.length - 1] + (valid[valid.length - 1].net || 0)));
   segments[segments.length - 1].push(finalIdx);
-  const W = 800, H = 80;
+  const W = 600, H = 140;
   const mn = Math.min(...drawPts), mx = Math.max(...drawPts), range = mx - mn || 1;
   const X = i => (i / (drawPts.length - 1) * W).toFixed(1);
   const Y = v => (H - (v - mn) / range * H).toFixed(1);
@@ -873,7 +873,7 @@ function tourneyStackChart(allHands) {
   return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
     <div style="color:var(--dim);font-size:12px;margin-bottom:4px">스택 변화 · ${valid.length}핸드${rebuyLabel} ·
       시작 <b style="color:var(--text)">${fmt(start)}</b> → 최종 <b style="color:${color}">${fmt(last)}</b> chips</div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:80px;display:block">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;max-width:600px;height:140px;display:block">
       <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
       ${polylines}
       ${dots}
