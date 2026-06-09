@@ -1018,6 +1018,36 @@ function bankRecost() {
   $('#bf-cost').value = (bi * en).toFixed(2);
 }
 
+// 바이인 추천 카드
+function bankRecommend(b) {
+  const r = b.recommendation;
+  if (!r) return '';
+  const colors = {up: 'var(--green)', stay: 'var(--accent)', caution: '#f0a500', down: 'var(--red)', neutral: 'var(--dim)'};
+  const c = colors[r.level] || 'var(--dim)';
+  let tierHtml = '';
+  if (r.tier_from) {
+    if (r.tier_to) {
+      tierHtml = `<div style="font-size:26px;font-weight:800;color:${c};letter-spacing:0.03em;margin:8px 0 6px">
+        ${esc(r.tier_from)}<span style="font-size:20px;margin:0 10px">→</span>${esc(r.tier_to)}
+      </div>`;
+    } else {
+      tierHtml = `<div style="font-size:26px;font-weight:800;color:${c};letter-spacing:0.03em;margin:8px 0 6px">
+        ${esc(r.tier_from)}
+      </div>`;
+    }
+  }
+  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:12px;color:var(--dim)">💡 바이인 추천</span>
+      <span style="font-weight:700;color:${c};font-size:13px">${esc(r.title)}</span>
+    </div>
+    ${tierHtml}
+    <div style="font-size:12px;color:var(--dim);margin-bottom:3px">${esc(r.stats || '')}</div>
+    <div style="font-size:13px;color:var(--text)">${esc(r.desc || '')}</div>
+    ${r.warning ? `<div style="font-size:12px;color:var(--gold);margin-top:6px">⚠ ${esc(r.warning)}</div>` : ''}
+  </div>`;
+}
+
 // 누적 손익 라인 (inline SVG)
 function bankSpark(entries) {
   if (entries.length < 2) return '';
@@ -1201,7 +1231,7 @@ function renderBankroll() {
     : '';
 
   const form = BANK_SHOWFORM ? bankForm() : '';
-  $('#hands').innerHTML = cards + bankSpark(b.entries) + form
+  $('#hands').innerHTML = cards + bankRecommend(b) + bankSpark(b.entries) + form
     + `<div style="display:flex;gap:6px;margin-bottom:8px"><span style="color:var(--dim);font-size:13px;align-self:center">보기:</span>
        ${fBtn('all','캠페인 트리')} ${fBtn('itm','ITM만')} ${fBtn('unmatched','미매칭만')}
        <span style="margin-left:auto;color:var(--dim);font-size:12px;align-self:center">${countLabel} 표시</span></div>`

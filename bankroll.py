@@ -455,6 +455,106 @@ def campaigns(db):
 # 집계 (뱅크롤 대시보드용)
 # ---------------------------------------------------------------------------
 
+def _buyin_tiers(paid):
+    """paid 엔트리에서 실제 바이인 티어 목록 (오름차순)과 주력 티어 인덱스.
+    25% 이내 금액은 같은 티어로 병합 — 더 많이 플레이한 값이 대표."""
+    from collections import Counter
+    c = Counter(round(e["buyin"], 2) for e in paid if e.get("buyin", 0) > 0)
+    if not c:
+        return [], -1
+    vals = sorted(c)
+    tiers, used = [], [False] * len(vals)
+    for i, v in enumerate(vals):
+        if used[i]:
+            continue
+        group = [v]
+        for j in range(i + 1, len(vals)):
+            if vals[j] <= v * 1.25:
+                group.append(vals[j])
+                used[j] = True
+            else:
+                break
+        rep = max(group, key=lambda x: c[x])
+        tiers.append((rep, sum(c[x] for x in group)))
+    reps = [t[0] for t in tiers]
+    cur = max(tiers, key=lambda t: t[1])[0]
+    return reps, reps.index(cur)
+
+
+def recommend_buyin(db):
+    """뱅크롤 성적 기반 바이인 추천 — ROI·ITM·추세·실제 티어 기반."""
+    b = db.get("bankroll") or {"entries": []}
+    paid = [e for e in b.get("entries", []) if e.get("cost", 0) > 0]
+    n = len(paid)
+
+    if n < 5:
+        return {
+            "level": "neutral",
+            "title": "데이터 부족",
+            "message": f"유료 토너 {n}개 기록됨. 5개 이상 쌓이면 추천이 시작됩니다.",
+            "warning": None,
+        }
+
+    total_cost = sum(e["cost"] for e in paid)
+    total_cash = sum(e["cash"] for e in paid)
+    roi = 100 * (total_cash - total_cost) / total_cost if total_cost else 0.0
+    itm_pct = 100 * sum(1 for e in paid if e["cash"] > 0) / n
+
+    # 최근 20게임 추세
+    recent = paid[-20:]
+    rc = sum(e["cost"] for e in recent)
+    recent_roi = 100 * (sum(e["cash"] for e in recent) - rc) / rc if rc else 0.0
+
+    tiers, cur_idx = _buyin_tiers(paid)
+
+    def _fmt(v):
+        return f"${v:.2f}".rstrip("0").rstrip(".")
+
+    def _tier_label(idx):
+        return _fmt(tiers[idx]) if 0 <= idx < len(tiers) else None
+
+    warning = f"샘플 {n}개 — 30개 이상이면 더 정확합니다" if n < 30 else None
+
+    if roi >= 15 and itm_pct >= 15 and n >= 30:
+        level, title = "up", "↑ 올릴 수 있음"
+        tier_to = _tier_label(cur_idx + 1) if cur_idx < len(tiers) - 1 else None
+        desc = "성적이 안정적입니다. 한 단계 높은 토너에 도전해 보세요." if tier_to else \
+               "현재 최고 티어입니다. 더 높은 스테이크에 도전해 보세요."
+    elif roi >= 5 or (roi >= 0 and itm_pct >= 18):
+        level, title = "stay", "→ 현재 유지"
+        tier_to = None
+        desc = "준수한 성적입니다. 현재 바이인대를 유지하세요."
+    elif roi >= -5:
+        level, title = "stay", "→ 현재 유지"
+        tier_to = None
+        desc = "소폭 마이너스입니다. 성적이 더 쌓이면 재평가하세요."
+    elif roi >= -15:
+        level, title = "caution", "⚠ 재검토 필요"
+        tier_to = _tier_label(cur_idx - 1) if cur_idx > 0 else None
+        desc = "손익이 마이너스입니다. 바이인 조정을 검토하세요."
+    else:
+        level, title = "down", "↓ 낮추기 권장"
+        tier_to = _tier_label(cur_idx - 1) if cur_idx > 0 else None
+        desc = "성적이 부진합니다. 낮은 바이인대에서 스킬을 쌓으세요."
+
+    # 최근 추세
+    trend = ""
+    if n >= 25 and recent_roi > roi + 10:
+        trend = f" 최근 20게임 ROI {recent_roi:+.1f}% — 상승 추세."
+    elif n >= 25 and recent_roi < roi - 15:
+        trend = f" 최근 20게임 ROI {recent_roi:+.1f}% — 하락 추세. 주의가 필요합니다."
+
+    return {
+        "level": level,
+        "title": title,
+        "tier_from": _tier_label(cur_idx),
+        "tier_to": tier_to,
+        "stats": f"ROI {roi:+.1f}% · ITM {itm_pct:.0f}% · {n}토너",
+        "desc": desc + trend,
+        "warning": warning,
+    }
+
+
 def summary(db):
     """뱅크롤 요약 + 엔트리(핸드 조인) + 미매칭/역방향 패널 데이터."""
     b = db.get("bankroll") or {"currency": "USD", "entries": []}
@@ -504,4 +604,5 @@ def summary(db):
         "unlogged": unlogged,
         "entries": rows,
         "tree": campaigns(db),
+        "recommendation": recommend_buyin(db),
     }
