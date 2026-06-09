@@ -807,15 +807,22 @@ function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
 // 토너먼트 스택 변화 차트 (절대 칩량)
 function tourneyStackChart(allHands) {
   const fmt = v => v >= 1000 ? (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(v));
-  const valid = allHands.filter(h => h.stack_bb != null && h.blinds);
-  const pts = valid.map(h => {
-    const bbVal = parseFloat((h.blinds || '').split('/')[1]) || 0;
-    return bbVal ? Math.round(h.stack_bb * bbVal) : null;
-  }).filter(v => v != null);
-  if (pts.length < 2) return '';
-  // 마지막 핸드의 ending 스택 추가 — 버스트 시 0으로 내려가도록
-  const lastHand = valid[valid.length - 1];
-  pts.push(Math.max(0, pts[pts.length - 1] + (lastHand.net || 0)));
+  // valid와 pts를 동기화해서 리바이 감지에 사용
+  const pairs = allHands
+    .filter(h => h.stack_bb != null && h.blinds)
+    .map(h => { const b = parseFloat((h.blinds || '').split('/')[1]) || 0; return b ? {hand: h, chips: Math.round(h.stack_bb * b)} : null; })
+    .filter(v => v != null);
+  if (pairs.length < 2) return '';
+  const valid = pairs.map(p => p.hand);
+  const pts = pairs.map(p => p.chips);
+  // 마지막 핸드 ending 스택 추가 — 버스트 시 0으로 내려가도록
+  pts.push(Math.max(0, pts[pts.length - 1] + (valid[valid.length - 1].net || 0)));
+  // 리바이 감지: 연속 핸드 간 기대 스택보다 실제 스택이 크게 오른 경우
+  const rebuys = [];
+  for (let i = 0; i < valid.length - 1; i++) {
+    const expected = Math.max(0, pts[i] + (valid[i].net || 0));
+    if (pts[i + 1] > expected + 100) rebuys.push({idx: i + 1, from: expected, to: pts[i + 1]});
+  }
   const W = 800, H = 80;
   const mn = Math.min(...pts), mx = Math.max(...pts), range = mx - mn || 1;
   const X = i => (i / (pts.length - 1) * W).toFixed(1);
@@ -823,12 +830,18 @@ function tourneyStackChart(allHands) {
   const start = pts[0], last = pts[pts.length - 1];
   const color = last >= start ? 'var(--green)' : 'var(--red)';
   const polyPts = pts.map((v, i) => `${X(i)},${Y(v)}`).join(' ');
+  const rebuyLines = rebuys.map(r =>
+    `<line x1="${X(r.idx)}" y1="${Y(r.from)}" x2="${X(r.idx)}" y2="${Y(r.to)}"
+           stroke="var(--gold)" stroke-width="2" stroke-dasharray="3,2" vector-effect="non-scaling-stroke"/>`
+  ).join('');
+  const rebuyLabel = rebuys.length
+    ? ` · <span style="color:var(--gold)">리바이 ${rebuys.length}회</span>` : '';
   return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
-    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">스택 변화 · ${pts.length}핸드 ·
+    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">스택 변화 · ${valid.length}핸드${rebuyLabel} ·
       시작 <b style="color:var(--text)">${fmt(start)}</b> → 최종 <b style="color:${color}">${fmt(last)}</b> chips</div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:80px;display:block">
-      <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}"
-            stroke="var(--border)" stroke-width="1"/>
+      <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
+      ${rebuyLines}
       <polyline points="${polyPts}" fill="none" stroke="${color}"
                 stroke-width="2" vector-effect="non-scaling-stroke"/>
     </svg>
