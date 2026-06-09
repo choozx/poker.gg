@@ -819,9 +819,27 @@ function detectRebuys(allHands) {
   return ids;
 }
 
+function _fmtChips(v) { return v >= 1000 ? (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(v)); }
+
+function stackChartHover(e, id) {
+  const d = window[id]; if (!d) return;
+  const svg = e.currentTarget;
+  const rect = svg.getBoundingClientRect();
+  const vx = (e.clientX - rect.left) / rect.width * d.W;
+  const idx = Math.max(0, Math.min(d.pts.length - 1, Math.round(vx / d.W * (d.pts.length - 1))));
+  const tip = document.getElementById(id + '_tip'); if (!tip) return;
+  const hand = d.hands[idx];
+  const chips = d.pts[idx];
+  tip.style.display = 'block';
+  const tx = e.clientX - rect.left, ty = e.clientY - rect.top;
+  tip.style.left = (tx + 12) + 'px';
+  tip.style.top = Math.max(0, ty - 28) + 'px';
+  tip.textContent = (hand ? '#' + hand.hand_id + '  ' : '') + _fmtChips(chips) + ' chips';
+}
+function stackChartHide(id) { const t = document.getElementById(id + '_tip'); if (t) t.style.display = 'none'; }
+
 // 토너먼트 스택 변화 차트 (절대 칩량)
 function tourneyStackChart(allHands) {
-  const fmt = v => v >= 1000 ? (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(v));
   const pairs = allHands
     .filter(h => h.stack_bb != null && h.blinds)
     .map(h => { const b = parseFloat((h.blinds || '').split('/')[1]) || 0; return b ? {hand: h, chips: Math.round(h.stack_bb * b)} : null; })
@@ -831,18 +849,19 @@ function tourneyStackChart(allHands) {
   const pts = pairs.map(p => p.chips);
   // 세그먼트 분할: 버스트+리바이 시점에 선을 끊고 리바이 시작점에 점 마커 표시
   const drawPts = [];
+  const drawHands = [];  // drawPts 인덱스 → hand (버스트/최종점은 null)
   const segments = [[]];   // 세그먼트별 drawPts 인덱스 목록
   const rebuyDots = [];    // 리바이 시작점 drawPts 인덱스
   let rebuyCount = 0;
   for (let i = 0; i < valid.length; i++) {
     const idx = drawPts.length;
-    drawPts.push(pts[i]);
+    drawPts.push(pts[i]); drawHands.push(valid[i]);
     segments[segments.length - 1].push(idx);
     const end = Math.max(0, pts[i] + (valid[i].net || 0));
     const bbVal = parseFloat((valid[i].blinds || '').split('/')[1]) || 100;
     if (i < valid.length - 1 && pts[i + 1] > end + bbVal * 2) {
       const bustIdx = drawPts.length;
-      drawPts.push(end);                         // 버스트 → 0
+      drawPts.push(end); drawHands.push(null);   // 버스트 → 0
       segments[segments.length - 1].push(bustIdx);
       segments.push([]);                         // 새 세그먼트 (선 끊김)
       rebuyDots.push(drawPts.length);            // 다음에 push될 인덱스 = 리바이 시작점
@@ -851,6 +870,7 @@ function tourneyStackChart(allHands) {
   }
   const finalIdx = drawPts.length;
   drawPts.push(Math.max(0, pts[pts.length - 1] + (valid[valid.length - 1].net || 0)));
+  drawHands.push(null);
   segments[segments.length - 1].push(finalIdx);
   const W = 900, H = 175;
   const mn = Math.min(...drawPts), mx = Math.max(...drawPts), range = mx - mn || 1;
@@ -870,14 +890,19 @@ function tourneyStackChart(allHands) {
   }).join('');
   const rebuyLabel = rebuyCount
     ? ` · <span style="color:var(--gold)">리바이 ${rebuyCount}회</span>` : '';
+  const cid = 'sc_' + Date.now();
+  window[cid] = { pts: drawPts, hands: drawHands, W };
   return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px;max-width:900px">
-    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">스택 변화 · ${valid.length}핸드${rebuyLabel} ·
-      시작 <b style="color:var(--text)">${fmt(start)}</b> → 최종 <b style="color:${color}">${fmt(last)}</b> chips</div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:175px;display:block">
-      <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
-      ${polylines}
-      ${dots}
-    </svg>
+    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">스택 변화 · ${valid.length}핸드${rebuyLabel}</div>
+    <div style="position:relative">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:175px;display:block;cursor:crosshair"
+        onmousemove="stackChartHover(event,'${cid}')" onmouseleave="stackChartHide('${cid}')">
+        <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
+        ${polylines}
+        ${dots}
+      </svg>
+      <div id="${cid}_tip" style="display:none;position:absolute;pointer-events:none;background:rgba(20,20,30,0.92);color:var(--text);font-size:11px;padding:3px 8px;border-radius:4px;white-space:nowrap;border:1px solid var(--border)"></div>
+    </div>
   </div>`;
 }
 
@@ -898,7 +923,7 @@ function renderMain() {
     <button onclick="copyMd()">📋 마크다운 복사</button>
     <button class="primary" onclick="downloadMd()">⬇ .md 다운로드</button>`;
   const rebuyIds = detectRebuys(t.hands || []);
-  $('#hands').innerHTML = tourneyStackChart(t.hands || []) + hands.map((h, i) => {
+  $('#hands').innerHTML = (SEL !== -1 ? tourneyStackChart(t.hands || []) : '') + hands.map((h, i) => {
     const tags = [];
     if (rebuyIds.has(h.hand_id)) tags.push('<span style="color:var(--gold)">리바이</span>');
     if (!h.vpip) tags.push('fold');
