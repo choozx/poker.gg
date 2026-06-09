@@ -828,25 +828,41 @@ function tourneyStackChart(allHands) {
   if (pairs.length < 2) return '';
   const valid = pairs.map(p => p.hand);
   const pts = pairs.map(p => p.chips);
-  // 중간 버스트마다 0을 삽입한 확장 포인트 — 폴리라인이 V자로 버스트/리바이를 직접 표현
+  // 세그먼트 분할: 버스트+리바이 시점에 선을 끊고 리바이 시작점에 점 마커 표시
   const drawPts = [];
+  const segments = [[]];   // 세그먼트별 drawPts 인덱스 목록
+  const rebuyDots = [];    // 리바이 시작점 drawPts 인덱스
   let rebuyCount = 0;
   for (let i = 0; i < valid.length; i++) {
+    const idx = drawPts.length;
     drawPts.push(pts[i]);
+    segments[segments.length - 1].push(idx);
     const end = Math.max(0, pts[i] + (valid[i].net || 0));
     if (i < valid.length - 1 && pts[i + 1] > end + 100) {
-      drawPts.push(end);   // 버스트 → 0으로 내려감
+      const bustIdx = drawPts.length;
+      drawPts.push(end);                         // 버스트 → 0
+      segments[segments.length - 1].push(bustIdx);
+      segments.push([]);                         // 새 세그먼트 (선 끊김)
+      rebuyDots.push(drawPts.length);            // 다음에 push될 인덱스 = 리바이 시작점
       rebuyCount++;
     }
   }
+  const finalIdx = drawPts.length;
   drawPts.push(Math.max(0, pts[pts.length - 1] + (valid[valid.length - 1].net || 0)));
+  segments[segments.length - 1].push(finalIdx);
   const W = 800, H = 80;
   const mn = Math.min(...drawPts), mx = Math.max(...drawPts), range = mx - mn || 1;
   const X = i => (i / (drawPts.length - 1) * W).toFixed(1);
   const Y = v => (H - (v - mn) / range * H).toFixed(1);
   const start = drawPts[0], last = drawPts[drawPts.length - 1];
   const color = last >= start ? 'var(--green)' : 'var(--red)';
-  const polyPts = drawPts.map((v, i) => `${X(i)},${Y(v)}`).join(' ');
+  const polylines = segments
+    .filter(seg => seg.length >= 2)
+    .map(seg => `<polyline points="${seg.map(i => `${X(i)},${Y(drawPts[i])}`).join(' ')}"
+      fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`)
+    .join('');
+  const dots = rebuyDots.map(i =>
+    `<circle cx="${X(i)}" cy="${Y(drawPts[i])}" r="4" fill="var(--gold)"/>`).join('');
   const rebuyLabel = rebuyCount
     ? ` · <span style="color:var(--gold)">리바이 ${rebuyCount}회</span>` : '';
   return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
@@ -854,8 +870,8 @@ function tourneyStackChart(allHands) {
       시작 <b style="color:var(--text)">${fmt(start)}</b> → 최종 <b style="color:${color}">${fmt(last)}</b> chips</div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:80px;display:block">
       <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
-      <polyline points="${polyPts}" fill="none" stroke="${color}"
-                stroke-width="2" vector-effect="non-scaling-stroke"/>
+      ${polylines}
+      ${dots}
     </svg>
   </div>`;
 }
