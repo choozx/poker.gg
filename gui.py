@@ -807,14 +807,15 @@ function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
 // 토너먼트 스택 변화 차트 (절대 칩량)
 function tourneyStackChart(allHands) {
   const fmt = v => v >= 1000 ? (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(v));
-  const pts = allHands
-    .filter(h => h.stack_bb != null && h.blinds)
-    .map(h => {
-      const bbVal = parseFloat((h.blinds || '').split('/')[1]) || 0;
-      return bbVal ? Math.round(h.stack_bb * bbVal) : null;
-    })
-    .filter(v => v != null);
+  const valid = allHands.filter(h => h.stack_bb != null && h.blinds);
+  const pts = valid.map(h => {
+    const bbVal = parseFloat((h.blinds || '').split('/')[1]) || 0;
+    return bbVal ? Math.round(h.stack_bb * bbVal) : null;
+  }).filter(v => v != null);
   if (pts.length < 2) return '';
+  // 마지막 핸드의 ending 스택 추가 — 버스트 시 0으로 내려가도록
+  const lastHand = valid[valid.length - 1];
+  pts.push(Math.max(0, pts[pts.length - 1] + (lastHand.net || 0)));
   const W = 800, H = 80;
   const mn = Math.min(...pts), mx = Math.max(...pts), range = mx - mn || 1;
   const X = i => (i / (pts.length - 1) * W).toFixed(1);
