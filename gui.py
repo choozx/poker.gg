@@ -827,8 +827,8 @@ function tourneyStackChart(allHands) {
     <div style="color:var(--dim);font-size:12px;margin-bottom:4px">스택 변화 · ${pts.length}핸드 ·
       시작 <b style="color:var(--text)">${fmt(start)}</b> → 최종 <b style="color:${color}">${fmt(last)}</b> chips</div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:80px;display:block">
-      <line x1="0" y1="${Y(start)}" x2="${W}" y2="${Y(start)}"
-            stroke="var(--border)" stroke-width="1" stroke-dasharray="4,3"/>
+      <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}"
+            stroke="var(--border)" stroke-width="1"/>
       <polyline points="${polyPts}" fill="none" stroke="${color}"
                 stroke-width="2" vector-effect="non-scaling-stroke"/>
     </svg>
