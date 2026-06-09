@@ -1,28 +1,18 @@
 """뱅크롤(실제 돈) 관리 — 핸드 데이터(칩 EV)와 별개 도메인.
 
 - 토너 결과(바이인/상금/손익)를 앱이 직접 보관: db["bankroll"]["entries"].
-- 기존 구글시트('토너먼트 기록' 탭)를 1회 이주(migrate)로 seed.
 - 각 엔트리는 핸드 DB 토너(tournament_id)에 매칭 → 돈 결과 ↔ 플레이 품질 조인.
 - 매칭은 *링크*일 뿐 *필터*가 아님 — 돈 합계는 매칭과 무관하게 전 엔트리를 집계.
+- 새 핸드 임포트 시 add_from_hands가 토너를 자동 추가(상금은 수동 입력).
 
-이주 이후엔 앱에서 직접 추가/수정(add_entry/update_entry)하며, 시트는 더 안 봐도 됨.
+(최초 seed는 구글시트 1회 이주로 했으나, 이제 앱이 원천이라 임포터는 제거됨.)
 """
 
 import datetime
-import io
 import re
-import urllib.request
-import xml.etree.ElementTree as ET
-import zipfile
 from collections import defaultdict
 
-# 구글시트 (링크 공유) — 워크북 전체를 xlsx로 받아 '토너먼트 기록' 탭만 파싱
-SHEET_ID = "1XbQ9qwYL0PYFZR8BFB-8a-aP-nmsoqltJPhRGBH4mKc"
-RECORDS_TAB = "토너먼트 기록"
-
 _BUYIN_RE = re.compile(r"₮\s*([0-9]+(?:\.[0-9]+)?)")
-_M = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 
 # ---------------------------------------------------------------------------
@@ -217,110 +207,7 @@ def _align(sheet_dates, sheet_cash, hand_dates, hand_hands, gap=6, max_match=12)
 
 
 # ---------------------------------------------------------------------------
-# 구글시트(xlsx) 읽기
-# ---------------------------------------------------------------------------
-
-def fetch_workbook():
-    """링크 공유된 시트를 xlsx 바이트로 받음 (stdlib urllib, 리다이렉트 자동 추적)."""
-    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
-    with urllib.request.urlopen(url, timeout=60) as resp:
-        return resp.read()
-
-
-def _read_sheet(xlsx_bytes, tab_name):
-    """xlsx 바이트에서 지정 탭의 행들을 [[셀,...], ...]로. (zipfile+xml, 무의존성)"""
-    z = zipfile.ZipFile(io.BytesIO(xlsx_bytes))
-    shared = []
-    if "xl/sharedStrings.xml" in z.namelist():
-        sst = ET.fromstring(z.read("xl/sharedStrings.xml"))
-        for si in sst.findall(f"{{{_M}}}si"):
-            shared.append("".join(t.text or "" for t in si.iter(f"{{{_M}}}t")))
-    wb = ET.fromstring(z.read("xl/workbook.xml"))
-    rels = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
-    relmap = {r.get("Id"): r.get("Target") for r in rels}
-    target = None
-    for s in wb.iter(f"{{{_M}}}sheet"):
-        if s.get("name") == tab_name:
-            target = relmap.get(s.get(f"{{{_R}}}id"))
-            break
-    if not target:
-        raise ValueError(f"탭 '{tab_name}'을 찾을 수 없습니다.")
-
-    def colnum(ref):
-        c = "".join(ch for ch in ref if ch.isalpha())
-        n = 0
-        for ch in c:
-            n = n * 26 + (ord(ch) - 64)
-        return n - 1
-
-    sh = ET.fromstring(z.read("xl/" + target))
-    rows = []
-    for row in sh.iter(f"{{{_M}}}row"):
-        cells = {}
-        for c in row.findall(f"{{{_M}}}c"):
-            t, v = c.get("t"), c.find(f"{{{_M}}}v")
-            val = shared[int(v.text)] if (t == "s" and v is not None) else (v.text if v is not None else "")
-            cells[colnum(c.get("r"))] = val
-        rows.append([cells.get(i, "") for i in range(max(cells) + 1)] if cells else [])
-    return rows
-
-
-def _fnum(x):
-    try:
-        return float(str(x).replace(",", ""))
-    except (ValueError, AttributeError):
-        return 0.0
-
-
-def _serial_to_iso(s):
-    try:
-        return (datetime.date(1899, 12, 30) + datetime.timedelta(days=int(float(s)))).isoformat()
-    except (ValueError, TypeError):
-        return ""
-
-
-def parse_records(xlsx_bytes):
-    """'토너먼트 기록' 탭 → 엔트리 dict 리스트 (헤더로 컬럼 매핑, 빈 행 제외)."""
-    rows = _read_sheet(xlsx_bytes, RECORDS_TAB)
-    # 헤더 행 찾기 ('토너먼트명' 포함)
-    hi = next((i for i, r in enumerate(rows) if any("토너먼트명" in str(c) for c in r)), None)
-    if hi is None:
-        raise ValueError("'토너먼트명' 헤더를 찾지 못했습니다.")
-    header = [str(c).strip() for c in rows[hi]]
-
-    def col(key):
-        return next((i for i, h in enumerate(header) if h.startswith(key)), None)
-
-    ci = {k: col(k) for k in ["날짜", "토너먼트명", "바이인", "바이인/리바이", "총 비용",
-                              "순위", "상금", "손익", "메모"]}
-
-    def cell(r, key):
-        i = ci[key]
-        return r[i] if (i is not None and i < len(r)) else ""
-
-    out = []
-    for r in rows[hi + 1:]:
-        name = str(cell(r, "토너먼트명")).strip()
-        if not name:
-            continue
-        cost = _fnum(cell(r, "총 비용"))
-        cash = _fnum(cell(r, "상금"))
-        out.append({
-            "date": _serial_to_iso(cell(r, "날짜")),
-            "name": name,
-            "buyin": _fnum(cell(r, "바이인")),
-            "entries": int(_fnum(cell(r, "바이인/리바이")) or 1),
-            "cost": cost,
-            "rank": str(cell(r, "순위")).strip(),
-            "cash": cash,
-            "pnl": round(cash - cost, 2),
-            "memo": str(cell(r, "메모")).strip(),
-        })
-    return out
-
-
-# ---------------------------------------------------------------------------
-# 엔트리 저장/이주
+# 엔트리 저장/추가/수정
 # ---------------------------------------------------------------------------
 
 def _bank(db):
@@ -333,52 +220,8 @@ def _new_id(b):
     return f"b{i}"
 
 
-def migrate_from_sheet(db, xlsx_bytes=None):
-    """시트 '토너먼트 기록'을 db["bankroll"]로 이주(전체 교체). 핸드 토너에 자동 매칭.
-
-    (added, matched, unmatched) 반환. 기존 엔트리는 덮어씀(seed 성격)."""
-    if xlsx_bytes is None:
-        xlsx_bytes = fetch_workbook()
-    records = parse_records(xlsx_bytes)            # 시간순 (시트 행 순서)
-    ht = hand_tournaments(db)
-
-    # 이름별 핸드 토너 (시작시각순) / 시트 레코드(이미 시간순) 그룹핑.
-    # match_key로 묶음(프리롤은 하나의 'freeroll' 그룹). 핸드는 (날짜, 핸드수), 시트는 상금을
-    # 정렬 타이브레이크로 사용 → 같은 날 딥런↔딥런 매칭.
-    hand_groups = defaultdict(list)
-    for tid, a in ht.items():
-        hand_groups[_match_key(a["name"])].append((_session_date(a["start"]), tid, a["hands"]))
-    for g in hand_groups.values():
-        g.sort()
-    sheet_groups = defaultdict(list)
-    for i, rec in enumerate(records):
-        sheet_groups[_match_key(rec["name"])].append(i)
-
-    # 이름 그룹마다 순서보존 정렬로 시트행 → tid 배정
-    tid_for = {}
-    for key, sidxs in sheet_groups.items():
-        hands = hand_groups.get(key)
-        if not hands:
-            continue
-        amap = _align([records[i]["date"] for i in sidxs], [records[i]["cash"] for i in sidxs],
-                      [d for d, _, _ in hands], [hn for _, _, hn in hands])
-        for k, hk in amap.items():
-            tid_for[sidxs[k]] = hands[hk][1]
-
-    # 수동 강제 링크는 재이주에도 유지 (key = "date|name")
-    overrides = (db.get("bankroll") or {}).get("overrides", {})
-    b = {"currency": "USD", "next_id": 1, "entries": [], "overrides": overrides}
-    for i, rec in enumerate(records):
-        tid = overrides.get(f"{rec['date']}|{rec['name']}", tid_for.get(i))
-        b["entries"].append(dict(rec, id=_new_id(b), tournament_id=tid, source="sheet"))
-    matched = sum(1 for e in b["entries"] if e.get("tournament_id"))
-    db["bankroll"] = b
-    return len(records), matched, len(records) - matched
-
-
 def set_override(db, date, name, tid):
-    """빈 핸드(미매칭) 엔트리를 특정 토너에 강제 링크. 재이주에도 유지됨(앞으로 시트 연동 안 함).
-    tid=None 으로 호출하면 강제 링크 해제."""
+    """빈 핸드(미매칭) 엔트리를 특정 토너에 강제 링크. tid=None 으로 호출하면 해제."""
     b = _bank(db)
     ov = b.setdefault("overrides", {})
     k = f"{date}|{name}"
@@ -662,30 +505,3 @@ def summary(db):
         "entries": rows,
         "tree": campaigns(db),
     }
-
-
-# ---------------------------------------------------------------------------
-# CLI: 1회 이주
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import argparse
-    import store
-
-    ap = argparse.ArgumentParser(description="뱅크롤 시트 이주")
-    ap.add_argument("--db", default="hands_db.json")
-    ap.add_argument("--dry", action="store_true", help="저장 없이 통계만")
-    ap.add_argument("--xlsx", help="로컬 xlsx 경로 (없으면 시트 다운로드)")
-    args = ap.parse_args()
-
-    db = store.load_db(args.db)
-    data = open(args.xlsx, "rb").read() if args.xlsx else fetch_workbook()
-    added, matched, unmatched = migrate_from_sheet(db, data)
-    s = summary(db)
-    print(f"이주: {added}엔트리 · 매칭 {matched} · 미매칭 {unmatched}")
-    print(f"순손익 ${s['profit']} · ROI {s['roi']}% · ITM {s['itm_pct']}% · "
-          f"비용 ${s['total_cost']} · 상금 ${s['total_cash']}")
-    print(f"미매칭 {len(s['unmatched'])}건 · 역방향(시트누락) {len(s['unlogged'])}건")
-    if not args.dry:
-        store.save_db(args.db, db)
-        print(f"저장 완료 → {args.db}")
