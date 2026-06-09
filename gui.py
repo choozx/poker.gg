@@ -804,10 +804,23 @@ function visibleHands() {
 
 function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
 
+// 리바이 감지: hand_id Set 반환 (리바이 직후 첫 핸드들)
+function detectRebuys(allHands) {
+  const pairs = allHands
+    .filter(h => h.stack_bb != null && h.blinds)
+    .map(h => { const b = parseFloat((h.blinds || '').split('/')[1]) || 0; return b ? {hand: h, chips: Math.round(h.stack_bb * b)} : null; })
+    .filter(v => v != null);
+  const ids = new Set();
+  for (let i = 0; i < pairs.length - 1; i++) {
+    const expected = Math.max(0, pairs[i].chips + (pairs[i].hand.net || 0));
+    if (pairs[i + 1].chips > expected + 100) ids.add(pairs[i + 1].hand.hand_id);
+  }
+  return ids;
+}
+
 // 토너먼트 스택 변화 차트 (절대 칩량)
 function tourneyStackChart(allHands) {
   const fmt = v => v >= 1000 ? (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(Math.round(v));
-  // valid와 pts를 동기화해서 리바이 감지에 사용
   const pairs = allHands
     .filter(h => h.stack_bb != null && h.blinds)
     .map(h => { const b = parseFloat((h.blinds || '').split('/')[1]) || 0; return b ? {hand: h, chips: Math.round(h.stack_bb * b)} : null; })
@@ -815,9 +828,7 @@ function tourneyStackChart(allHands) {
   if (pairs.length < 2) return '';
   const valid = pairs.map(p => p.hand);
   const pts = pairs.map(p => p.chips);
-  // 마지막 핸드 ending 스택 추가 — 버스트 시 0으로 내려가도록
   pts.push(Math.max(0, pts[pts.length - 1] + (valid[valid.length - 1].net || 0)));
-  // 리바이 감지: 연속 핸드 간 기대 스택보다 실제 스택이 크게 오른 경우
   const rebuys = [];
   for (let i = 0; i < valid.length - 1; i++) {
     const expected = Math.max(0, pts[i] + (valid[i].net || 0));
@@ -864,8 +875,10 @@ function renderMain() {
     <button onclick="toggleAll(false)">모두 접기</button>
     <button onclick="copyMd()">📋 마크다운 복사</button>
     <button class="primary" onclick="downloadMd()">⬇ .md 다운로드</button>`;
+  const rebuyIds = detectRebuys(t.hands || []);
   $('#hands').innerHTML = tourneyStackChart(t.hands || []) + hands.map((h, i) => {
     const tags = [];
+    if (rebuyIds.has(h.hand_id)) tags.push('<span style="color:var(--gold)">리바이</span>');
     if (!h.vpip) tags.push('fold');
     if (h.showdown) tags.push('showdown');
     if (SEL === -1 && h.tournament_name) tags.unshift(esc(h.tournament_name));  // 복기 뷰: 출처 토너
