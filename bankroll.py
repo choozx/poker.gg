@@ -245,6 +245,7 @@ def add_entry(db, fields):
     e = _normalize_entry(db, dict(fields))
     e["id"] = _new_id(b)
     e["source"] = e.get("source") or "manual"
+    e["confirmed"] = True                       # 직접 입력한 것이므로 확인 완료
     b["entries"].append(e)
     return e
 
@@ -253,9 +254,20 @@ def update_entry(db, entry_id, fields):
     b = _bank(db)
     for i, e in enumerate(b["entries"]):
         if e["id"] == entry_id:
-            merged = _normalize_entry(db, {**e, **fields, "id": entry_id})
+            # 사용자가 손댄(상금 등) 엔트리는 확인 완료로 표시
+            merged = _normalize_entry(db, {**e, **fields, "id": entry_id, "confirmed": True})
             b["entries"][i] = merged
             return merged
+    return None
+
+
+def confirm_entry(db, entry_id):
+    """버스트 등으로 상금 입력이 불필요한 신규 토너를 '확인'만 처리 (상금은 그대로)."""
+    b = _bank(db)
+    for e in b["entries"]:
+        if e["id"] == entry_id:
+            e["confirmed"] = True
+            return e
     return None
 
 
@@ -305,6 +317,7 @@ def add_from_hands(db, include_freerolls=True):
             "id": _new_id(b), "date": d, "name": t["name"],
             "buyin": buyin, "entries": 1, "cost": buyin, "cash": 0.0, "pnl": round(-buyin, 2),
             "rank": "", "memo": "핸드기준 추가", "tournament_id": tid, "source": "hand",
+            "confirmed": False,                  # 신규 자동등록 → 사용자 확인 대기(상금 입력 or ✓확인)
         })
         added += 1
     return added
@@ -449,8 +462,11 @@ def campaigns(db):
         else:
             roots.extend(deco(s) for s in grp)
 
-    # 최신이 위, 오래된 토너가 아래. 같은 날짜는 실제 토너 시작시각으로 시간순 정렬(없으면 id).
-    roots.sort(key=lambda n: (n.get("date") or "", n.get("_start") or "", n.get("id") or ""),
+    # 확인 대기(미확인) 토너를 항상 상단에. 그 안/그 외엔 최신순(같은 날짜는 시작시각→id).
+    def _pending(n):
+        return not n.get("confirmed", True) or any(
+            not c.get("confirmed", True) for c in n.get("children", []))
+    roots.sort(key=lambda n: (_pending(n), n.get("date") or "", n.get("_start") or "", n.get("id") or ""),
                reverse=True)
     return roots
 

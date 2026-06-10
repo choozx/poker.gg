@@ -1326,6 +1326,12 @@ async function bankSave() {
   BANKROLL = data; BANK_SHOWFORM = false; BANK_EDIT = null; BANK_PREFILL = null;
   renderBankroll(); toast(body.id ? '수정됨' : '추가됨');
 }
+async function bankConfirm(id) {
+  const data = await fetch('/api/bankroll/confirm', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}),
+  }).then(r => r.json());
+  BANKROLL = data; renderBankroll(); toast('확인됨');
+}
 async function bankDelete(id) {
   if (!confirm('이 기록을 삭제할까요?')) return;
   const data = await fetch('/api/bankroll/delete', {
@@ -1374,7 +1380,14 @@ function bankRowTr(e, opts) {
     : ` <span style="color:var(--dim);font-size:11px" title="세틀에서 버스트(핸드 판정)">버스트</span>`) : '';
   const extra = `${e.entries>1?` <span style="color:var(--dim)">×${e.entries}</span>`:''}${e.rank?` <span style="color:var(--dim)">${esc(e.rank)}</span>`:''}`;
   const hide = opts.isChild ? 'display:none;background:rgba(0,0,0,.15);' : '';
+  const pending = e.confirmed === false;        // 신규 자동등록 → 확인 대기
+  // 맨 왼쪽: 상태 표시 전용 칸 (지금은 확인 대기 태그, 향후 다른 뱃지도 여기)
+  const statusCell = `<td style="padding:6px 6px;white-space:nowrap">${pending?'<span style="color:var(--gold);font-size:11px">⚠ 확인 필요</span>':''}</td>`;
+  const confirmBtn = pending
+    ? `<a href="#" title="확인 (버스트 등 상금 입력 불필요)" style="color:var(--green);font-size:14px;margin-right:8px" onclick="event.preventDefault();bankConfirm('${e.id}')">✓</a>`
+    : '';
   return `<tr class="${opts.isChild?('kid-'+opts.kidOf):''}" style="border-bottom:1px solid var(--border);${hide}">
+    ${statusCell}
     <td style="padding:6px 8px;white-space:nowrap;color:var(--dim)">${esc(e.date || '')}</td>
     <td style="padding:6px 8px">${name}${oc}${extra}</td>
     <td style="padding:6px 8px;text-align:right;color:var(--dim)">$${e.cost.toFixed(2)}</td>
@@ -1382,8 +1395,9 @@ function bankRowTr(e, opts) {
     <td style="padding:6px 8px;text-align:right;font-weight:600">${bankMoney(e.pnl, true)}</td>
     <td style="padding:6px 8px;text-align:right;font-size:12px">${badge}</td>
     <td style="padding:6px 8px;text-align:right;white-space:nowrap">
-      <a href="#" style="color:var(--dim);font-size:12px" onclick="event.preventDefault();bankEdit('${e.id}')">수정</a>
-      <a href="#" style="color:var(--dim);font-size:12px;margin-left:6px" onclick="event.preventDefault();bankDelete('${e.id}')">삭제</a>
+      ${confirmBtn}
+      <a href="#" title="수정" style="font-size:14px;text-decoration:none" onclick="event.preventDefault();bankEdit('${e.id}')">✏️</a>
+      <a href="#" title="삭제" style="font-size:14px;text-decoration:none;margin-left:8px" onclick="event.preventDefault();bankDelete('${e.id}')">🗑️</a>
     </td></tr>`;
 }
 function bankToggle(id) {
@@ -1419,6 +1433,8 @@ function renderBankroll() {
   let items = isTree ? b.tree : b.entries.slice().reverse();
   if (BANK_FILTER === 'unmatched') items = items.filter(e => !e.tournament_id);
   else if (BANK_FILTER === 'itm') items = items.filter(e => e.cash > 0);
+  // 평면 뷰도 확인 대기(미확인)를 상단으로 (트리는 백엔드에서 이미 정렬). stable sort라 그 외 순서 유지
+  if (!isTree) items = items.slice().sort((a, b) => (a.confirmed===false?0:1) - (b.confirmed===false?0:1));
   const total = items.length;
   const pages = Math.max(1, Math.ceil(total / BANK_PAGE_SIZE));
   if (BANK_PAGE >= pages) BANK_PAGE = pages - 1;
@@ -1435,6 +1451,7 @@ function renderBankroll() {
     + (pages > 1 ? ` · ${BANK_PAGE + 1}/${pages}p` : '');
   const table = `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
     <tr style="color:var(--dim);text-align:left;border-bottom:1px solid var(--border)">
+      <th style="padding:6px 6px"></th>
       <th style="padding:6px 8px">날짜</th><th style="padding:6px 8px">토너먼트</th>
       <th style="padding:6px 8px;text-align:right">비용</th><th style="padding:6px 8px;text-align:right">상금</th>
       <th style="padding:6px 8px;text-align:right">손익</th>
@@ -1770,7 +1787,7 @@ class Handler(BaseHTTPRequestHandler):
                     "hand_count": len(analyzed),
                 }
                 persist(DB)
-        elif self.path in ("/api/bankroll/entry", "/api/bankroll/delete"):
+        elif self.path in ("/api/bankroll/entry", "/api/bankroll/delete", "/api/bankroll/confirm"):
             length = int(self.headers.get("Content-Length", 0))
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -1780,6 +1797,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/bankroll/delete":
                 bankroll.delete_entry(DB, body.get("id"))
+            elif self.path == "/api/bankroll/confirm":
+                bankroll.confirm_entry(DB, body.get("id"))
             elif body.get("id"):
                 bankroll.update_entry(DB, body["id"], body)
             else:
