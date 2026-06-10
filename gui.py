@@ -1212,6 +1212,7 @@ function bankRecommend(b) {
     ${tierHtml}
     <div style="font-size:12px;color:var(--dim);margin-bottom:3px">${esc(r.stats || '')}</div>
     <div style="font-size:13px;color:var(--text)">${esc(r.desc || '')}</div>
+    ${r.next_step ? `<div style="font-size:12px;color:var(--accent);margin-top:6px">↗ ${esc(r.next_step)}</div>` : ''}
     ${r.warning ? `<div style="font-size:12px;color:var(--gold);margin-top:6px">⚠ ${esc(r.warning)}</div>` : ''}
   </div>`;
 }

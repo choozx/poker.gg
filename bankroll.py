@@ -9,7 +9,9 @@
 """
 
 import datetime
+import math
 import re
+import statistics
 from collections import defaultdict
 
 _BUYIN_RE = re.compile(r"₮\s*([0-9]+(?:\.[0-9]+)?)")
@@ -485,6 +487,22 @@ def current_balance(db):
     }
 
 
+def _required_buyins(tois, ruin=0.05):
+    """변동성(분산) 기반 적정 뱅크롤을 '바이인 수'로 반환. 내부 계산용 — RoR 수치는 노출 안 함.
+
+    tois = 토너별 바이인 단위 손익(pnl/buyin) 리스트. 정규근사 RoR=exp(-2·μ·B/σ²)을
+    목표 파산확률 ruin(기본 5%)로 역산: B = -ln(ruin)·σ²/(2μ).
+    μ<=0(지는 플레이어)·표본 부족·분산 0이면 None → 호출부에서 100바이인 룰로 폴백."""
+    if len(tois) < 10:
+        return None
+    mu = statistics.mean(tois)
+    sigma = statistics.pstdev(tois)
+    if mu <= 0 or sigma == 0:
+        return None
+    b = -math.log(ruin) * sigma ** 2 / (2 * mu)
+    return max(20, min(500, round(b)))          # 20~500바이인 사이로 클램프
+
+
 def _buyin_tiers(paid):
     """paid 엔트리에서 실제 바이인 티어 목록 (오름차순)과 주력 티어 인덱스.
     25% 이내 금액은 같은 티어로 병합 — 더 많이 플레이한 값이 대표."""
@@ -572,30 +590,47 @@ def recommend_buyin(db):
     elif n >= 25 and recent_roi < roi - 15:
         trend = f" 최근 20게임 ROI {recent_roi:+.1f}% — 하락 추세. 주의가 필요합니다."
 
-    # 잔고(자금) 가드 — 성적(ROI)과 별개로 "지금 잔고로 칠 만한가"를 반영.
-    # MTT는 분산이 커 통상 100바이인 이상을 권장.
+    # 자금 가드 — 성적과 별개로 "지금 칠 만한가" + "윗단계 가려면 뭐가 필요한가".
+    # 본인 분산 기반 적정 바이인 수(safe_bi)를 내부 계산하되, 화면엔 직관적 조건만.
     warnings = [f"샘플 {n}개 — 30개 이상이면 더 정확합니다"] if n < 30 else []
     bal = current_balance(db)
     bankroll_amt = bal["balance"] if bal else None
-    bal_note = ""
+    tois = [e["pnl"] / e["buyin"] for e in paid if e.get("buyin")]
+    safe_bi = _required_buyins(tois) or 100               # 못 구하면 100바이인 룰로 폴백
+    next_step = None
     cushion = None
     if bankroll_amt is not None and tiers and 0 <= cur_idx < len(tiers):
         cur_bi = tiers[cur_idx]
         cushion = bankroll_amt / cur_bi if cur_bi else None
-        affordable = bankroll_amt / 100                       # 100바이인 룰
-        if cushion is not None:
-            bal_note = (f" 잔고 ${bankroll_amt:.0f} = 현재 바이인 {cushion:.0f}개"
-                        f" · 잔고 기준 ~{_fmt(affordable)}까지 권장(100바이인).")
-        # 성적은 올리라 해도 잔고가 다음 티어 100바이인 미만이면 보류
-        if level == "up" and tier_to:
+        if cushion is not None and cushion < safe_bi * 0.6:
+            warnings.append(f"잔고가 현재 바이인 {cushion:.0f}개뿐 — 분산 대비 얇음(권장 {safe_bi}개)")
+
+        # 윗단계 도전 조건 (직관적: 잔고 + 성적)
+        if cur_idx < len(tiers) - 1:
             next_bi = tiers[cur_idx + 1]
-            if next_bi and bankroll_amt / next_bi < 100:
-                level, title = "stay", "→ 유지 (잔고 한도)"
-                tier_to = None
-                desc = (f"성적은 올릴 만하지만 잔고 기준 {_tier_label(cur_idx + 1)}는 "
-                        f"{bankroll_amt / next_bi:.0f}바이인뿐입니다. 잔고를 더 쌓고 올리세요.")
-        if cushion is not None and cushion < 40:
-            warnings.append(f"잔고가 현재 바이인의 {cushion:.0f}배뿐 — 분산에 취약(권장 100+)")
+            nlbl = _tier_label(cur_idx + 1)
+            need = safe_bi * next_bi
+            gap = need - bankroll_amt
+            lacks = []
+            if roi < 15:
+                lacks.append(f"ROI +15%(지금 {roi:+.0f}%)")
+            if itm_pct < 15:
+                lacks.append(f"ITM 15%(지금 {itm_pct:.0f}%)")
+            skill_txt = " · ".join(lacks)                     # 부족한 지표만
+            if gap <= 0 and not lacks:
+                next_step = f"윗단계 {nlbl} 도전 가능 — 잔고·성적 모두 충분."
+            elif gap > 0 and lacks:
+                next_step = f"윗단계 {nlbl}: 잔고 {_fmt(need)} 권장(지금 {_fmt(bankroll_amt)}) + {skill_txt}까지."
+            elif gap > 0:
+                next_step = f"윗단계 {nlbl}: 잔고 {_fmt(need)} 권장 — {_fmt(gap)} 더 모으면."
+            else:
+                next_step = f"윗단계 {nlbl}: 자금은 충분, {skill_txt}까지."
+
+        # 성적은 올리라 해도 잔고가 윗단계 권장 잔고 미만이면 보류
+        if level == "up" and tier_to and bankroll_amt < safe_bi * tiers[cur_idx + 1]:
+            level, title = "stay", "→ 유지 (잔고 한도)"
+            tier_to = None
+            desc = "성적은 올릴 만하지만, 윗단계에 권장되는 잔고가 아직 부족합니다."
 
     return {
         "level": level,
@@ -603,7 +638,8 @@ def recommend_buyin(db):
         "tier_from": _tier_label(cur_idx),
         "tier_to": tier_to,
         "stats": f"ROI {roi:+.1f}% · ITM {itm_pct:.0f}% · {n}토너",
-        "desc": desc + trend + bal_note,
+        "desc": desc + trend,
+        "next_step": next_step,
         "warning": " / ".join(warnings) or None,
         "bankroll": bankroll_amt,
         "cushion": round(cushion, 1) if cushion is not None else None,
