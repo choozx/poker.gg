@@ -4,6 +4,9 @@ hands_db.json.tmp
 hands_db.json.bak
 *.db.json
 
+# 클라우드 동기화 설정 (PAT 토큰 포함 — 절대 커밋 금지)
+.ahh_sync.env
+
 # 내보내기 산출물
 tournament_*.md
 

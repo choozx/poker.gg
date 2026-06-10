@@ -398,7 +398,7 @@ def campaigns(db):
     def deco(e):
         t = ht.get(e.get("tournament_id"))
         return {**e, "hands": t["hands"] if t else 0, "net_bb": t["net_bb"] if t else None,
-                "is_sat": is_satellite(e["name"]),
+                "is_sat": is_satellite(e["name"]), "_start": t["start"] if t else "",
                 "outcome": outcome(e) if is_satellite(e["name"]) else None, "children": []}
 
     mains = [e for e in entries if not is_satellite(e["name"])]
@@ -447,7 +447,9 @@ def campaigns(db):
         else:
             roots.extend(deco(s) for s in grp)
 
-    roots.sort(key=lambda n: (n.get("date") or ""), reverse=True)
+    # 최신이 위, 오래된 토너가 아래. 같은 날짜는 실제 토너 시작시각으로 시간순 정렬(없으면 id).
+    roots.sort(key=lambda n: (n.get("date") or "", n.get("_start") or "", n.get("id") or ""),
+               reverse=True)
     return roots
 
 

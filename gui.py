@@ -8,6 +8,7 @@
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bankroll
+import cloud_sync
 import store
 
 
@@ -158,7 +160,69 @@ def select_backend(choice):
 # ---------------------------------------------------------------------------
 
 DB = None        # main()에서 로드되는 핸드 DB
-DB_PATH = None
+DB_PATH = None   # 로컬 저장 경로 (클라우드 모드면 ~/.cache 캐시, 아니면 --db)
+
+# --- 클라우드 동기화 (opt-in) ------------------------------------------------
+# 저장(persist)될 때마다 변경을 표시하고, 잠잠해지면(디바운스) 딱 한 번 업로드한다.
+# 내용이 직전 업로드와 같으면 스킵 → 과금·트래픽·API 호출 최소.
+CLOUD = False                      # main()에서 cloud_sync.available()로 결정
+DEBOUNCE_SEC = 8.0
+_push_lock = threading.Lock()
+_push_timer = None
+_last_pushed_hash = None
+_db_dirty = False
+
+
+def _db_hash(db):
+    return hashlib.sha256(json.dumps(db, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _do_push():
+    """디바운스 만료/종료 시 실제 업로드. 내용이 직전과 같으면 스킵."""
+    global _last_pushed_hash, _db_dirty
+    with _push_lock:
+        if not _db_dirty:
+            return
+        h = _db_hash(DB)
+        if h == _last_pushed_hash:        # 저장은 일어났지만 내용 동일(예: --rebuild)
+            _db_dirty = False
+            return
+        try:
+            n = cloud_sync.push(DB)
+            _last_pushed_hash = h
+            _db_dirty = False
+            print(f"☁️  클라우드 동기화 완료 ({n / 1e6:.1f} MB)")
+        except cloud_sync.CloudError as e:
+            print(f"⚠️  클라우드 업로드 실패 (로컬 캐시는 보존됨): {e}")
+
+
+def _schedule_push():
+    """변경 발생 시 호출 — 디바운스 타이머 리셋. 연속 변경은 하나로 묶인다."""
+    global _push_timer, _db_dirty
+    _db_dirty = True
+    if _push_timer is not None:
+        _push_timer.cancel()
+    _push_timer = threading.Timer(DEBOUNCE_SEC, _do_push)
+    _push_timer.daemon = True
+    _push_timer.start()
+
+
+def _flush_push():
+    """종료 시 — 대기 중 업로드를 즉시 마무리."""
+    global _push_timer
+    if _push_timer is not None:
+        _push_timer.cancel()
+        _push_timer = None
+    _do_push()
+
+
+def persist(db):
+    """DB를 로컬에 원자적으로 저장하고, 클라우드 모드면 디바운스 push를 예약한다.
+    저장 지점은 모두 이 함수를 거친다 (store.save_db 직접 호출 대신)."""
+    store.save_db(DB_PATH, db)
+    if CLOUD:
+        _schedule_push()
+
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="ko">
@@ -1140,7 +1204,7 @@ function bankRecommend(b) {
       </div>`;
     }
   }
-  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:12px 14px;margin-bottom:14px">
+  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:12px 14px;height:100%;box-sizing:border-box">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <span style="font-size:12px;color:var(--dim)">💡 바이인 추천</span>
       <span style="font-weight:700;color:${c};font-size:13px">${esc(r.title)}</span>
@@ -1156,14 +1220,14 @@ function bankRecommend(b) {
 function bankSpark(entries) {
   if (entries.length < 2) return '';
   const ys = entries.map(e => e.cum_pnl);
-  const mn = Math.min(0, ...ys), mx = Math.max(0, ...ys), W = 800, H = 90, n = ys.length;
+  const mn = Math.min(0, ...ys), mx = Math.max(0, ...ys), W = 800, H = 135, n = ys.length;
   const X = i => (i / (n - 1) * W).toFixed(1);
   const Y = v => (H - (v - mn) / ((mx - mn) || 1) * H).toFixed(1);
   const pts = ys.map((v, i) => `${X(i)},${Y(v)}`).join(' ');
   const last = ys[ys.length - 1];
-  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px">
+  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;height:100%;box-sizing:border-box">
     <div style="color:var(--dim);font-size:12px;margin-bottom:4px">누적 손익 (${entries[0].date} ~ ${entries[n-1].date})</div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:90px;display:block">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:135px;display:block">
       <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
       <polyline points="${pts}" fill="none" stroke="${last>=0?'var(--green)':'var(--red)'}" stroke-width="2" vector-effect="non-scaling-stroke"/>
     </svg>
@@ -1335,7 +1399,16 @@ function renderBankroll() {
     : '';
 
   const form = BANK_SHOWFORM ? bankForm() : '';
-  $('#hands').innerHTML = cards + bankRecommend(b) + bankSpark(b.entries) + form
+  // 누적 손익 차트(왼쪽 절반) + 바이인 추천(오른쪽 남는 공간) 나란히 배치
+  const spark = bankSpark(b.entries), rec = bankRecommend(b);
+  const chartRow = (spark && rec)
+    ? `<div style="display:flex;gap:14px;margin-bottom:14px;align-items:stretch">
+         <div style="flex:1;min-width:0;display:flex;flex-direction:column">${spark}</div>
+         <div style="flex:1;min-width:0;display:flex;flex-direction:column">${rec}</div></div>`
+    : (spark || rec
+        ? `<div style="margin-bottom:14px">${spark || rec}</div>`
+        : '');
+  $('#hands').innerHTML = cards + chartRow + form
     + `<div style="display:flex;gap:6px;margin-bottom:8px"><span style="color:var(--dim);font-size:13px;align-self:center">보기:</span>
        ${fBtn('all','캠페인 트리')} ${fBtn('itm','ITM만')} ${fBtn('unmatched','미매칭만')}
        <span style="margin-left:auto;color:var(--dim);font-size:12px;align-self:center">${countLabel} 표시</span></div>`
@@ -1566,7 +1639,7 @@ class Handler(BaseHTTPRequestHandler):
             bank_added = 0
             if added:
                 bank_added = bankroll.add_from_hands(DB)   # 새 핸드 토너를 뱅크롤에 자동 추가(상금은 수동 입력)
-                store.save_db(DB_PATH, DB)
+                persist(DB)
             if not added and not skipped:
                 resp = {"error": "핸드를 찾지 못했습니다. 'CoinPoker Hand #' 로 시작하는 로그인지 확인하세요."}
             else:
@@ -1597,7 +1670,7 @@ class Handler(BaseHTTPRequestHandler):
             hand_id = body.get("hand_id")
             if text and hand_id in DB["hands"]:
                 DB["hands"][hand_id]["analysis"] = text
-                store.save_db(DB_PATH, DB)
+                persist(DB)
         elif self.path == "/api/report":
             # 분석된 핸드들을 모아 반복 실수 패턴 종합 리포트 생성
             analyzed = [(hid, r) for hid, r in DB["hands"].items() if r.get("analysis")]
@@ -1628,7 +1701,7 @@ class Handler(BaseHTTPRequestHandler):
                     "created_at": time.strftime("%Y-%m-%d %H:%M"),
                     "hand_count": len(analyzed),
                 }
-                store.save_db(DB_PATH, DB)
+                persist(DB)
         elif self.path in ("/api/bankroll/entry", "/api/bankroll/delete"):
             length = int(self.headers.get("Content-Length", 0))
             try:
@@ -1643,7 +1716,7 @@ class Handler(BaseHTTPRequestHandler):
                 bankroll.update_entry(DB, body["id"], body)
             else:
                 bankroll.add_entry(DB, body)
-            store.save_db(DB_PATH, DB)
+            persist(DB)
             self._send(json.dumps(bankroll.summary(DB), ensure_ascii=False),
                        "application/json; charset=utf-8")
         else:
@@ -1654,7 +1727,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global DB, DB_PATH, AI_BACKEND
+    global DB, DB_PATH, AI_BACKEND, CLOUD, _last_pushed_hash
     ap = argparse.ArgumentParser(description="핸드 히스토리 컨버터 웹 GUI")
     ap.add_argument("input", nargs="*", help="DB에 임포트할 핸드 히스토리 파일 (선택)")
     ap.add_argument("--port", type=int, default=8765)
@@ -1668,11 +1741,35 @@ def main():
     args = ap.parse_args()
 
     DB_PATH = args.db
-    DB = store.load_db(DB_PATH)
+    CLOUD = cloud_sync.available()
+    if CLOUD:
+        # 클라우드 모드: 로컬 작업폴더는 깨끗하게 두고 ~/.cache에 캐시(안전망)만 둔다.
+        cache_dir = os.path.expanduser("~/.cache/analyze_hand_history")
+        os.makedirs(cache_dir, exist_ok=True)
+        DB_PATH = os.path.join(cache_dir, "hands_db.json")
+        print(f"☁️  클라우드 동기화 ON — {cloud_sync.repo()} / Release:{cloud_sync.tag()}")
+        try:
+            remote = cloud_sync.pull()
+            if remote is not None:
+                DB = remote
+                store.save_db(DB_PATH, DB)                  # 로컬 캐시 갱신
+                print(f"   클라우드에서 받음 — 핸드 {len(DB['hands'])}개")
+            else:
+                DB = store.load_db(DB_PATH)
+                print("   클라우드에 DB 없음 — 첫 저장 시 업로드됩니다")
+        except cloud_sync.CloudError as e:
+            DB = store.load_db(DB_PATH)                      # 받기 실패 → 캐시로 시작
+            print(f"⚠️  클라우드 받기 실패 — 로컬 캐시로 시작: {e}")
+        _last_pushed_hash = _db_hash(DB)                    # 받은 직후 = 이미 업로드된 상태
+    else:
+        hint = cloud_sync.config_hint()
+        if hint:
+            print(f"ℹ️  부분 설정 감지 — {hint}")
+        DB = store.load_db(DB_PATH)
 
     if args.rebuild and DB["hands"]:
         store.rebuild(DB, hero=args.hero)
-        store.save_db(DB_PATH, DB)
+        persist(DB)
         print(f"재변환 완료: {len(DB['hands'])}개 핸드")
 
     # CLI로 받은 파일은 시작 시 DB에 임포트
@@ -1681,7 +1778,7 @@ def main():
             added, skipped = store.import_text(DB, f.read(), hero=args.hero)
         print(f"{path}: 신규 {added}개 추가, 기존 {skipped}개 스킵")
         if added:
-            store.save_db(DB_PATH, DB)
+            persist(DB)
 
     AI_BACKEND = select_backend(args.ai)
 
@@ -1698,6 +1795,11 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n종료합니다.")
+    finally:
+        if CLOUD and _db_dirty:                 # 미반영 변경이 있을 때만 업로드
+            print("☁️  마지막 변경 동기화 중... (끄지 마세요)")
+            _flush_push()
+            print("✅ 동기화 완료")
 
 
 if __name__ == "__main__":
