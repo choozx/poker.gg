@@ -444,7 +444,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <script>
 let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤
 let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
-let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null;
+let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null, BANK_CHART = 'cum';
 let BANK_PAGE = 0;
 const BANK_PAGE_SIZE = 50;
 let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
@@ -1217,8 +1217,8 @@ function bankRecommend(b) {
   </div>`;
 }
 
-// 누적 손익 라인 (inline SVG)
-function bankSpark(entries) {
+// 손익 차트 (누적 라인 ↔ 일별 막대 토글) — inline SVG
+function bankSparkBody(entries) {
   if (entries.length < 2) return '';
   const ys = entries.map(e => e.cum_pnl);
   const mn = Math.min(0, ...ys), mx = Math.max(0, ...ys), W = 800, H = 135, n = ys.length;
@@ -1226,12 +1226,58 @@ function bankSpark(entries) {
   const Y = v => (H - (v - mn) / ((mx - mn) || 1) * H).toFixed(1);
   const pts = ys.map((v, i) => `${X(i)},${Y(v)}`).join(' ');
   const last = ys[ys.length - 1];
-  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;height:100%;box-sizing:border-box">
-    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">누적 손익 (${entries[0].date} ~ ${entries[n-1].date})</div>
+  return `<div style="color:var(--dim);font-size:12px;margin-bottom:4px">누적 손익 (${entries[0].date} ~ ${entries[n-1].date})</div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:135px;display:block">
       <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
       <polyline points="${pts}" fill="none" stroke="${last>=0?'var(--green)':'var(--red)'}" stroke-width="2" vector-effect="non-scaling-stroke"/>
-    </svg>
+    </svg>`;
+}
+function bankDailyBody(daily) {
+  if (!daily || !daily.length) return '';
+  window.bankDailyData = daily;
+  const W = 800, H = 135, n = daily.length;
+  const vals = daily.map(d => d.pnl);
+  const mx = Math.max(0, ...vals), mn = Math.min(0, ...vals);
+  const range = (mx - mn) || 1, zeroY = H * mx / range, bw = W / n;
+  const bars = daily.map((d, i) => {
+    const h = Math.abs(d.pnl) / range * H;
+    const y = (d.pnl >= 0 ? zeroY - h : zeroY).toFixed(1);
+    const col = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<rect x="${(i*bw).toFixed(1)}" y="${y}" width="${Math.max(0.6, bw*0.8).toFixed(1)}" height="${Math.max(0.6, h).toFixed(1)}" fill="${col}"/>`;
+  }).join('');
+  return `<div style="color:var(--dim);font-size:12px;margin-bottom:4px">일별 손익 (${daily[0].date} ~ ${daily[n-1].date})</div>
+    <div style="position:relative">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:135px;display:block"
+           onmousemove="bankDailyHover(event)" onmouseleave="bankDailyHide()">
+        <line x1="0" y1="${zeroY.toFixed(1)}" x2="${W}" y2="${zeroY.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
+        ${bars}
+      </svg>
+      <div id="bankDaily_tip" style="position:absolute;display:none;pointer-events:none;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:3px 8px;font-size:11px;white-space:nowrap;z-index:20;box-shadow:0 2px 6px rgba(0,0,0,.3)"></div>
+    </div>`;
+}
+function bankDailyHover(e) {
+  const d = window.bankDailyData; if (!d || !d.length) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const idx = Math.max(0, Math.min(d.length - 1, Math.floor((e.clientX - r.left) / r.width * d.length)));
+  const day = d[idx];
+  const tip = document.getElementById('bankDaily_tip'); if (!tip) return;
+  tip.innerHTML = `${day.date} · <b style="color:${day.pnl>=0?'var(--green)':'var(--red)'}">${day.pnl>=0?'+':''}$${day.pnl.toFixed(2)}</b>`;
+  tip.style.display = 'block';
+  const x = e.clientX - r.left, tw = tip.offsetWidth;
+  let left = x + 12;
+  if (left + tw > r.width) left = x - tw - 12;     // 커서가 오른쪽이면 툴팁을 왼쪽으로 뒤집어 안 가리게
+  tip.style.left = Math.max(2, left) + 'px';
+  tip.style.top = Math.max(2, e.clientY - r.top - 6) + 'px';
+}
+function bankDailyHide() { const t = document.getElementById('bankDaily_tip'); if (t) t.style.display = 'none'; }
+function bankChartCol(b) {
+  const cumBody = bankSparkBody(b.entries), dayBody = bankDailyBody(b.daily);
+  if (!cumBody && !dayBody) return '';
+  const body = BANK_CHART === 'daily' ? (dayBody || cumBody) : (cumBody || dayBody);
+  const tbtn = (m, l) => `<button class="${BANK_CHART===m?'primary':''}" onclick="bankSetChart('${m}')" style="font-size:11px;padding:2px 9px">${l}</button>`;
+  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;height:100%;box-sizing:border-box">
+    <div style="display:flex;gap:5px;margin-bottom:6px">${tbtn('cum','누적')}${tbtn('daily','일별')}</div>
+    ${body}
   </div>`;
 }
 
@@ -1288,6 +1334,7 @@ async function bankDelete(id) {
   BANKROLL = data; renderBankroll(); toast('삭제됨');
 }
 function bankSetFilter(f) { BANK_FILTER = f; BANK_PAGE = 0; renderBankroll(); }
+function bankSetChart(m) { BANK_CHART = m; renderBankroll(); }
 
 // 실제 잔고 스냅샷 입력 — 이후 토너 손익은 자동 추적, 리워드 등 차이는 재입력으로 보정
 async function bankSetBalance() {
@@ -1421,13 +1468,13 @@ function renderBankroll() {
 
   const form = BANK_SHOWFORM ? bankForm() : '';
   // 누적 손익 차트(왼쪽 절반) + 바이인 추천(오른쪽 남는 공간) 나란히 배치
-  const spark = bankSpark(b.entries), rec = bankRecommend(b);
-  const chartRow = (spark && rec)
+  const chartCol = bankChartCol(b), rec = bankRecommend(b);
+  const chartRow = (chartCol && rec)
     ? `<div style="display:flex;gap:14px;margin-bottom:14px;align-items:stretch">
-         <div style="flex:1;min-width:0;display:flex;flex-direction:column">${spark}</div>
+         <div style="flex:1;min-width:0;display:flex;flex-direction:column">${chartCol}</div>
          <div style="flex:1;min-width:0;display:flex;flex-direction:column">${rec}</div></div>`
-    : (spark || rec
-        ? `<div style="margin-bottom:14px">${spark || rec}</div>`
+    : (chartCol || rec
+        ? `<div style="margin-bottom:14px">${chartCol || rec}</div>`
         : '');
   $('#hands').innerHTML = cards + chartRow + form
     + `<div style="display:flex;gap:6px;margin-bottom:8px"><span style="color:var(--dim);font-size:13px;align-self:center">보기:</span>

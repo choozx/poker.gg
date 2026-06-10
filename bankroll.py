@@ -665,6 +665,21 @@ def summary(db):
                      "hands": t["hands"] if t else 0,
                      "net_bb": t["net_bb"] if t else None})   # 그 토너 칩 EV
 
+    # 일별 손익 (날짜별 토너 합산) — 막대 차트용
+    dmap = defaultdict(lambda: {"n": 0, "cost": 0.0, "cash": 0.0, "pnl": 0.0})
+    for e in entries:
+        d = e.get("date")
+        if not d:
+            continue
+        g = dmap[d]
+        g["n"] += 1
+        g["cost"] += e["cost"]
+        g["cash"] += e["cash"]
+        g["pnl"] += e["pnl"]
+    daily = [{"date": d, "n": g["n"], "cost": round(g["cost"], 2),
+              "cash": round(g["cash"], 2), "pnl": round(g["pnl"], 2)}
+             for d, g in sorted(dmap.items())]
+
     matched_tids = {e.get("tournament_id") for e in entries if e.get("tournament_id")}
     # 역방향: 핸드는 있는데 엔트리 없는 토너. 세틀 티켓으로 올라간 본토너(버스트→기록불필요)는
     # ticket=True로 구분 — 돈 누락이 아니라 정상.
@@ -697,4 +712,5 @@ def summary(db):
         "tree": campaigns(db),
         "recommendation": recommend_buyin(db),
         "balance": current_balance(db),
+        "daily": daily,
     }
