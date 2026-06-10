@@ -1288,6 +1288,19 @@ async function bankDelete(id) {
 }
 function bankSetFilter(f) { BANK_FILTER = f; BANK_PAGE = 0; renderBankroll(); }
 
+// 실제 잔고 스냅샷 입력 — 이후 토너 손익은 자동 추적, 리워드 등 차이는 재입력으로 보정
+async function bankSetBalance() {
+  const cur = (BANKROLL.balance && BANKROLL.balance.balance != null) ? BANKROLL.balance.balance : '';
+  const v = prompt('현재 실제 사이트 잔고($)를 입력하세요.\n\n· 이후 토너 손익은 자동으로 더하고 뺍니다.\n· 레이크백·리더보드 등 토너 밖 수입으로 실제와 차이가 나면, 가끔 다시 입력해 보정하세요.', cur);
+  if (v === null) return;
+  const amount = parseFloat(v);
+  if (isNaN(amount)) { toast('숫자를 입력하세요'); return; }
+  const data = await fetch('/api/bankroll/balance', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({amount}),
+  }).then(r => r.json());
+  BANKROLL = data; renderBankroll(); toast('잔고 저장됨');
+}
+
 // 뱅크롤 행 클릭 → 그 토너 핸드 보기 (이미 있는 토너 뷰 재사용)
 function openTournamentById(tid) {
   const i = DATA.tournaments.findIndex(t => t.id === tid);
@@ -1337,7 +1350,14 @@ function renderBankroll() {
   const b = BANKROLL;
   $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">💰 뱅크롤</h2>
     <button class="primary" style="margin-left:auto" onclick="bankShowForm()">➕ 결과 입력</button>`;
+  const bal = b.balance;
+  const balVal = bal ? '$' + bal.balance.toFixed(2) : '<span style="color:var(--dim);font-size:18px">입력 →</span>';
+  const balSub = bal
+    ? `${bal.anchor_date} 기준 ${bal.since_pnl>=0?'+':''}${bal.since_pnl.toFixed(2)} · 클릭 보정`
+    : '실제 사이트 잔고 클릭 입력';
+  const balCard = `<div onclick="bankSetBalance()" style="cursor:pointer" title="실제 사이트 잔고 입력/보정 — 토너 손익은 자동 추적됩니다">${statCard(balVal, '💵 현재 잔고', balSub)}</div>`;
   const cards = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+    ${balCard}
     ${statCard(bankMoney(b.profit, true), '순손익', `비용 $${b.total_cost} · 상금 $${b.total_cash}`)}
     ${statCard((b.roi>=0?'+':'') + b.roi + '%', 'ROI', '상금/비용')}
     ${statCard(b.itm_pct + '%', 'ITM', `상금권 ${b.n_paid}토너 중`)}
@@ -1716,6 +1736,20 @@ class Handler(BaseHTTPRequestHandler):
                 bankroll.update_entry(DB, body["id"], body)
             else:
                 bankroll.add_entry(DB, body)
+            persist(DB)
+            self._send(json.dumps(bankroll.summary(DB), ensure_ascii=False),
+                       "application/json; charset=utf-8")
+        elif self.path == "/api/bankroll/balance":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                amount = float(body["amount"])
+            except (ValueError, KeyError, TypeError):
+                self._send(json.dumps({"error": "잘못된 요청"}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=400)
+                return
+            date = body.get("date") or time.strftime("%Y-%m-%d")
+            bankroll.set_balance(DB, date, amount)
             persist(DB)
             self._send(json.dumps(bankroll.summary(DB), ensure_ascii=False),
                        "application/json; charset=utf-8")

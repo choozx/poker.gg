@@ -457,6 +457,34 @@ def campaigns(db):
 # 집계 (뱅크롤 대시보드용)
 # ---------------------------------------------------------------------------
 
+def set_balance(db, date, amount):
+    """실제 잔고 스냅샷(앵커) 기록/갱신. 같은 날짜는 덮어씀. 시간순 유지.
+    리워드(레이크백·리더보드 등 토너 상금 밖 수입)는 스냅샷을 다시 찍을 때 통째로 흡수된다."""
+    b = _bank(db)
+    snaps = [s for s in b.get("balance_snapshots", []) if s["date"] != date]
+    snaps.append({"date": date, "amount": round(float(amount), 2)})
+    snaps.sort(key=lambda s: s["date"])
+    b["balance_snapshots"] = snaps
+    return snaps
+
+
+def current_balance(db):
+    """추정 현재 잔고 = 최신 스냅샷 + 그 이후(날짜>스냅샷) 토너 손익 합. 스냅샷 없으면 None."""
+    b = db.get("bankroll") or {}
+    snaps = b.get("balance_snapshots") or []
+    if not snaps:
+        return None
+    anchor = snaps[-1]
+    since = sum(e.get("pnl", 0) for e in b.get("entries", [])
+                if (e.get("date") or "") > anchor["date"])
+    return {
+        "balance": round(anchor["amount"] + since, 2),
+        "anchor_date": anchor["date"],
+        "anchor_amount": round(anchor["amount"], 2),
+        "since_pnl": round(since, 2),
+    }
+
+
 def _buyin_tiers(paid):
     """paid 엔트리에서 실제 바이인 티어 목록 (오름차순)과 주력 티어 인덱스.
     25% 이내 금액은 같은 티어로 병합 — 더 많이 플레이한 값이 대표."""
@@ -515,8 +543,6 @@ def recommend_buyin(db):
     def _tier_label(idx):
         return _fmt(tiers[idx]) if 0 <= idx < len(tiers) else None
 
-    warning = f"샘플 {n}개 — 30개 이상이면 더 정확합니다" if n < 30 else None
-
     if roi >= 15 and itm_pct >= 15 and n >= 30:
         level, title = "up", "↑ 올릴 수 있음"
         tier_to = _tier_label(cur_idx + 1) if cur_idx < len(tiers) - 1 else None
@@ -546,14 +572,41 @@ def recommend_buyin(db):
     elif n >= 25 and recent_roi < roi - 15:
         trend = f" 최근 20게임 ROI {recent_roi:+.1f}% — 하락 추세. 주의가 필요합니다."
 
+    # 잔고(자금) 가드 — 성적(ROI)과 별개로 "지금 잔고로 칠 만한가"를 반영.
+    # MTT는 분산이 커 통상 100바이인 이상을 권장.
+    warnings = [f"샘플 {n}개 — 30개 이상이면 더 정확합니다"] if n < 30 else []
+    bal = current_balance(db)
+    bankroll_amt = bal["balance"] if bal else None
+    bal_note = ""
+    cushion = None
+    if bankroll_amt is not None and tiers and 0 <= cur_idx < len(tiers):
+        cur_bi = tiers[cur_idx]
+        cushion = bankroll_amt / cur_bi if cur_bi else None
+        affordable = bankroll_amt / 100                       # 100바이인 룰
+        if cushion is not None:
+            bal_note = (f" 잔고 ${bankroll_amt:.0f} = 현재 바이인 {cushion:.0f}개"
+                        f" · 잔고 기준 ~{_fmt(affordable)}까지 권장(100바이인).")
+        # 성적은 올리라 해도 잔고가 다음 티어 100바이인 미만이면 보류
+        if level == "up" and tier_to:
+            next_bi = tiers[cur_idx + 1]
+            if next_bi and bankroll_amt / next_bi < 100:
+                level, title = "stay", "→ 유지 (잔고 한도)"
+                tier_to = None
+                desc = (f"성적은 올릴 만하지만 잔고 기준 {_tier_label(cur_idx + 1)}는 "
+                        f"{bankroll_amt / next_bi:.0f}바이인뿐입니다. 잔고를 더 쌓고 올리세요.")
+        if cushion is not None and cushion < 40:
+            warnings.append(f"잔고가 현재 바이인의 {cushion:.0f}배뿐 — 분산에 취약(권장 100+)")
+
     return {
         "level": level,
         "title": title,
         "tier_from": _tier_label(cur_idx),
         "tier_to": tier_to,
         "stats": f"ROI {roi:+.1f}% · ITM {itm_pct:.0f}% · {n}토너",
-        "desc": desc + trend,
-        "warning": warning,
+        "desc": desc + trend + bal_note,
+        "warning": " / ".join(warnings) or None,
+        "bankroll": bankroll_amt,
+        "cushion": round(cushion, 1) if cushion is not None else None,
     }
 
 
@@ -607,4 +660,5 @@ def summary(db):
         "entries": rows,
         "tree": campaigns(db),
         "recommendation": recommend_buyin(db),
+        "balance": current_balance(db),
     }
