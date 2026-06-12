@@ -228,7 +228,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<title>Hand History Converter</title>
+<title>poker.gg</title>
 <style>
   :root {
     --bg: #14171c; --panel: #1d2128; --panel2: #242a33; --border: #313845;
@@ -411,10 +411,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>🃏 Hand History Converter</h1>
+  <h1>♠️ poker.gg</h1>
   <span class="spacer"></span>
   <button id="btnReport" onclick="openReport()" style="display:none">📊 종합 리포트</button>
-  <label class="small">Hero 이름 <input type="text" id="hero" value="Hero"></label>
   <button id="btnOpen">파일 열기</button>
   <input type="file" id="file" accept=".txt,.log" multiple style="display:none">
 </header>
@@ -876,7 +875,7 @@ function visibleHands() {
 
 function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
 
-// 리바이 감지: hand_id Set 반환 (리바이 직후 첫 핸드들)
+// 리바이 감지: hand_id Set 반환 (리바이로 돌아온 직후 첫 핸드들)
 function detectRebuys(allHands) {
   const pairs = allHands
     .filter(h => h.stack_bb != null && h.blinds)
@@ -886,7 +885,7 @@ function detectRebuys(allHands) {
   for (let i = 0; i < pairs.length - 1; i++) {
     const expected = Math.max(0, pairs[i].chips + (pairs[i].hand.net || 0));
     const bbVal = parseFloat((pairs[i].hand.blinds || '').split('/')[1]) || 100;
-    if (pairs[i + 1].chips > expected + bbVal * 2) ids.add(pairs[i].hand.hand_id);
+    if (pairs[i + 1].chips > expected + bbVal * 2) ids.add(pairs[i + 1].hand.hand_id);   // 리바이로 돌아온 첫 판에 태그
   }
   return ids;
 }
@@ -1775,7 +1774,7 @@ async function applyData(data) {
 }
 
 async function importText(text) {
-  const hero = $('#hero').value.trim() || 'Hero';
+  const hero = 'Hero';   // CoinPoker는 본인을 항상 'Hero'로 익명화 (전 핸드 100% 확인)
   const res = await fetch('/api/import?hero=' + encodeURIComponent(hero), {
     method: 'POST', body: text,
   });
