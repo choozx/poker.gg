@@ -475,32 +475,126 @@ def campaigns(db):
 # 집계 (뱅크롤 대시보드용)
 # ---------------------------------------------------------------------------
 
-def set_balance(db, date, amount):
+def set_balance(db, date, amount, at=None):
     """실제 잔고 스냅샷(앵커) 기록/갱신. 같은 날짜는 덮어씀. 시간순 유지.
-    리워드(레이크백·리더보드 등 토너 상금 밖 수입)는 스냅샷을 다시 찍을 때 통째로 흡수된다."""
+    리워드(레이크백·리더보드 등 토너 상금 밖 수입)는 스냅샷을 다시 찍을 때 통째로 흡수된다.
+
+    at = 스냅샷을 찍은 *시각*('YYYY-MM-DD HH:MM:SS'). '지금' 찍으면 현재 시각이 들어와,
+    같은 날 *그 이후*에 친 토너도 자동 합산된다(토너 시작 시각 > at일 때). 미지정(과거일
+    소급 입력)이면 그날 끝(23:59:59)으로 봐서 같은 날 토너는 이미 잔고에 포함됐다고 처리."""
     b = _bank(db)
     snaps = [s for s in b.get("balance_snapshots", []) if s["date"] != date]
-    snaps.append({"date": date, "amount": round(float(amount), 2)})
+    snap = {"date": date, "amount": round(float(amount), 2)}
+    snap["at"] = at or (date + " 23:59:59")
+    snaps.append(snap)
     snaps.sort(key=lambda s: s["date"])
     b["balance_snapshots"] = snaps
     return snaps
 
 
-def current_balance(db):
-    """추정 현재 잔고 = 최신 스냅샷 + 그 이후(날짜>스냅샷) 토너 손익 합. 스냅샷 없으면 None."""
+def _dt_norm(s):
+    """'2026/06/04 22:44:39'(슬래시) → '2026-06-04 22:44:39'(대시) — 앵커 at과 비교 가능하게."""
+    return (s or "")[:19].replace("/", "-")
+
+
+def current_balance(db, ht=None):
+    """추정 현재 잔고 = 최신 스냅샷 + 그 이후 토너 손익 + 입출금. 스냅샷 없으면 None.
+
+    "그 이후" 판정: 핸드 연결 토너는 *시작 시각* > 앵커 at(같은 날도 시·분까지 정확히 가림),
+    핸드 없는 수동 엔트리/입출금은 시각 정보가 없어 날짜 > 앵커 날짜로 폴백.
+    입출금은 별도 원장에서 *읽기만* 한다 — 칩 EV와도, 토너 손익 합계와도 안 섞임.
+    출금하면 잔고가 줄고, 그 잔고가 바이인 추천(자금 가드)에 바로 반영된다(=의도된 동작).
+    ht = hand_tournaments(db) 재계산을 피하려 호출부에서 넘겨줄 수 있음(성능)."""
     b = db.get("bankroll") or {}
     snaps = b.get("balance_snapshots") or []
     if not snaps:
         return None
     anchor = snaps[-1]
-    since = sum(e.get("pnl", 0) for e in b.get("entries", [])
-                if (e.get("date") or "") > anchor["date"])
+    anchor_at = anchor.get("at") or (anchor["date"] + " 23:59:59")
+    if ht is None:
+        ht = hand_tournaments(db)
+    since = 0.0
+    for e in b.get("entries", []):
+        tid = e.get("tournament_id")
+        start = ht.get(tid, {}).get("start") if tid else ""
+        inc = (_dt_norm(start) > anchor_at) if start else ((e.get("date") or "") > anchor["date"])
+        if inc:
+            since += e.get("pnl", 0)
+    cf = sum(_cf_delta(c) for c in b.get("cashflows", [])
+             if (c.get("date") or "") > anchor["date"])
     return {
-        "balance": round(anchor["amount"] + since, 2),
+        "balance": round(anchor["amount"] + since + cf, 2),
         "anchor_date": anchor["date"],
+        "anchor_at": anchor_at,
         "anchor_amount": round(anchor["amount"], 2),
         "since_pnl": round(since, 2),
+        "since_cashflow": round(cf, 2),
     }
+
+
+# ---------------------------------------------------------------------------
+# 입출금 원장 (cashflows) — 실제 돈의 입금/출금. 토너 엔트리와 완전 분리:
+# 손익(pnl/ROI)에 절대 합산하지 않고, 오직 추정 잔고 보정에만 쓴다.
+#
+# 출금 방식(method)은 두 가지. 잔고에서 빠지는 금액은 둘 다 입력한 amount(수수료 *포함*):
+#   wallet   = 내 암호화폐 지갑으로 이체. 수수료 $5가 출금액 안에 포함 → 잔고 -amount, 실수령 amount-$5.
+#   transfer = 다른 유저에게 송금. 수수료 없음(대가는 앱 밖에서 직접 수령) → 잔고 -amount, 실수령 amount.
+# fee는 잔고에 영향 안 주고 "실수령액"을 알려주는 정보일 뿐.
+# ---------------------------------------------------------------------------
+
+WALLET_FEE = 5.0   # 지갑 출금 네트워크 수수료(USD, 출금액에 포함)
+
+
+def _cf_delta(c):
+    """입출금 1건이 잔고에 주는 영향. 입금 +amount, 출금 -amount(수수료는 amount에 포함됨)."""
+    if c.get("type") == "deposit":
+        return c.get("amount", 0)
+    return -c.get("amount", 0)
+
+
+def add_cashflow(db, fields):
+    """입출금 1건 추가.
+    fields: {date, type: deposit|withdraw, amount(>0), method?: wallet|transfer, fee?, note?}.
+    출금 수수료는 명시 fee가 있으면 그 값, 없으면 method로 결정(wallet=$5, transfer=$0)."""
+    b = _bank(db)
+    cfs = b.setdefault("cashflows", [])
+    cid = b.get("next_cf_id", 1)
+    b["next_cf_id"] = cid + 1
+    typ = "withdraw" if str(fields.get("type")) == "withdraw" else "deposit"
+    rec = {
+        "id": f"c{cid}",
+        "date": fields.get("date") or "",
+        "type": typ,
+        "amount": round(abs(float(fields.get("amount", 0))), 2),
+        "note": (fields.get("note") or "").strip(),
+    }
+    if typ == "withdraw":
+        method = "transfer" if str(fields.get("method")) == "transfer" else "wallet"
+        if fields.get("fee") is not None:
+            fee = round(abs(float(fields["fee"])), 2)
+        else:
+            fee = WALLET_FEE if method == "wallet" else 0.0
+        rec["method"] = method
+        rec["fee"] = fee
+    cfs.append(rec)
+    cfs.sort(key=lambda c: (c.get("date") or "", c.get("id")))
+    return rec
+
+
+def delete_cashflow(db, cid):
+    b = _bank(db)
+    cfs = b.get("cashflows", [])
+    b["cashflows"] = [c for c in cfs if c.get("id") != cid]
+    return len(cfs) - len(b["cashflows"])
+
+
+def cashflow_totals(db):
+    """입금 누계 / 출금 누계(원금) / 수수료 누계 집계."""
+    cfs = (db.get("bankroll") or {}).get("cashflows", [])
+    dep = sum(c["amount"] for c in cfs if c.get("type") == "deposit")
+    wd = sum(c["amount"] for c in cfs if c.get("type") == "withdraw")
+    fee = sum(c.get("fee", 0) for c in cfs if c.get("type") == "withdraw")
+    return {"deposit": round(dep, 2), "withdraw": round(wd, 2), "fee": round(fee, 2)}
 
 
 def _required_buyins(tois, ruin=0.05):
@@ -545,7 +639,7 @@ def _buyin_tiers(paid):
     return reps, reps.index(cur)
 
 
-def recommend_buyin(db):
+def recommend_buyin(db, ht=None):
     """뱅크롤 성적 기반 바이인 추천 — ROI·ITM·추세·실제 티어 기반."""
     b = db.get("bankroll") or {"entries": []}
     paid = [e for e in b.get("entries", []) if e.get("cost", 0) > 0]
@@ -609,7 +703,7 @@ def recommend_buyin(db):
     # 자금 가드 — 성적과 별개로 "지금 칠 만한가" + "윗단계 가려면 뭐가 필요한가".
     # 본인 분산 기반 적정 바이인 수(safe_bi)를 내부 계산하되, 화면엔 직관적 조건만.
     warnings = [f"샘플 {n}개 — 30개 이상이면 더 정확합니다"] if n < 30 else []
-    bal = current_balance(db)
+    bal = current_balance(db, ht)
     bankroll_amt = bal["balance"] if bal else None
     tois = [e["pnl"] / e["buyin"] for e in paid if e.get("buyin")]
     safe_bi = _required_buyins(tois) or 100               # 못 구하면 100바이인 룰로 폴백
@@ -696,6 +790,11 @@ def summary(db):
               "cash": round(g["cash"], 2), "pnl": round(g["pnl"], 2)}
              for d, g in sorted(dmap.items())]
 
+    # 입출금 원장 — 손익엔 안 섞고 별도로 노출. 잔고 보정용(추정 잔고에 이미 반영됨).
+    cf = sorted(b.get("cashflows", []), key=lambda c: (c.get("date") or "", c.get("id")))
+    cf_tot = cashflow_totals(db)
+    bal_info = current_balance(db, ht)
+
     matched_tids = {e.get("tournament_id") for e in entries if e.get("tournament_id")}
     # 역방향: 핸드는 있는데 엔트리 없는 토너. 세틀 티켓으로 올라간 본토너(버스트→기록불필요)는
     # ticket=True로 구분 — 돈 누락이 아니라 정상.
@@ -726,7 +825,11 @@ def summary(db):
         "unlogged": unlogged,
         "entries": rows,
         "tree": campaigns(db),
-        "recommendation": recommend_buyin(db),
-        "balance": current_balance(db),
+        "recommendation": recommend_buyin(db, ht),
+        "balance": bal_info,
         "daily": daily,
+        "cashflows": cf,
+        "cf_deposit": cf_tot["deposit"],
+        "cf_withdraw": cf_tot["withdraw"],
+        "cf_fee": cf_tot["fee"],
     }

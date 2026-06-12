@@ -446,6 +446,8 @@ let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3
 let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
 let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null, BANK_CHART = 'cum';
 let BANK_PAGE = 0;
+let BANK_TAB = 'results';   // 'results'(토너 성적) | 'cash'(입출금)
+let BANK_CF_PAGE = 0;       // 입출금 내역 페이지
 const BANK_PAGE_SIZE = 50;
 let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
@@ -1355,6 +1357,37 @@ async function bankSetBalance() {
   BANKROLL = data; renderBankroll(); toast('잔고 저장됨');
 }
 
+// 입출금 기록 — 토너 손익과 별개 원장. 출금하면 잔고↓ → 바이인 추천도 낮아짐(의도된 동작).
+// 출금 method: 'wallet'(내 지갑, $5 수수료) / 'transfer'(유저 송금, 수수료 없음).
+async function bankAddCashflow(type, method) {
+  const label = type === 'withdraw'
+    ? (method === 'transfer' ? '유저 송금' : '지갑 출금') : '입금';
+  let hint;
+  if (type !== 'withdraw') hint = '입금분만큼 잔고가 늘어 추천 바이인에 반영됩니다.';
+  else if (method === 'wallet') hint = '내 지갑으로 이체. 출금액에 네트워크 수수료 $5가 포함됩니다 — 잔고는 입력 금액만큼 줄고, 실수령은 (금액−$5)입니다.';
+  else hint = '다른 유저에게 송금. 수수료 없이 입력 금액만큼 잔고가 줄어듭니다(대가는 앱 밖에서 직접 수령).';
+  const v = prompt(`${label} 금액($, 계좌에서 빠지는 총액)을 입력하세요.\n\n· 토너 손익(ROI)에는 섞이지 않습니다.\n· ${hint}`, '');
+  if (v === null) return;
+  const amount = parseFloat(v);
+  if (isNaN(amount) || amount <= 0) { toast('0보다 큰 숫자를 입력하세요'); return; }
+  const date = prompt('날짜 (YYYY-MM-DD)', new Date().toISOString().slice(0,10));
+  if (date === null) return;
+  const note = prompt('메모 (선택)', '') || '';
+  const data = await fetch('/api/bankroll/cashflow', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type, method, amount, date, note}),
+  }).then(r => r.json());
+  if (data.error) { toast(data.error); return; }
+  BANKROLL = data; renderBankroll(); toast(`${label} 기록됨`);
+}
+async function bankDelCashflow(id) {
+  if (!confirm('이 입출금 기록을 삭제할까요?')) return;
+  const data = await fetch('/api/bankroll/cashflow/delete', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}),
+  }).then(r => r.json());
+  BANKROLL = data; renderBankroll(); toast('삭제됨');
+}
+
 // 뱅크롤 행 클릭 → 그 토너 핸드 보기 (이미 있는 토너 뷰 재사용)
 function openTournamentById(tid) {
   const i = DATA.tournaments.findIndex(t => t.id === tid);
@@ -1408,18 +1441,26 @@ function bankToggle(id) {
   tw.textContent = open ? '▶' : '▼';
 }
 
+function bankSetTab(t) { BANK_TAB = t; renderBankroll(); $('#main').scrollTop = 0; }
+function bankCfGotoPage(p) { BANK_CF_PAGE = p; renderBankroll(); $('#main').scrollTop = 0; }
+
+// 뱅크롤 = 한 페이지 안의 2탭: 📊 토너 성적(플레이 결과) / 💸 입출금(실제 돈). 데이터는 /api/bankroll 한 방.
 function renderBankroll() {
   const b = BANKROLL;
-  $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">💰 뱅크롤</h2>
-    <button class="primary" style="margin-left:auto" onclick="bankShowForm()">➕ 결과 입력</button>`;
-  const bal = b.balance;
-  const balVal = bal ? '$' + bal.balance.toFixed(2) : '<span style="color:var(--dim);font-size:18px">입력 →</span>';
-  const balSub = bal
-    ? `${bal.anchor_date} 기준 ${bal.since_pnl>=0?'+':''}${bal.since_pnl.toFixed(2)} · 클릭 보정`
-    : '실제 사이트 잔고 클릭 입력';
-  const balCard = `<div onclick="bankSetBalance()" style="cursor:pointer" title="실제 사이트 잔고 입력/보정 — 토너 손익은 자동 추적됩니다">${statCard(balVal, '💵 현재 잔고', balSub)}</div>`;
+  const isCash = BANK_TAB === 'cash';
+  const headBtn = isCash
+    ? `<button class="primary" style="margin-left:auto" onclick="bankAddCashflow('deposit')">＋ 입금</button>`
+    : `<button class="primary" style="margin-left:auto" onclick="bankShowForm()">➕ 결과 입력</button>`;
+  $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">💰 뱅크롤</h2>${headBtn}`;
+  const tab = (k, l) => `<button class="${BANK_TAB===k?'primary':''}" onclick="bankSetTab('${k}')">${l}</button>`;
+  const tabBar = `<div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:10px">
+    ${tab('results','📊 토너 성적')} ${tab('cash','💸 입출금')}</div>`;
+  $('#hands').innerHTML = tabBar + (isCash ? bankCashTab(b) : bankResultsTab(b));
+}
+
+// ── 탭 1: 토너 성적 (칩→돈 플레이 품질) ─────────────────────────────
+function bankResultsTab(b) {
   const cards = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
-    ${balCard}
     ${statCard(bankMoney(b.profit, true), '순손익', `비용 $${b.total_cost} · 상금 $${b.total_cash}`)}
     ${statCard((b.roi>=0?'+':'') + b.roi + '%', 'ROI', '상금/비용')}
     ${statCard(b.itm_pct + '%', 'ITM', `상금권 ${b.n_paid}토너 중`)}
@@ -1493,11 +1534,101 @@ function renderBankroll() {
     : (chartCol || rec
         ? `<div style="margin-bottom:14px">${chartCol || rec}</div>`
         : '');
-  $('#hands').innerHTML = cards + chartRow + form
+  return cards + chartRow + form
     + `<div style="display:flex;gap:6px;margin-bottom:8px"><span style="color:var(--dim);font-size:13px;align-self:center">보기:</span>
        ${fBtn('all','캠페인 트리')} ${fBtn('itm','ITM만')} ${fBtn('unmatched','미매칭만')}
        <span style="margin-left:auto;color:var(--dim);font-size:12px;align-self:center">${countLabel} 표시</span></div>`
     + unmatchedNote + table + bankPager(pages) + unlogged;
+}
+
+// ── 탭 2: 입출금 (실제 돈의 입/출, 잔고) ─────────────────────────────
+function bankCashTab(b) {
+  const bal = b.balance;
+  const balVal = bal ? '$' + bal.balance.toFixed(2) : '<span style="color:var(--dim);font-size:18px">입력 →</span>';
+  const cfStr = bal && bal.since_cashflow ? ` · 입출금 ${bal.since_cashflow>=0?'+':''}${bal.since_cashflow.toFixed(2)}` : '';
+  // 앵커 시각이 그날 끝(23:59:59)이면 소급/구버전 스냅샷 → 날짜만, 아니면 분까지 표시
+  const anchorLbl = bal ? (/23:59:59$/.test(bal.anchor_at||'') ? bal.anchor_date : (bal.anchor_at||'').slice(0,16)) : '';
+  const balSub = bal
+    ? `${anchorLbl} 기준 ${bal.since_pnl>=0?'+':''}${bal.since_pnl.toFixed(2)}${cfStr}`
+    : '실제 사이트 잔고 클릭 입력';
+  const balCard = `<div onclick="bankSetBalance()" style="cursor:pointer" title="실제 사이트 잔고 입력/보정 — 토너 손익·입출금은 자동 추적됩니다">${statCard(balVal, '💵 현재 잔고', balSub)}</div>`;
+  // 순 회수 = 출금 − 입금 (내 주머니 관점: 출금은 +, 입금은 −). 양수면 넣은 것보다 더 빼낸 것.
+  const net = (b.cf_withdraw - b.cf_deposit);
+
+  // ── 총수익 히어로 배너 = 현재잔고 + 총출금 − 총입금 (진짜 현금 손익) ──
+  const balNum = bal ? bal.balance : null;
+  let hero;
+  if (balNum == null) {
+    hero = `<div style="border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:14px;background:var(--panel);display:flex;align-items:center;gap:12px;cursor:pointer" onclick="bankSetBalance()">
+      <span style="font-size:15px;color:var(--dim)">💰 총수익</span>
+      <span style="margin-left:auto;color:var(--accent);font-size:14px">현재 잔고를 입력하면 계산됩니다 →</span></div>`;
+  } else {
+    const profit = balNum + b.cf_withdraw - b.cf_deposit;
+    const pos = profit >= 0;
+    const col = pos ? 'var(--green)' : 'var(--red)';
+    const warn = (b.cf_deposit === 0)
+      ? ` <span style="color:var(--gold);font-size:13px;cursor:help" title="입금 기록이 없어요. 처음부터의 입금을 모두 기록해야 총수익이 정확합니다.">⚠ 입금 기록 필요</span>` : '';
+    hero = `<div style="border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:14px;background:var(--panel)">
+      <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+        <span style="font-size:15px;color:var(--dim)">💰 총수익</span>
+        <span style="font-size:30px;font-weight:700;color:${col};font-variant-numeric:tabular-nums">${pos?'+':'−'}$${Math.abs(profit).toFixed(2)}</span>${warn}
+      </div>
+      <div style="margin-top:6px;color:var(--dim);font-size:13px">현재잔고 $${balNum.toFixed(2)} + 총출금 $${b.cf_withdraw.toFixed(2)} − 총입금 $${b.cf_deposit.toFixed(2)}</div>
+    </div>`;
+  }
+
+  const cards = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px">
+    ${balCard}
+    ${statCard('$' + b.cf_deposit.toFixed(2), '총 입금', '계좌로 넣은 돈')}
+    ${statCard('$' + b.cf_withdraw.toFixed(2), '총 출금', '계좌에서 뺀 돈')}
+    ${statCard((net>=0?'+':'−') + '$' + Math.abs(net).toFixed(2), '순 회수', '출금 − 입금')}
+    ${statCard('$' + (b.cf_fee||0).toFixed(2), '수수료 합계', '지갑 출금 네트워크비')}
+  </div>`;
+  const balHint = `<div style="color:var(--dim);font-size:12px;margin-bottom:14px">현재 잔고 카드를 눌러 실제 사이트 잔고를 보정할 수 있어요. 토너 손익·입출금은 그 기준 이후 자동 반영됩니다.</div>`;
+
+  const addBtns = `<div style="margin:4px 0 6px;display:flex;gap:6px;flex-wrap:wrap">
+      <button class="primary" onclick="bankAddCashflow('deposit')">＋ 입금</button>
+      <button onclick="bankAddCashflow('withdraw','wallet')">－ 지갑 출금 ($5 수수료)</button>
+      <button onclick="bankAddCashflow('withdraw','transfer')">－ 유저 송금 (수수료 없음)</button>
+    </div>`;
+  const note = `<div style="font-size:12px;color:var(--dim);margin-bottom:10px">출금하면 위험 자본이 줄어 추정 잔고·추천 바이인이 함께 내려갑니다 — 딴 돈을 지키는 정상 동작입니다. 지갑 출금은 입력 금액에 네트워크 수수료 $5가 포함됩니다(실수령 = 금액−$5).</div>`;
+
+  const cfs = (b.cashflows || []).slice().reverse();
+  const pages = Math.max(1, Math.ceil(cfs.length / BANK_PAGE_SIZE));
+  if (BANK_CF_PAGE >= pages) BANK_CF_PAGE = pages - 1;
+  if (BANK_CF_PAGE < 0) BANK_CF_PAGE = 0;
+  const pageItems = cfs.slice(BANK_CF_PAGE * BANK_PAGE_SIZE, (BANK_CF_PAGE + 1) * BANK_PAGE_SIZE);
+  const rows = pageItems.map(c => {
+    const isW = c.type === 'withdraw';
+    const sign = isW ? '−' : '+';
+    const col = isW ? 'var(--gold)' : 'var(--green)';
+    const kind = isW ? (c.method === 'transfer' ? '유저 송금' : '지갑 출금') : '입금';
+    const sub = (isW && c.fee) ? `실수령 $${(c.amount-c.fee).toFixed(2)} · 수수료 $${c.fee.toFixed(2)}` : '';
+    return `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:6px 8px;color:var(--dim)">${esc(c.date||'—')}</td>
+        <td style="padding:6px 8px;color:${col}">${kind}</td>
+        <td style="padding:6px 8px;text-align:right;color:${col};font-variant-numeric:tabular-nums">${sign}$${c.amount.toFixed(2)}</td>
+        <td style="padding:6px 8px;color:var(--dim);font-size:12px">${sub}</td>
+        <td style="padding:6px 8px;color:var(--dim)">${esc(c.note||'')}</td>
+        <td style="padding:6px 8px;text-align:right"><span style="cursor:pointer;color:var(--dim)" title="삭제" onclick="bankDelCashflow('${c.id}')">🗑</span></td>
+      </tr>`;
+  }).join('');
+  const table = cfs.length
+    ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr style="color:var(--dim);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:6px 8px">날짜</th><th style="padding:6px 8px">구분</th>
+          <th style="padding:6px 8px;text-align:right">금액</th><th style="padding:6px 8px">실수령/수수료</th>
+          <th style="padding:6px 8px">메모</th><th></th></tr>
+        ${rows}</table></div>`
+    : `<div style="color:var(--dim);font-size:13px;padding:14px 0;text-align:center">아직 입출금 기록이 없습니다. 위 버튼으로 추가하세요.</div>`;
+  const pager = pages > 1
+    ? `<div style="display:flex;gap:6px;justify-content:center;margin-top:10px">
+        <button ${BANK_CF_PAGE<=0?'disabled':''} onclick="bankCfGotoPage(${BANK_CF_PAGE-1})">‹</button>
+        <span style="align-self:center;color:var(--dim);font-size:12px">${BANK_CF_PAGE+1}/${pages}p · ${cfs.length}건</span>
+        <button ${BANK_CF_PAGE>=pages-1?'disabled':''} onclick="bankCfGotoPage(${BANK_CF_PAGE+1})">›</button></div>`
+    : '';
+
+  return hero + cards + balHint + addBtns + note + table + pager;
 }
 
 function tourneyMd() {
@@ -1815,8 +1946,35 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({"error": "잘못된 요청"}, ensure_ascii=False),
                            "application/json; charset=utf-8", code=400)
                 return
-            date = body.get("date") or time.strftime("%Y-%m-%d")
-            bankroll.set_balance(DB, date, amount)
+            # 날짜 미지정 = '지금' 스냅샷 → 현재 시각까지 기록(같은 날 이후 토너도 자동 합산).
+            # 날짜 지정(소급 입력)이면 at=None → set_balance가 그날 끝으로 처리.
+            date = body.get("date")
+            at = None
+            if not date:
+                date = time.strftime("%Y-%m-%d")
+                at = time.strftime("%Y-%m-%d %H:%M:%S")
+            bankroll.set_balance(DB, date, amount, at=at)
+            persist(DB)
+            self._send(json.dumps(bankroll.summary(DB), ensure_ascii=False),
+                       "application/json; charset=utf-8")
+        elif self.path in ("/api/bankroll/cashflow", "/api/bankroll/cashflow/delete"):
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+            except ValueError:
+                self._send(json.dumps({"error": "잘못된 요청"}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=400)
+                return
+            if self.path.endswith("/delete"):
+                bankroll.delete_cashflow(DB, body.get("id"))
+            else:
+                try:
+                    float(body.get("amount"))
+                except (ValueError, TypeError):
+                    self._send(json.dumps({"error": "금액을 입력하세요"}, ensure_ascii=False),
+                               "application/json; charset=utf-8", code=400)
+                    return
+                bankroll.add_cashflow(DB, body)
             persist(DB)
             self._send(json.dumps(bankroll.summary(DB), ensure_ascii=False),
                        "application/json; charset=utf-8")
