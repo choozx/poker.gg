@@ -284,7 +284,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
                     border-radius: 5px; padding: 1px 7px; font-size: 12px; width: 52px; text-align: center; }
   .hand-head .cards { font-weight: 700; font-size: 15px; width: 84px; letter-spacing: 1px; }
   .hand-head .tags { flex: 1; color: var(--dim); font-size: 12px; }
-  .hand-head .net { font-weight: 700; font-size: 13px; width: 110px; text-align: right; }
+  .hand-head .net { font-weight: 700; font-size: 13px; width: 200px; text-align: right; white-space: nowrap; }
   .hand-head .ai-flag { width: 46px; text-align: right; font-size: 13px; letter-spacing: 1px; }
   .pos-badge { color: var(--gold); }
   .net.win { color: var(--green); } .net.lose { color: var(--red); }
@@ -314,6 +314,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ai-error { color: var(--red); padding: 6px 2px; font-size: 13px; }
   .ai-cursor { color: var(--accent); animation: blink 1s steps(2,start) infinite; }
   @keyframes blink { to { visibility: hidden; } }
+  .ai-spinner { display: inline-block; width: 11px; height: 11px; vertical-align: -1px;
+    margin-left: 3px; border: 2px solid var(--green); border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .ai-meta { color: var(--dim); font-size: 11px; margin-top: 6px; text-align: right; }
 
   #report-overlay { display: none; position: fixed; inset: 0; z-index: 50;
@@ -451,6 +455,8 @@ let BANK_CF_PAGE = 0;       // 입출금 내역 페이지
 const BANK_PAGE_SIZE = 50;
 let REPORT = null, ANALYZED_TOTAL = 0, REPORT_STREAMING = false;
 let REVIEW_HANDS = null, REVIEW_COUNT = 0, STATS = null;
+let REVIEW_PAGE = 0, REVIEW_UNANALYZED_ONLY = false, REVIEW_HIDE_ALLIN = false, REVIEW_BATCH = null;   // 복기: 페이징·필터·배치분석
+const REVIEW_PAGE_SIZE = 50;
 let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
 const SEARCH_PAGE_SIZE = 20;
 let GRID_CACHE = {}, GRID_POS = 'all', GRID_STACK = 'all', GRID_METRIC = 'mix', STATS_TAB = 'summary';   // 통계 하위 탭
@@ -836,7 +842,7 @@ function renderStats() {
 
 // 복기 추천 뷰 — 전체 토너에서 추천 핸드만 모아서 표시
 async function selectReview() {
-  SEL = -1; renderSidebar();
+  SEL = -1; REVIEW_PAGE = 0; renderSidebar();
   if (!REVIEW_HANDS) {
     $('#mainhead').innerHTML = '<h2>📌 복기 추천</h2>';
     $('#hands').innerHTML = '<div class="ai-loading">핸드 불러오는 중</div>';
@@ -972,24 +978,62 @@ function tourneyStackChart(allHands) {
   </div>`;
 }
 
+// 복기 핸드 분석 완료 여부 (저장된 analysis 또는 이번 세션 AI_CACHE done)
+function reviewAnalyzed(h) {
+  const c = AI_CACHE[h.hand_id];
+  return !!(h.analysis || (c && c.status === 'done'));
+}
+
 function renderMain() {
   const t = currentTourney();
-  const hands = visibleHands();
-  const countLabel = HIDE_FOLDS
+  let hands = visibleHands();
+  let countLabel = HIDE_FOLDS
     ? `${hands.length}핸드 표시 (프리폴드 ${t.hand_count - hands.length}개 숨김)`
     : `${t.hand_count}핸드`;
+
+  // 복기 탭 전용: 미분석/프리올인 필터 + 페이징(50개씩) + 배치 분석. 필터는 별도 필터 바로 분리.
+  let pager = '', banner = '', filterBar = '', headBtns;
+  if (SEL === -1) {
+    const f = reviewFiltered();          // 프리올인·미분석 필터 적용 (페이징 전)
+    hands = f.list;
+    const total = hands.length;
+    const pages = Math.max(1, Math.ceil(total / REVIEW_PAGE_SIZE));
+    if (REVIEW_PAGE >= pages) REVIEW_PAGE = pages - 1;
+    if (REVIEW_PAGE < 0) REVIEW_PAGE = 0;
+    hands = hands.slice(REVIEW_PAGE * REVIEW_PAGE_SIZE, (REVIEW_PAGE + 1) * REVIEW_PAGE_SIZE);
+    const pageUnan = hands.filter(h => !reviewAnalyzed(h)).length;
+    const running = !!(REVIEW_BATCH && REVIEW_BATCH.running);
+    // 헤더: 기능 버튼만 (배치 분석 + 펼치기/접기). 복사·다운로드는 복기에서 제거.
+    headBtns = `
+      <button class="primary" onclick="reviewAnalyzePage()" ${running || pageUnan === 0 ? 'disabled' : ''}>🤖 이 페이지 분석 (미분석 ${pageUnan})</button>
+      <button onclick="toggleAll(true)">모두 펼치기</button>
+      <button onclick="toggleAll(false)">모두 접기</button>`;
+    // 필터 바: 필터만 따로 묶음
+    filterBar = `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;margin-bottom:12px;background:var(--panel);border:1px solid var(--border);border-radius:9px">
+      <span style="color:var(--dim);font-size:12px;margin-right:2px">필터</span>
+      <button onclick="reviewToggleUnanalyzed()" class="${REVIEW_UNANALYZED_ONLY ? 'primary' : ''}">${REVIEW_UNANALYZED_ONLY ? '✓ ' : ''}미분석만</button>
+      <button onclick="reviewToggleAllin()" class="${REVIEW_HIDE_ALLIN ? 'primary' : ''}" title="히어로가 프리플랍에 올인(푸시)한 핸드 숨김">${REVIEW_HIDE_ALLIN ? '✓ ' : ''}프리올인 숨기기</button>
+    </div>`;
+    pager = reviewPager(pages, total, f.totalUnan);
+    if (running) banner = reviewBatchBanner();
+    countLabel = `${t.hand_count}핸드`;
+  } else {
+    headBtns = `
+      <button onclick="toggleFolds()" class="${HIDE_FOLDS ? 'primary' : ''}">${HIDE_FOLDS ? '✓ ' : ''}프리폴드 숨기기</button>
+      <button onclick="toggleAll(true)">모두 펼치기</button>
+      <button onclick="toggleAll(false)">모두 접기</button>
+      <button onclick="copyMd()">📋 마크다운 복사</button>
+      <button class="primary" onclick="downloadMd()">⬇ .md 다운로드</button>`;
+  }
+
   const backBtn = SEL === -4 ? `<button onclick="backToGrid()">← 그리드로</button>`
     : SEL >= 0 ? `<button onclick="selectSearch()">← 검색으로</button>` : '';
   $('#mainhead').innerHTML = `
     ${backBtn}
     <h2>${esc(t.name)} <span style="color:var(--dim);font-size:13px">#${t.id} · ${countLabel}</span></h2>
-    <button onclick="toggleFolds()" class="${HIDE_FOLDS ? 'primary' : ''}">${HIDE_FOLDS ? '✓ ' : ''}프리폴드 숨기기</button>
-    <button onclick="toggleAll(true)">모두 펼치기</button>
-    <button onclick="toggleAll(false)">모두 접기</button>
-    <button onclick="copyMd()">📋 마크다운 복사</button>
-    <button class="primary" onclick="downloadMd()">⬇ .md 다운로드</button>`;
+    ${headBtns}`;
   const rebuyIds = detectRebuys(t.hands || []);
-  $('#hands').innerHTML = (SEL !== -1 ? tourneyStackChart(t.hands || []) : '') + hands.map((h, i) => {
+  $('#hands').innerHTML = banner + filterBar + (SEL !== -1 ? tourneyStackChart(t.hands || []) : '') + pager + hands.map((h, i) => {
     const tags = [];
     if (rebuyIds.has(h.hand_id)) tags.push('<span style="color:var(--gold)">리바이</span>');
     if (!h.vpip) tags.push('fold');
@@ -1011,7 +1055,70 @@ function renderMain() {
         <div class="ai-box" id="ai-${h.hand_id}">${aiBoxHtml(h.hand_id)}</div>
       </div>
     </div>`;
-  }).join('');
+  }).join('') + pager;
+}
+
+// 복기 페이저 + 핸드/미분석 카운트
+function reviewPager(pages, total, totalUnan) {
+  const info = `${total}핸드${REVIEW_UNANALYZED_ONLY ? '(미분석)' : ` · 미분석 ${totalUnan}`}${pages > 1 ? ` · ${REVIEW_PAGE + 1}/${pages}p` : ''}`;
+  if (pages <= 1) return `<div style="color:var(--dim);font-size:12px;margin:8px 0;text-align:center">${info}</div>`;
+  return `<div style="display:flex;gap:6px;justify-content:center;align-items:center;margin:8px 0">
+    <button ${REVIEW_PAGE <= 0 ? 'disabled' : ''} onclick="reviewGotoPage(${REVIEW_PAGE - 1})">‹</button>
+    <span style="color:var(--dim);font-size:12px">${info}</span>
+    <button ${REVIEW_PAGE >= pages - 1 ? 'disabled' : ''} onclick="reviewGotoPage(${REVIEW_PAGE + 1})">›</button></div>`;
+}
+function reviewGotoPage(p) { REVIEW_PAGE = p; renderMain(); $('#main').scrollTop = 0; }
+function reviewToggleUnanalyzed() { REVIEW_UNANALYZED_ONLY = !REVIEW_UNANALYZED_ONLY; REVIEW_PAGE = 0; renderMain(); }
+function reviewToggleAllin() { REVIEW_HIDE_ALLIN = !REVIEW_HIDE_ALLIN; REVIEW_PAGE = 0; renderMain(); }
+
+// 복기 필터(프리올인 숨기기 + 미분석만) 적용 — 페이징 전 목록. 렌더·배치가 공유해 일관성 유지.
+function reviewFiltered() {
+  let base = (REVIEW_HANDS || []).slice();
+  if (REVIEW_HIDE_ALLIN) base = base.filter(h => h.pf_action !== 'allin');   // 히어로 프리플랍 올인 제외
+  const totalUnan = base.filter(h => !reviewAnalyzed(h)).length;
+  const list = REVIEW_UNANALYZED_ONLY ? base.filter(h => !reviewAnalyzed(h)) : base;
+  return {list, totalUnan};
+}
+
+// 배치 진행 배너 (배치 중에만 표시) — 전체 재렌더 없이 이 요소만 갱신
+function reviewBatchBanner() {
+  const b = REVIEW_BATCH || {done: 0, total: 0};
+  const pct = b.total ? Math.round(b.done / b.total * 100) : 0;
+  const cur = b.currentId ? ` · 현재 #${b.currentId.slice(-6)}` : '';
+  return `<div id="batch-banner" style="border:1px solid var(--border);border-radius:9px;padding:10px 14px;margin-bottom:12px;background:var(--panel);display:flex;align-items:center;gap:12px">
+    <span>🤖 배치 분석 중 <b>${b.done}/${b.total}</b> (${pct}%)${cur}</span>
+    <div style="flex:1;height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;min-width:80px">
+      <div style="width:${pct}%;height:100%;background:var(--accent)"></div></div>
+    <button onclick="reviewStopBatch()">■ 중단</button></div>`;
+}
+function updateBatchProgress() {
+  const el = document.getElementById('batch-banner');
+  if (el && REVIEW_BATCH) el.outerHTML = reviewBatchBanner();
+}
+function reviewStopBatch() { if (REVIEW_BATCH) REVIEW_BATCH.stop = true; }
+
+// 현재 페이지의 미분석 핸드만 순차 분석 (기존 /api/analyze 재사용, 각 핸드 완료 시 서버 저장 → 중단/재개 안전)
+async function reviewAnalyzePage() {
+  if (REVIEW_BATCH && REVIEW_BATCH.running) return;
+  const page = reviewFiltered().list.slice(REVIEW_PAGE * REVIEW_PAGE_SIZE, (REVIEW_PAGE + 1) * REVIEW_PAGE_SIZE);
+  const targets = page.filter(h => !reviewAnalyzed(h));
+  if (!targets.length) { toast('이 페이지에 미분석 핸드가 없습니다'); return; }
+  REVIEW_BATCH = {running: true, done: 0, total: targets.length, stop: false, currentId: null};
+  renderMain();
+  for (const h of targets) {
+    if (REVIEW_BATCH.stop || SEL !== -1) break;
+    REVIEW_BATCH.currentId = h.hand_id;
+    updateBatchProgress();
+    await analyzeHand(h.hand_id);                 // 스트리밍 + 서버 저장
+    const c = AI_CACHE[h.hand_id];
+    if (c && c.status === 'done') h.analysis = c.text;   // 로컬도 분석됨 표시(필터 일관성)
+    REVIEW_BATCH.done++;
+    updateBatchProgress();
+  }
+  const stopped = REVIEW_BATCH.stop;
+  REVIEW_BATCH = null;
+  if (SEL === -1) renderMain();
+  toast(stopped ? '분석 중단됨' : '페이지 분석 완료');
 }
 
 // --- AI 분석 (스트리밍) ---
@@ -1033,8 +1140,12 @@ function verdictEmoji(text) {
 // 접힌 핸드 줄에 표시할 배지: 분석 완료 시 🤖 + 총평 이모지
 function aiFlagHtml(handId) {
   const c = AI_CACHE[handId];
-  if (!c || c.status !== 'done') return '';
-  return '🤖' + verdictEmoji(c.text);
+  if (!c) return '';
+  // 접힌 줄에서도 진행 상태가 보이게: 분석중 🤖+초록스피너 · 에러 🤖⚠️ · 완료 🤖+등급
+  if (c.status === 'loading' || c.status === 'streaming') return '🤖<span class="ai-spinner"></span>';
+  if (c.status === 'error') return '🤖⚠️';
+  if (c.status === 'done') return '🤖' + verdictEmoji(c.text);
+  return '';
 }
 
 function aiBoxHtml(handId) {
