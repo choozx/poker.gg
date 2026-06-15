@@ -446,6 +446,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <script>
 let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤
+let STACK_UNIT = 'chips';   // 스택 변화 차트 단위: 'chips'(절대 칩) | 'bb'
 let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
 let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null, BANK_CHART = 'cum';
 let BANK_PAGE = 0;
@@ -875,6 +876,8 @@ function visibleHands() {
 
 function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
 
+function setStackUnit(u) { if (STACK_UNIT === u) return; STACK_UNIT = u; renderMain(); }
+
 // 리바이 감지: hand_id Set 반환 (리바이로 돌아온 직후 첫 핸드들)
 function detectRebuys(allHands) {
   const pairs = allHands
@@ -905,32 +908,43 @@ function stackChartHover(e, id) {
   const tx = e.clientX - rect.left, ty = e.clientY - rect.top;
   tip.style.left = (tx + 12) + 'px';
   tip.style.top = Math.max(0, ty - 28) + 'px';
-  tip.textContent = (hand ? '#' + hand.hand_id + '  ' : '') + _fmtChips(chips) + ' chips';
+  const unit = d.unit === 'bb' ? ' bb' : ' chips';
+  const txt = d.unit === 'bb' ? (Math.round(chips * 10) / 10) : _fmtChips(chips);
+  tip.textContent = (hand ? '#' + hand.hand_id + '  ' : '') + txt + unit;
 }
 function stackChartHide(id) { const t = document.getElementById(id + '_tip'); if (t) t.style.display = 'none'; }
 
-// 토너먼트 스택 변화 차트 (절대 칩량)
+// 토너먼트 스택 변화 차트 (절대 칩량 / BB 토글)
 function tourneyStackChart(allHands) {
   const pairs = allHands
     .filter(h => h.stack_bb != null && h.blinds)
-    .map(h => { const b = parseFloat((h.blinds || '').split('/')[1]) || 0; return b ? {hand: h, chips: Math.round(h.stack_bb * b)} : null; })
+    .map(h => {
+      const b = parseFloat((h.blinds || '').split('/')[1]) || 0;
+      if (!b) return null;
+      const chips = Math.round(h.stack_bb * b);
+      // 단위에 맞춰 표시값(val)·핸드 손익(net) 동시 보유
+      return STACK_UNIT === 'bb'
+        ? {hand: h, val: h.stack_bb, net: (h.net || 0) / b}
+        : {hand: h, val: chips, net: h.net || 0};
+    })
     .filter(v => v != null);
   if (pairs.length < 2) return '';
   const valid = pairs.map(p => p.hand);
-  const pts = pairs.map(p => p.chips);
+  const pts = pairs.map(p => p.val);
   // 세그먼트 분할: 버스트+리바이 시점에 선을 끊고 리바이 시작점에 점 마커 표시
   const drawPts = [];
   const drawHands = [];  // drawPts 인덱스 → hand (버스트/최종점은 null)
   const segments = [[]];   // 세그먼트별 drawPts 인덱스 목록
   const rebuyDots = [];    // 리바이 시작점 drawPts 인덱스
   let rebuyCount = 0;
+  const gap = STACK_UNIT === 'bb' ? 2 : null;   // 리바이 판정 임계 (bb: 2bb, chips: 2*BB)
   for (let i = 0; i < valid.length; i++) {
     const idx = drawPts.length;
     drawPts.push(pts[i]); drawHands.push(valid[i]);
     segments[segments.length - 1].push(idx);
-    const end = Math.max(0, pts[i] + (valid[i].net || 0));
-    const bbVal = parseFloat((valid[i].blinds || '').split('/')[1]) || 100;
-    if (i < valid.length - 1 && pts[i + 1] > end + bbVal * 2) {
+    const end = Math.max(0, pts[i] + (pairs[i].net || 0));
+    const thresh = gap != null ? gap : (parseFloat((valid[i].blinds || '').split('/')[1]) || 100) * 2;
+    if (i < valid.length - 1 && pts[i + 1] > end + thresh) {
       const bustIdx = drawPts.length;
       drawPts.push(end); drawHands.push(null);   // 버스트 → 0
       segments[segments.length - 1].push(bustIdx);
@@ -940,7 +954,7 @@ function tourneyStackChart(allHands) {
     }
   }
   const finalIdx = drawPts.length;
-  drawPts.push(Math.max(0, pts[pts.length - 1] + (valid[valid.length - 1].net || 0)));
+  drawPts.push(Math.max(0, pts[pts.length - 1] + (pairs[pairs.length - 1].net || 0)));
   drawHands.push(null);
   segments[segments.length - 1].push(finalIdx);
   const W = 900, H = 175;
@@ -962,9 +976,13 @@ function tourneyStackChart(allHands) {
   const rebuyLabel = rebuyCount
     ? ` · <span style="color:var(--gold)">리바이 ${rebuyCount}회</span>` : '';
   const cid = 'sc_' + Date.now();
-  window[cid] = { pts: drawPts, hands: drawHands, W };
+  window[cid] = { pts: drawPts, hands: drawHands, W, unit: STACK_UNIT };
+  const uBtn = (k, l) => `<button onclick="setStackUnit('${k}')" style="font-size:11px;padding:2px 9px;border-radius:6px;border:1px solid var(--border);cursor:pointer;${STACK_UNIT === k ? 'background:var(--accent);color:#0c1117;font-weight:600' : 'background:transparent;color:var(--dim)'}">${l}</button>`;
   return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:10px 12px;margin-bottom:14px;max-width:900px">
-    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">스택 변화 · ${valid.length}핸드${rebuyLabel}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+      <div style="color:var(--dim);font-size:12px">스택 변화 · ${valid.length}핸드${rebuyLabel}</div>
+      <div style="display:flex;gap:4px">${uBtn('chips', '칩')}${uBtn('bb', 'BB')}</div>
+    </div>
     <div style="position:relative">
       <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:175px;display:block;cursor:crosshair"
         onmousemove="stackChartHover(event,'${cid}')" onmouseleave="stackChartHide('${cid}')">
