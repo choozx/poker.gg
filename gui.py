@@ -460,6 +460,7 @@ const REVIEW_PAGE_SIZE = 50;
 let SEARCH_Q = '', SEARCH_SORT = 'recent', SEARCH_PAGE = 0;
 const SEARCH_PAGE_SIZE = 20;
 let GRID_CACHE = {}, GRID_POS = 'all', GRID_STACK = 'all', GRID_METRIC = 'mix', STATS_TAB = 'summary';   // 통계 하위 탭
+let LEAKS = null;   // 리크 리포트 캐시 (/api/leaks)
 
 const $ = s => document.querySelector(s);
 
@@ -642,15 +643,26 @@ async function renderStatsView() {
   $('#mainhead').innerHTML = `
     <h2 style="flex:0 0 auto">📈 통계</h2>
     <button class="${STATS_TAB === 'summary' ? 'primary' : ''}" onclick="setStatsTab('summary')">요약</button>
-    <button class="${STATS_TAB === 'grid' ? 'primary' : ''}" onclick="setStatsTab('grid')">핸드 그리드</button>`;
+    <button class="${STATS_TAB === 'grid' ? 'primary' : ''}" onclick="setStatsTab('grid')">핸드 그리드</button>
+    <button class="${STATS_TAB === 'leaks' ? 'primary' : ''}" onclick="setStatsTab('leaks')">🩹 리크</button>`;
   if (STATS_TAB === 'grid') {
     if (!GRID_CACHE[GRID_POS]) $('#hands').innerHTML = '<div class="ai-loading">핸드 그리드 집계 중</div>';
     await ensureGrid();
     if (SEL !== -2 || STATS_TAB !== 'grid') return;
     renderGrid();
+  } else if (STATS_TAB === 'leaks') {
+    if (!LEAKS) $('#hands').innerHTML = '<div class="ai-loading">리크 집계 중</div>';
+    await ensureLeaks();
+    if (SEL !== -2 || STATS_TAB !== 'leaks') return;
+    renderLeaks();
   } else {
     renderStats();
   }
+}
+
+async function ensureLeaks() {
+  if (!LEAKS) LEAKS = await fetch('/api/leaks').then(r => r.json());
+  return LEAKS;
 }
 
 // 포지션+스택 조합별 그리드를 받아 캐시 (조합당 1회만 fetch)
@@ -838,6 +850,123 @@ function renderStats() {
         <tbody>${posRows}</tbody>
       </table>
     </div>`;
+}
+
+// --- 🩹 리크 대시보드 (AI 등급 집계) ---
+const LEAK_GRADES = ['좋음', '무난', '의문', '실수'];
+const LEAK_COLOR = {'좋음': 'var(--green)', '무난': 'var(--accent)', '의문': 'var(--gold)', '실수': 'var(--red)'};
+
+// 전체 평가 분포 — 가로 스택 막대 + 범례
+function leakOverallBar(o) {
+  const tot = LEAK_GRADES.reduce((a, g) => a + (o[g] || 0), 0);
+  if (!tot) return '<p style="color:var(--dim)">총평 등급이 집계된 핸드가 없습니다.</p>';
+  const bars = LEAK_GRADES.map(g => {
+    const v = o[g] || 0; if (!v) return '';
+    const pct = 100 * v / tot;
+    return `<div title="${g} ${v}핸드" style="width:${pct}%;background:${LEAK_COLOR[g]};display:flex;align-items:center;justify-content:center;font-size:11px;color:#0c1117;font-weight:600">${pct >= 9 ? Math.round(pct) + '%' : ''}</div>`;
+  }).join('');
+  const legend = LEAK_GRADES.map(g =>
+    `<span style="font-size:12px;color:var(--dim)"><span style="display:inline-block;width:9px;height:9px;background:${LEAK_COLOR[g]};border-radius:2px;margin-right:4px;vertical-align:middle"></span>${VERDICT_EMOJI[g]} ${g} ${o[g] || 0}</span>`
+  ).join('  ');
+  return `<div style="display:flex;height:22px;border-radius:5px;overflow:hidden;margin:8px 0 6px">${bars}</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap">${legend}</div>`;
+}
+
+// 리크율 막대 한 줄 (의문+실수 / 평가횟수). dimUnder 미만 표본은 흐리게.
+function leakRateRow(label, leak, evald, isMax, dimUnder) {
+  const rate = evald ? Math.round(100 * leak / evald) : 0;
+  const dim = evald < (dimUnder || 0);
+  const col = rate >= 35 ? 'var(--red)' : rate >= 20 ? 'var(--gold)' : 'var(--accent)';
+  return `<div style="display:flex;align-items:center;gap:10px;margin:6px 0;${dim ? 'opacity:.4' : ''}">
+    <div style="width:62px;color:var(--dim);font-size:13px;text-align:right">${esc(label)}</div>
+    <div style="flex:1;height:14px;background:var(--panel2);border-radius:4px;overflow:hidden">
+      <div style="width:${Math.min(100, rate)}%;height:100%;background:${col}"></div>
+    </div>
+    <div style="width:120px;font-size:12px">${evald ? rate + '%' : '—'} <span style="color:var(--dim)">(${leak}/${evald})</span>${isMax && rate > 0 ? ' 🔴' : ''}</div>
+  </div>`;
+}
+
+function renderLeaks() {
+  const L = LEAKS;
+  if (!L) return;
+  if (!L.analyzed) {
+    $('#hands').innerHTML = `<p style="color:var(--dim)">AI 분석된 핸드가 없습니다. 📌 복기 탭에서 핸드를 분석하면 여기에 리크가 집계됩니다.</p>`;
+    return;
+  }
+  const pct = Math.round(100 * L.analyzed / L.total);
+
+  // 스트리트별 리크율 (의문+실수 / 4등급 합)
+  const streetData = L.streets.map(s => {
+    const evald = LEAK_GRADES.reduce((a, g) => a + (s[g] || 0), 0);
+    return {label: s.street, leak: (s['의문'] || 0) + (s['실수'] || 0), evald};
+  });
+  const streetMax = Math.max(0, ...streetData.filter(d => d.evald >= 10).map(d => d.evald ? d.leak / d.evald : 0));
+  const streetRows = streetData.map(d =>
+    leakRateRow(d.label, d.leak, d.evald, d.evald >= 10 && d.evald && d.leak / d.evald === streetMax && streetMax > 0, 5)
+  ).join('');
+
+  // 포지션별 리크율 (총평 등급 기준)
+  const posMax = Math.max(0, ...L.positions.filter(p => p.n >= 10).map(p => p.n ? p.leak / p.n : 0));
+  const posRows = L.positions.map(p =>
+    leakRateRow(p.pos, p.leak, p.n, p.n >= 10 && p.n && p.leak / p.n === posMax && posMax > 0, 10)
+  ).join('');
+
+  // 가장 큰 리크 핸드 (실수 우선 · 칩손실 큰 순)
+  const handRows = L.leak_hands.map(h => {
+    const nb = h.net_bb;
+    const netH = nb == null ? '' :
+      `<span style="color:${nb >= 0 ? 'var(--green)' : 'var(--red)'};font-size:12px">${nb >= 0 ? '+' : ''}${nb.toFixed(1)}bb</span>`;
+    return `<div onclick="openHandFromLeak('${h.tournament_id}','${h.hand_id}')"
+        style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-bottom:1px solid var(--border);cursor:pointer"
+        onmouseover="this.style.background='var(--panel2)'" onmouseout="this.style.background=''">
+      <span style="width:22px;text-align:center">${VERDICT_EMOJI[h.grade] || ''}</span>
+      <span class="pos pos-badge" style="min-width:42px;text-align:center">${esc(h.hero_pos)}</span>
+      <span style="width:46px;color:var(--dim);font-size:12px">${esc(h.street)}</span>
+      <span style="width:52px">${cardsHtml(h.hero_cards)}</span>
+      <span style="width:60px;text-align:right">${netH}</span>
+      <span style="flex:1;color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(h.snippet || '')}</span>
+      <span style="color:var(--dim)">›</span>
+    </div>`;
+  }).join('') || '<p style="color:var(--dim);padding:8px">의문·실수로 분류된 핸드가 없습니다. 👍</p>';
+
+  $('#hands').innerHTML = `
+    <div style="color:var(--dim);font-size:13px;margin-bottom:14px">
+      분석된 <strong style="color:var(--text)">${L.analyzed.toLocaleString()}</strong> / ${L.total.toLocaleString()}핸드 기준 (${pct}%)
+      · <span style="font-size:12px">표본 적은 항목은 흐리게</span>
+    </div>
+    <div class="stat-section">
+      <h3>전체 평가 분포</h3>
+      ${leakOverallBar(L.overall)}
+    </div>
+    <div class="stat-section">
+      <h3>스트리트별 리크율 <span style="color:var(--dim);font-size:12px;font-weight:400">(의문+실수 비율 · 어디서 새는지)</span></h3>
+      ${streetRows}
+    </div>
+    <div class="stat-section">
+      <h3>포지션별 리크율 <span style="color:var(--dim);font-size:12px;font-weight:400">(총평 등급 기준)</span></h3>
+      ${posRows}
+    </div>
+    <div class="stat-section">
+      <h3>❌ 가장 큰 리크 핸드 <span style="color:var(--dim);font-size:12px;font-weight:400">(실수 우선 · 칩손실 큰 순 · 클릭→핸드)</span></h3>
+      <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden">${handRows}</div>
+    </div>`;
+}
+
+// 리크 핸드 클릭 → 해당 토너먼트 열고 그 핸드로 스크롤·펼치기·하이라이트
+async function openHandFromLeak(tid, handId) {
+  const i = DATA.tournaments.findIndex(t => t.id === tid);
+  if (i < 0) { toast('연결된 핸드를 찾을 수 없습니다'); return; }
+  await selectTourney(i);
+  requestAnimationFrame(() => {
+    const box = document.getElementById('ai-' + handId);
+    const card = box && box.closest('.hand');
+    if (!card) { toast('핸드를 찾지 못했습니다'); return; }
+    card.classList.add('open');
+    card.scrollIntoView({behavior: 'smooth', block: 'center'});
+    card.style.transition = 'background .4s';
+    card.style.background = 'rgba(232,184,79,.16)';
+    setTimeout(() => { card.style.background = ''; }, 1500);
+  });
 }
 
 // 복기 추천 뷰 — 전체 토너에서 추천 핸드만 모아서 표시
@@ -1224,6 +1353,7 @@ async function analyzeHand(handId) {
       AI_CACHE[handId] = {status: 'error', text: 'AI가 빈 응답을 반환했습니다.'};
     } else {
       AI_CACHE[handId] = {status: 'done', text, backend};
+      LEAKS = null;   // 새 분석 반영되도록 리크 캐시 무효화
     }
   } catch (e) {
     AI_CACHE[handId] = {status: 'error', text: String(e)};
@@ -1780,7 +1910,7 @@ async function applyData(data) {
   REPORT = data.report || null;
   ANALYZED_TOTAL = data.analyzed_total || 0;
   REVIEW_COUNT = data.review_count || 0;
-  REVIEW_HANDS = null; STATS = null; GRID_CACHE = {}; GRID_POS = 'all'; GRID_STACK = 'all';  // 임포트 후 다시 로드되도록 초기화
+  REVIEW_HANDS = null; STATS = null; LEAKS = null; GRID_CACHE = {}; GRID_POS = 'all'; GRID_STACK = 'all';  // 임포트 후 다시 로드되도록 초기화
   updateReportBtn();
   const params = new URLSearchParams(location.search);
   HIDE_FOLDS = params.has('hidefolds');
@@ -1919,6 +2049,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/stats":
             resp = store.stats(DB)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/leaks":
+            resp = store.leak_report(DB)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/handgrid":
             qs = parse_qs(urlparse(self.path).query)

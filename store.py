@@ -180,6 +180,105 @@ def stats(db):
     }
 
 
+# --- 리크 리포트 (AI 등급 집계) -------------------------------------------
+# AI 분석 텍스트에서 스트리트별·전체 [좋음/무난/의문/실수] 등급을 뽑아 집계한다.
+# 추가 AI 호출 없이 이미 저장된 analysis 만 파싱 — 분석된 핸드만 대상.
+
+_GRADES = ("좋음", "무난", "의문", "실수")
+_GRADE_RANK = {"좋음": 0, "무난": 1, "의문": 2, "실수": 3}   # 의문/실수(>=2) = 리크
+_LEAK_STREETS = ("프리플랍", "플랍", "턴", "리버")          # 프리플랍 먼저(부분문자열 '플랍' 충돌 회피)
+_GRADE_RE = re.compile(r"\[(좋음|무난|의문|실수)\]")
+_OVERALL_RE = re.compile(r"전체\s*평가\s*[:：]\s*\[?(좋음|무난|의문|실수)\]?")
+_SECTION_RE = re.compile(r"^##\s*(.+?)\s*$", re.M)
+
+
+def _street_key(header):
+    for k in _LEAK_STREETS:
+        if k in header:
+            return k
+    return None
+
+
+def _parse_analysis(text):
+    """분석 마크다운 → {'overall': 등급|None, 'streets': {스트리트: (등급, 한줄요약)}}."""
+    streets = {}
+    secs = list(_SECTION_RE.finditer(text))
+    for i, m in enumerate(secs):
+        key = _street_key(m.group(1))
+        if key is None:                         # ## 총평 등은 스트리트 아님
+            continue
+        body = text[m.end(): secs[i + 1].start() if i + 1 < len(secs) else len(text)]
+        gm = _GRADE_RE.search(body)
+        if not gm:
+            continue
+        rest = body[gm.end():].strip().splitlines()
+        snippet = (rest[0].strip(" .—-·*") if rest else "")[:90]
+        streets[key] = (gm.group(1), snippet)
+    om = _OVERALL_RE.search(text)
+    return {"overall": om.group(1) if om else None, "streets": streets}
+
+
+def leak_report(db):
+    """AI 등급을 스트리트·포지션별로 집계 + 가장 큰 리크 핸드 목록. 분석된 핸드만 대상."""
+    hands = list(db["hands"].values())
+    total = len(hands)
+    analyzed = 0
+    overall = {g: 0 for g in _GRADES}
+    streets = {s: {g: 0 for g in _GRADES} for s in _LEAK_STREETS}
+    by_pos = {}
+    leak_hands = []
+
+    for h in hands:
+        text = h.get("analysis")
+        if not text:
+            continue
+        analyzed += 1
+        parsed = _parse_analysis(text)
+
+        ov = parsed["overall"]
+        if ov:
+            overall[ov] += 1
+            pos = h.get("hero_pos") or "?"
+            p = by_pos.setdefault(pos, {"pos": pos, "n": 0, "leak": 0})
+            p["n"] += 1
+            if _GRADE_RANK[ov] >= 2:
+                p["leak"] += 1
+
+        worst = None   # (등급순위, 스트리트, 등급, 요약)
+        for s, (g, snip) in parsed["streets"].items():
+            streets[s][g] += 1
+            r = _GRADE_RANK[g]
+            if worst is None or r > worst[0]:
+                worst = (r, s, g, snip)
+
+        if worst and worst[0] >= 2:             # 가장 나쁜 스트리트가 의문/실수면 리크 핸드
+            leak_hands.append({
+                "hand_id": h.get("hand_id"),
+                "hero_pos": h.get("hero_pos") or "?",
+                "hero_cards": h.get("hero_cards") or [],
+                "street": worst[1],
+                "grade": worst[2],
+                "snippet": worst[3],
+                "net_bb": h.get("net_bb"),
+                "tournament_id": h.get("tournament_id"),
+                "_rank": worst[0],
+            })
+
+    # 실수(랭크 높음) 먼저, 그다음 칩손실 큰 순(net_bb 오름차순)
+    leak_hands.sort(key=lambda x: (-x["_rank"], x["net_bb"] if x["net_bb"] is not None else 0))
+    for x in leak_hands:
+        x.pop("_rank", None)
+
+    return {
+        "total": total,
+        "analyzed": analyzed,
+        "overall": overall,
+        "streets": [{"street": s, **streets[s]} for s in _LEAK_STREETS],
+        "positions": sorted(by_pos.values(), key=lambda p: _pos_key(p["pos"])),
+        "leak_hands": leak_hands[:20],
+    }
+
+
 _GRID_RANKS = "AKQJT98765432"
 
 
