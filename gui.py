@@ -2248,6 +2248,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(json.dumps({"error": "금액을 입력하세요"}, ensure_ascii=False),
                                "application/json; charset=utf-8", code=400)
                     return
+                # 기록 시각: 오늘 날짜(현재 거래)면 지금 시각 → 마지막 잔고 입력 이후로 잡혀
+                # 잔고에 즉시 반영. 과거 날짜(소급)면 그날 끝 → 앵커 이전이면 이미 반영된 걸로 처리.
+                today = time.strftime("%Y-%m-%d")
+                cf_date = (body.get("date") or "").strip() or today
+                body["date"] = cf_date
+                body["at"] = (time.strftime("%Y-%m-%d %H:%M:%S")
+                              if cf_date >= today else cf_date + " 23:59:59")
                 bankroll.add_cashflow(DB, body)
             persist(DB)
             self._send(json.dumps(bankroll.summary(DB), ensure_ascii=False),

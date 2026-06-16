@@ -520,8 +520,14 @@ def current_balance(db, ht=None):
         inc = (_dt_norm(start) > anchor_at) if start else ((e.get("date") or "") > anchor["date"])
         if inc:
             since += e.get("pnl", 0)
-    cf = sum(_cf_delta(c) for c in b.get("cashflows", [])
-             if (c.get("date") or "") > anchor["date"])
+    # 입출금: 기록 시각(at)이 있으면 앵커 at과 정밀 비교(같은 날 잔고 입력 후의 입출금도 잡힘),
+    # 없는 레거시 기록은 날짜 폴백 — 앵커 시점에 이미 잔고로 흡수됐다고 보고 그대로 둔다.
+    def _cf_after(c):
+        at = c.get("at")
+        if at:
+            return _dt_norm(at) > anchor_at
+        return (c.get("date") or "") > anchor["date"]
+    cf = sum(_cf_delta(c) for c in b.get("cashflows", []) if _cf_after(c))
     return {
         "balance": round(anchor["amount"] + since + cf, 2),
         "anchor_date": anchor["date"],
@@ -568,6 +574,13 @@ def add_cashflow(db, fields):
         "amount": round(abs(float(fields.get("amount", 0))), 2),
         "note": (fields.get("note") or "").strip(),
     }
+    # 기록 시각(at): 마지막 잔고 스냅샷 '이후'의 입출금만 잔고에 반영하기 위함(current_balance 참조).
+    # 호출부가 '지금' 시각을 넣어주면 같은 날 입력도 즉시 반영. 미지정(소급)이면 그날 끝으로 폴백.
+    at = (fields.get("at") or "").strip()
+    if not at and rec["date"]:
+        at = rec["date"] + " 23:59:59"
+    if at:
+        rec["at"] = at
     if typ == "withdraw":
         method = "transfer" if str(fields.get("method")) == "transfer" else "wallet"
         if fields.get("fee") is not None:
