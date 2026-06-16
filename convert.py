@@ -465,8 +465,10 @@ def hand_meta(h, hero="Hero"):
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,
         "review": review,
-        "markdown": render_markdown(h, hero=hero),
     }
+    # markdown은 저장하지 않는다 — raw에서 결정론적으로 재생성되는 '표현'일 뿐이라
+    # 중복 저장(파일/동기화의 ~32%)을 없앤다. 필요할 때 render_markdown으로 즉석 생성
+    # (store.tournament_hands 내보내기용, gui /api/analyze 분석용).
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bankroll
 import cloud_sync
+import convert
 import store
 
 
@@ -2143,7 +2144,15 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
-                hand_md = body.get("markdown", "")
+                # markdown은 저장하지 않으므로 hand_id로 raw에서 즉석 렌더. (구 클라이언트가
+                # 보낸 body markdown은 폴백.) 복기/그리드 분석은 hand_id만으로 동작.
+                hand_id = body.get("hand_id")
+                rec = DB["hands"].get(hand_id)
+                if rec and rec.get("raw"):
+                    hand_md = convert.render_markdown(
+                        convert.parse_hand(rec["raw"]), hero="Hero")
+                else:
+                    hand_md = body.get("markdown", "")
                 if not hand_md.strip():
                     raise ValueError("분석할 핸드 데이터가 없습니다.")
                 if AI_BACKEND is None:
@@ -2157,7 +2166,6 @@ class Handler(BaseHTTPRequestHandler):
             # 스트리밍 응답 + 완료된 분석은 DB에 영구 저장
             text = self._stream_ai(ANALYSIS_SYSTEM_PROMPT,
                                    "다음 핸드를 분석하세요:\n\n" + hand_md)
-            hand_id = body.get("hand_id")
             if text and hand_id in DB["hands"]:
                 DB["hands"][hand_id]["analysis"] = text
                 persist(DB)

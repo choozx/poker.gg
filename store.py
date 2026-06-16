@@ -12,7 +12,8 @@ import re
 import threading
 import time
 
-from convert import hand_meta, is_excluded_game, parse_hand, split_hands
+from convert import (hand_meta, is_excluded_game, parse_hand,
+                     render_markdown, split_hands)
 
 _SAVE_LOCK = threading.Lock()
 HAND_ID_RE = re.compile(r"CoinPoker Hand #(\d+)")
@@ -38,13 +39,22 @@ def save_db(path, db):
 
 
 def build_record(raw, hero="Hero"):
-    """원본 핸드 텍스트 → DB 레코드 (메타 + 마크다운 + 원본)."""
+    """원본 핸드 텍스트 → DB 레코드 (메타 + 원본). markdown은 저장하지 않고 필요 시 재생성."""
     h = parse_hand(raw)
     rec = hand_meta(h, hero)
     rec["tournament_id"] = h.tournament_id or "(cash)"
     rec["tournament_name"] = h.tournament or h.game
     rec["raw"] = raw.strip()
     return rec
+
+
+def hand_view(rec, hero="Hero"):
+    """리스트 응답용 핸드 dict — raw 제외 + markdown 보장.
+    저장돼 있으면(구 DB) 그대로, 없으면(신 DB) raw에서 즉석 렌더. 둘 다 동일 결과."""
+    out = {k: v for k, v in rec.items() if k != "raw"}
+    if not out.get("markdown") and rec.get("raw"):
+        out["markdown"] = render_markdown(parse_hand(rec["raw"]), hero=hero)
+    return out
 
 
 def import_text(db, text, hero="Hero"):
@@ -109,9 +119,9 @@ def review_hands(db):
 
 
 def tournament_hands(db, tournament_id):
-    """특정 토너먼트의 핸드 목록 (raw 제외, 시간순)."""
+    """특정 토너먼트의 핸드 목록 (raw 제외, 시간순). markdown 포함(.md 내보내기용)."""
     hands = [
-        {k: v for k, v in rec.items() if k != "raw"}
+        hand_view(rec)
         for rec in db["hands"].values()
         if rec["tournament_id"] == tournament_id
     ]
