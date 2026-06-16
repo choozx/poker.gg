@@ -1478,17 +1478,27 @@ function bankRecommend(b) {
 }
 
 // 손익 차트 (누적 라인 ↔ 일별 막대 토글) — inline SVG
-function bankSparkBody(entries) {
+// ref = '진짜 손익'(현재잔고+총출금−총입금) 수평 기준선 값. null이면 안 그림.
+// 토너손익선과 ref선의 갭 = 기록된 토너로 설명 안 되는 돈(캐시·보너스·누락 등).
+function bankSparkBody(entries, ref) {
   if (entries.length < 2) return '';
   const ys = entries.map(e => e.cum_pnl);
-  const mn = Math.min(0, ...ys), mx = Math.max(0, ...ys), W = 800, H = 135, n = ys.length;
+  const hasRef = ref != null && isFinite(ref);
+  const pool = hasRef ? [0, ref, ...ys] : [0, ...ys];
+  const mn = Math.min(...pool), mx = Math.max(...pool), W = 800, H = 135, n = ys.length;
   const X = i => (i / (n - 1) * W).toFixed(1);
   const Y = v => (H - (v - mn) / ((mx - mn) || 1) * H).toFixed(1);
   const pts = ys.map((v, i) => `${X(i)},${Y(v)}`).join(' ');
   const last = ys[ys.length - 1];
-  return `<div style="color:var(--dim);font-size:12px;margin-bottom:4px">누적 손익 (${entries[0].date} ~ ${entries[n-1].date})</div>
+  const refLine = hasRef
+    ? `<line x1="0" y1="${Y(ref)}" x2="${W}" y2="${Y(ref)}" stroke="var(--gold)" stroke-width="1.5"
+             stroke-dasharray="6 4" vector-effect="non-scaling-stroke"/>` : '';
+  const refLbl = hasRef
+    ? ` <span style="color:var(--gold)">· ┄ 진짜 손익 ${ref>=0?'+':'−'}$${Math.abs(ref).toFixed(2)}</span>` : '';
+  return `<div style="color:var(--dim);font-size:12px;margin-bottom:4px">누적 손익 (${entries[0].date} ~ ${entries[n-1].date})${refLbl}</div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:135px;display:block">
       <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
+      ${refLine}
       <polyline points="${pts}" fill="none" stroke="${last>=0?'var(--green)':'var(--red)'}" stroke-width="2" vector-effect="non-scaling-stroke"/>
     </svg>`;
 }
@@ -1531,7 +1541,10 @@ function bankDailyHover(e) {
 }
 function bankDailyHide() { const t = document.getElementById('bankDaily_tip'); if (t) t.style.display = 'none'; }
 function bankChartCol(b) {
-  const cumBody = bankSparkBody(b.entries), dayBody = bankDailyBody(b.daily);
+  // 진짜 손익 = 현재잔고 + 총출금 − 총입금 (잔고 입력돼 있을 때만). 누적 차트에 기준선으로.
+  const ref = (b.balance && b.balance.balance != null)
+    ? b.balance.balance + b.cf_withdraw - b.cf_deposit : null;
+  const cumBody = bankSparkBody(b.entries, ref), dayBody = bankDailyBody(b.daily);
   if (!cumBody && !dayBody) return '';
   const body = BANK_CHART === 'daily' ? (dayBody || cumBody) : (cumBody || dayBody);
   const tbtn = (m, l) => `<button class="${BANK_CHART===m?'primary':''}" onclick="bankSetChart('${m}')" style="font-size:11px;padding:2px 9px">${l}</button>`;
