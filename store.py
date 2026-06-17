@@ -108,9 +108,9 @@ def tournament_list(db):
 
 
 def review_hands(db):
-    """복기 추천 핸드 전체 (raw 제외, 최신순)."""
+    """복기 추천 핸드 전체 (raw 제외 + markdown 보장, 최신순)."""
     hands = [
-        {k: v for k, v in rec.items() if k != "raw"}
+        hand_view(rec)
         for rec in db["hands"].values()
         if rec.get("review")
     ]
