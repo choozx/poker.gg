@@ -1481,8 +1481,9 @@ function bankRecommend(b) {
 }
 
 // 손익 차트 (누적 라인 ↔ 일별 막대 토글) — inline SVG
-// ref = '진짜 손익'(현재잔고+총출금−총입금) 수평 기준선 값. null이면 안 그림.
-// 토너손익선과 ref선의 갭 = 기록된 토너로 설명 안 되는 돈(캐시·보너스·누락 등).
+// ref = '진짜 손익분기선' 값 = 실현 현금손익이 0이 되는 누적손익 레벨. null이면 안 그림.
+// 곡선 끝점에서 이 선까지의 세로 간격이 곧 실현 현금손익(= 잔고+출금−입금).
+// 곡선이 선 위면 실제 흑자, 아래면 실제 적자.
 function bankSparkBody(entries, ref) {
   if (entries.length < 2) return '';
   const ys = entries.map(e => e.cum_pnl);
@@ -1493,11 +1494,12 @@ function bankSparkBody(entries, ref) {
   const Y = v => (H - (v - mn) / ((mx - mn) || 1) * H).toFixed(1);
   const pts = ys.map((v, i) => `${X(i)},${Y(v)}`).join(' ');
   const last = ys[ys.length - 1];
+  const realPnl = hasRef ? last - ref : 0;   // 선까지의 세로 거리 = 실현 현금손익
   const refLine = hasRef
     ? `<line x1="0" y1="${Y(ref)}" x2="${W}" y2="${Y(ref)}" stroke="var(--gold)" stroke-width="1.5"
              stroke-dasharray="6 4" vector-effect="non-scaling-stroke"/>` : '';
   const refLbl = hasRef
-    ? ` <span style="color:var(--gold)">· ┄ 진짜 손익 ${ref>=0?'+':'−'}$${Math.abs(ref).toFixed(2)}</span>` : '';
+    ? ` <span style="color:var(--gold)">· ┄ 진짜 손익분기 · 현재 ${realPnl>=0?'+':'−'}$${Math.abs(realPnl).toFixed(2)}</span>` : '';
   return `<div style="color:var(--dim);font-size:12px;margin-bottom:4px">누적 손익 (${entries[0].date} ~ ${entries[n-1].date})${refLbl}</div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:135px;display:block">
       <line x1="0" y1="${Y(0)}" x2="${W}" y2="${Y(0)}" stroke="var(--border)" stroke-width="1"/>
@@ -1544,9 +1546,15 @@ function bankDailyHover(e) {
 }
 function bankDailyHide() { const t = document.getElementById('bankDaily_tip'); if (t) t.style.display = 'none'; }
 function bankChartCol(b) {
-  // 진짜 손익 = 현재잔고 + 총출금 − 총입금 (잔고 입력돼 있을 때만). 누적 차트에 기준선으로.
-  const ref = (b.balance && b.balance.balance != null)
-    ? b.balance.balance + b.cf_withdraw - b.cf_deposit : null;
+  // 진짜 손익분기선 — 실현 현금손익이 0이 되는 누적손익 레벨(잔고 입력됐을 때만).
+  // 실현 현금손익 = 현재잔고 + 총출금 − 총입금. 토너 외 수입(레이크백 등)을 상수 오프셋으로 보면,
+  // 그 손익이 0인 지점 = 마지막 누적손익 − 실현손익 → 곡선~선 간격이 곧 실현 손익이 된다.
+  let ref = null;
+  if (b.balance && b.balance.balance != null && b.entries.length) {
+    const realPnl = b.balance.balance + b.cf_withdraw - b.cf_deposit;
+    const lastCum = b.entries[b.entries.length - 1].cum_pnl;
+    ref = lastCum - realPnl;
+  }
   const cumBody = bankSparkBody(b.entries, ref), dayBody = bankDailyBody(b.daily);
   if (!cumBody && !dayBody) return '';
   const body = BANK_CHART === 'daily' ? (dayBody || cumBody) : (cumBody || dayBody);
