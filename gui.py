@@ -307,6 +307,58 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .suit-s { color: #c9d3e0; } .suit-h { color: #ff6b7d; }
   .suit-d { color: #58a6ff; } .suit-c { color: #56d364; }
 
+  /* ⏱ 토너먼트 타이머 — 핸드 DB와 무관한 독립 도구 */
+  .tourney.timer { border-color: rgba(192,132,252,.45); }
+  .tourney.timer.sel { border-color: #c084fc; background: rgba(192,132,252,.08); }
+  .tourney.timer .tname { color: #c084fc; }
+  .tm-wrap { max-width: 800px; }
+  .tm-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+             padding: 20px 24px 18px; margin-bottom: 12px; }
+  .tm-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .tm-lv { font-size: 13px; font-weight: 700; letter-spacing: 2.5px; color: var(--dim); }
+  .tm-blinds { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tm-clock { font-size: 76px; font-weight: 700; line-height: 1.08; text-align: center;
+              font-variant-numeric: tabular-nums; letter-spacing: 2px; margin: 8px 0 2px; }
+  .tm-clock.warn { color: var(--gold); }
+  .tm-clock.brk { color: #c084fc; }
+  .tm-clock.done { color: var(--dim); font-size: 46px; }
+  .tm-next { text-align: center; color: var(--dim); font-size: 13px; min-height: 20px; }
+  .tm-bar { height: 5px; background: var(--panel2); border-radius: 3px; margin-top: 16px; overflow: hidden; }
+  .tm-bar > i { display: block; height: 100%; background: var(--accent); }
+  .tm-bar > i.brk { background: #c084fc; }
+  .tm-ctrl { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .tm-ctrl .spacer { flex: 1; }
+  .tm-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+              gap: 10px; margin-bottom: 12px; }
+  .tm-stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 11px 14px; }
+  .tm-stat > span { color: var(--dim); font-size: 12px; }
+  .tm-stat > b { display: block; font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 1px; }
+  .tm-stat > em { color: var(--dim); font-size: 11px; font-style: normal; }
+  .tm-stat.itm > b { color: var(--green); }
+  .tm-stat.bubble > b { color: var(--gold); }
+  .tm-mini { background: var(--panel2); border: 1px solid var(--border); color: var(--dim);
+             border-radius: 5px; padding: 1px 7px; font-size: 12px; cursor: pointer; margin-left: 6px; }
+  .tm-mini:hover { border-color: var(--accent); color: var(--accent); }
+  details.tm-panel { background: var(--panel); border: 1px solid var(--border);
+                     border-radius: 10px; margin-bottom: 12px; }
+  details.tm-panel > summary { cursor: pointer; padding: 11px 14px; font-weight: 600; font-size: 13px; }
+  details.tm-panel > summary::marker { color: var(--dim); }
+  details.tm-panel > div { padding: 12px 14px 16px; border-top: 1px solid var(--border); }
+  .tm-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
+  .tm-form h4 { grid-column: 1 / -1; font-size: 12px; color: var(--dim); font-weight: 600;
+                margin-top: 4px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .tm-form h4:first-child { margin-top: 0; border-top: none; padding-top: 0; }
+  .tm-f { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--dim); }
+  .tm-f input, .tm-f select { background: var(--panel2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 13px; width: 100%; }
+  .tm-f em { font-style: normal; font-size: 11px; color: #6f7889; }
+  table.tm-struct { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  table.tm-struct th { color: var(--dim); font-size: 11px; font-weight: 600; text-align: right; padding: 5px 8px; }
+  table.tm-struct td { padding: 4px 8px; text-align: right; border-top: 1px solid var(--border); }
+  table.tm-struct th:first-child, table.tm-struct td:first-child { text-align: left; }
+  table.tm-struct tr.cur td { background: rgba(77,163,255,.13); color: var(--accent); font-weight: 700; }
+  table.tm-struct tr.brk td { color: #c084fc; }
+
   .ai-box { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
   .ai-result { background: rgba(77,163,255,.05); border: 1px solid rgba(77,163,255,.25);
                border-radius: 9px; padding: 12px 16px; margin-top: 8px; }
@@ -448,7 +500,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤
+let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤, -6 타이머
 let STACK_UNIT = 'chips';   // 스택 변화 차트 단위: 'chips'(절대 칩) | 'bb'
 let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
 let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null, BANK_CHART = 'cum';
@@ -543,6 +595,10 @@ function renderSidebar() {
     <div class="tourney search ${(SEL===-3||inTourney)?'sel':''}" onclick="selectSearch()">
       <div class="tname">🔍 토너먼트</div>
       <div class="tmeta">${DATA.tournaments.length}개 · 검색해서 열기</div>
+    </div>
+    <div class="tourney timer ${SEL===-6?'sel':''}" onclick="selectTimer()">
+      <div class="tname">⏱ 토너먼트 타이머${TIMER.run.running ? ' <span style="color:var(--green)">●</span>' : ''}</div>
+      <div class="tmeta">${tmSidebarMeta()}</div>
     </div>`;
 }
 
@@ -2037,6 +2093,422 @@ async function generateReport() {
     $('#report-body').innerHTML = `<div class="ai-error">${esc(String(e))}</div>`;
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// ⏱ 토너먼트 타이머 (SEL = -6)
+// 핸드 DB와 완전히 독립된 도구 — 서버/hands_db.json을 일절 건드리지 않고
+// 설정·진행상태를 localStorage에만 저장한다. 새로고침해도 경과시간이 이어지도록
+// '경과 ms(base) + 재생 시작 시각(startedAt)'만 저장하고 화면에서 매 틱 계산한다.
+// ─────────────────────────────────────────────────────────────
+const TM_KEY = 'ahh_timer_v1';
+
+// 블라인드 사다리 — 시작 SB에 곱하는 배수. 레벨당 증가율로 구조 성격이 갈린다.
+const TM_LADDERS = {
+  slow: [1,1.5,2,2.5,3,4,5,6,8,10,12,15,20,25,30,40,50,60,80,100,120,150,200,250,300,400,500,600,800,1000,1200,1500],
+  med:  [1,1.5,2,3,4,5,6,8,10,12,15,20,25,30,40,50,60,80,100,125,150,200,250,300,400,500,600,800,1000,1250,1500,2000],
+  fast: [1,1.5,2,3,4,6,8,10,15,20,30,40,60,80,100,150,200,300,400,600,800,1000,1500,2000,3000,4000,6000,8000,10000],
+};
+const TM_LADDER_LABEL = {slow: '완만 (×1.25)', med: '보통 (×1.33)', fast: '가파름 (×1.5)'};
+
+const TM_PRESETS = {
+  hyper:   {label: '⚡ 하이퍼', ladder: 'fast', levelMin: 3,  startStack: 5000,  startSb: 25, anteFrom: 2, breakEvery: 0,  breakMin: 5},
+  turbo:   {label: '🚀 터보',   ladder: 'med',  levelMin: 5,  startStack: 10000, startSb: 25, anteFrom: 3, breakEvery: 12, breakMin: 5},
+  classic: {label: '🎩 클래식', ladder: 'slow', levelMin: 10, startStack: 20000, startSb: 50, anteFrom: 4, breakEvery: 6,  breakMin: 5},
+  deep:    {label: '🛡 딥스택', ladder: 'slow', levelMin: 15, startStack: 30000, startSb: 50, anteFrom: 5, breakEvery: 4,  breakMin: 10},
+};
+
+const TM_DEFAULT = {
+  preset: 'turbo', ladder: 'med', levelMin: 5, startStack: 10000, startSb: 25,
+  anteFrom: 3, breakEvery: 12, breakMin: 5,
+  buyin: 10, prizeRate: 90, itmRate: 15, entrants: 100, remaining: 100, mute: false,
+};
+
+let TIMER = {cfg: Object.assign({}, TM_DEFAULT), run: {base: 0, startedAt: null, running: false}};
+let TM_INT = null;        // 1초 틱 (재생 중에만 돎 — 다른 탭에 있어도 레벨업 알림은 울린다)
+let TM_AC = null;         // WebAudio (첫 재생 클릭 때 생성 — 자동재생 정책)
+let TM_SEG = -1;          // 마지막으로 렌더한 구간 인덱스 (레벨업 감지용)
+let TM_WARNED = -1;       // 1분 전 알림을 이미 울린 구간
+let TM_UI = {cfg: false, struct: false};   // 설정/구조 패널 펼침 상태 (재렌더 시 유지용)
+const TM_TITLE = document.title;
+
+function tmSave() {
+  try { localStorage.setItem(TM_KEY, JSON.stringify(TIMER)); } catch (e) {}
+}
+function tmLoad() {
+  try {
+    const raw = localStorage.getItem(TM_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (s && s.cfg) TIMER.cfg = Object.assign({}, TM_DEFAULT, s.cfg);
+    if (s && s.run) TIMER.run = Object.assign({base: 0, startedAt: null, running: false}, s.run);
+  } catch (e) {}
+}
+
+// 사다리를 곱하면 37.5 같은 값이 나온다 → 실제 토너에서 쓰는 '떨어지는 숫자'로 스냅
+const TM_MANTISSA = [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 7.5, 8, 10];
+function tmNiceSb(v) {
+  if (v < 10) return Math.max(1, Math.round(v));
+  const dec = Math.pow(10, Math.floor(Math.log10(v)));
+  const m = v / dec;
+  let best = TM_MANTISSA[0];
+  for (const s of TM_MANTISSA) if (Math.abs(s - m) < Math.abs(best - m)) best = s;
+  return Math.round(best * dec);
+}
+
+// --- 스케줄: 레벨/브레이크를 하나의 구간 배열로 펼친다 (at = 시작 오프셋 ms) ---
+function tmSchedule() {
+  const c = TIMER.cfg;
+  const lad = TM_LADDERS[c.ladder] || TM_LADDERS.med;
+  const lvMs = Math.max(1, c.levelMin) * 60000;
+  const segs = [];
+  let t = 0, prevSb = 0;
+  for (let i = 0; i < lad.length; i++) {
+    const raw = Math.max(1, c.startSb) * lad[i];
+    // 레벨 1은 사용자가 넣은 시작 SB를 그대로 (스냅하면 33 → 30 처럼 바뀌어버린다)
+    let sb = i === 0 ? Math.max(1, Math.round(c.startSb)) : tmNiceSb(raw);
+    if (sb <= prevSb) sb = Math.max(prevSb + 1, Math.round(raw));   // 항상 증가 보장
+    prevSb = sb;
+    const bb = sb * 2;
+    const ante = (c.anteFrom > 0 && i + 1 >= c.anteFrom) ? bb : 0;   // BB 앤티 방식
+    segs.push({kind: 'level', n: i + 1, sb, bb, ante, at: t, ms: lvMs});
+    t += lvMs;
+    if (c.breakEvery > 0 && c.breakMin > 0 && (i + 1) % c.breakEvery === 0 && i + 1 < lad.length) {
+      const bMs = c.breakMin * 60000;
+      segs.push({kind: 'break', at: t, ms: bMs});
+      t += bMs;
+    }
+  }
+  return segs;
+}
+
+function tmElapsed() {
+  const r = TIMER.run;
+  return r.base + (r.running && r.startedAt ? Date.now() - r.startedAt : 0);
+}
+// 경과시간을 특정 지점으로 이동 (재생 중이면 기준 시각도 다시 잡는다)
+function tmSeek(ms) {
+  const r = TIMER.run;
+  r.base = Math.max(0, ms);
+  if (r.running) r.startedAt = Date.now();
+  TM_WARNED = -1;
+  tmSave();
+}
+
+function tmSegAt(segs, ms) {
+  for (let i = segs.length - 1; i >= 0; i--) if (ms >= segs[i].at) return i;
+  return 0;
+}
+function tmFmt(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+}
+function tmNum(n) { return Math.round(n).toLocaleString(); }
+
+// --- 파생 계산 (실제 돈) ---
+function tmDerived() {
+  const c = TIMER.cfg;
+  const entrants = Math.max(1, Math.round(c.entrants));
+  const remaining = Math.min(entrants, Math.max(0, Math.round(c.remaining)));
+  const pool = c.buyin * entrants * (c.prizeRate / 100);
+  const itm = Math.min(entrants, Math.max(1, Math.ceil(entrants * (c.itmRate / 100))));
+  return {
+    entrants, remaining, pool, itm,
+    toBubble: remaining - itm,                                   // 0 이하면 ITM 확정
+    avg: remaining > 0 ? (c.startStack * entrants) / remaining : 0,
+  };
+}
+
+// --- 알림음 ---
+function tmBeep(times) {
+  if (TIMER.cfg.mute) return;
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    TM_AC = TM_AC || new AC();
+    if (TM_AC.state === 'suspended') TM_AC.resume();
+    for (let i = 0; i < times; i++) {
+      const o = TM_AC.createOscillator(), g = TM_AC.createGain();
+      const t0 = TM_AC.currentTime + i * 0.3;
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.3, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.24);
+      o.connect(g); g.connect(TM_AC.destination);
+      o.start(t0); o.stop(t0 + 0.27);
+    }
+  } catch (e) {}
+}
+
+// --- 조작 ---
+function tmToggle() {
+  const r = TIMER.run;
+  if (r.running) { r.base = tmElapsed(); r.startedAt = null; r.running = false; }
+  else { r.startedAt = Date.now(); r.running = true; tmBeep(0); }   // 첫 클릭에서 AudioContext 확보
+  tmSave(); tmLoop(); renderSidebar();
+  if (SEL === -6) renderTimer();
+}
+function tmJump(dir) {
+  const segs = tmSchedule();
+  const i = tmSegAt(segs, tmElapsed());
+  if (dir < 0) {
+    // 구간 시작 후 3초 넘게 지났으면 '현재 구간 처음으로', 아니면 이전 구간으로
+    const inSeg = tmElapsed() - segs[i].at;
+    tmSeek(inSeg > 3000 || i === 0 ? segs[i].at : segs[i - 1].at);
+  } else {
+    tmSeek(i + 1 < segs.length ? segs[i + 1].at : segs[segs.length - 1].at + segs[segs.length - 1].ms);
+  }
+  TM_SEG = -1;
+  if (SEL === -6) renderTimer();
+}
+function tmReset() {
+  if (!confirm('타이머를 레벨 1 처음으로 되돌릴까요? (설정값은 그대로)')) return;
+  TIMER.run = {base: 0, startedAt: null, running: false};
+  TM_SEG = -1; TM_WARNED = -1;
+  tmSave(); tmLoop(); renderSidebar();
+  if (SEL === -6) renderTimer();
+}
+function tmMute() {
+  TIMER.cfg.mute = !TIMER.cfg.mute; tmSave();
+  if (SEL === -6) renderTimer();
+}
+function tmBust(d) {
+  const c = TIMER.cfg;
+  c.remaining = Math.min(Math.round(c.entrants), Math.max(0, Math.round(c.remaining) + d));
+  tmSave(); tmRenderStats();
+}
+
+// 설정 변경. 구조(레벨 길이·블라인드)를 건드리면 프리셋은 '직접 설정'으로 바뀐다.
+const TM_STRUCT_KEYS = ['ladder', 'levelMin', 'startSb', 'anteFrom', 'breakEvery', 'breakMin'];
+function tmSet(key, v) {
+  const c = TIMER.cfg;
+  if (key === 'ladder') { c.ladder = TM_LADDERS[v] ? v : 'med'; }
+  else {
+    let n = parseFloat(v);
+    if (!isFinite(n) || n < 0) n = 0;
+    c[key] = n;
+    if (key === 'entrants') c.remaining = Math.min(c.remaining, n);
+    if (key === 'remaining') c.remaining = Math.min(n, c.entrants);
+  }
+  if (TM_STRUCT_KEYS.indexOf(key) >= 0) c.preset = 'custom';
+  tmSave();
+  if (TM_STRUCT_KEYS.indexOf(key) >= 0) { TM_SEG = -1; renderTimer(); }
+  else tmRenderStats();
+}
+function tmApplyPreset(k) {
+  const p = TM_PRESETS[k];
+  if (!p) return;
+  Object.assign(TIMER.cfg, {
+    preset: k, ladder: p.ladder, levelMin: p.levelMin, startStack: p.startStack,
+    startSb: p.startSb, anteFrom: p.anteFrom, breakEvery: p.breakEvery, breakMin: p.breakMin,
+  });
+  TM_SEG = -1; tmSave(); renderTimer();
+}
+
+// --- 루프 ---
+function tmLoop() {
+  if (TM_INT) { clearInterval(TM_INT); TM_INT = null; }
+  if (TIMER.run.running) TM_INT = setInterval(tmTick, 250);
+  else if (document.title !== TM_TITLE) document.title = TM_TITLE;
+}
+
+function tmTick() {
+  const segs = tmSchedule();
+  const el = tmElapsed();
+  const end = segs[segs.length - 1].at + segs[segs.length - 1].ms;
+  const i = tmSegAt(segs, el);
+  const seg = segs[i];
+  const left = Math.max(0, seg.at + seg.ms - el);
+
+  // 레벨업 / 1분 전 알림 — 타이머 탭 밖에 있어도 울린다
+  if (TIMER.run.running) {
+    if (TM_SEG >= 0 && i !== TM_SEG) tmBeep(seg.kind === 'break' ? 3 : 2);
+    if (left <= 60000 && left > 0 && TM_WARNED !== i && seg.kind === 'level') { tmBeep(1); TM_WARNED = i; }
+    const lbl = seg.kind === 'break' ? '휴식' : 'L' + seg.n;
+    document.title = (el >= end ? '종료' : tmFmt(left) + ' ' + lbl) + ' · ' + TM_TITLE;
+  }
+  const segChanged = i !== TM_SEG;
+  TM_SEG = i;
+
+  if (SEL !== -6) return;
+  const card = $('#tm-clock-card');
+  if (!card) return;
+  card.innerHTML = tmClockHtml(segs, i, el, end);
+  if (segChanged) { tmRenderStats(); tmMarkStruct(i); }
+}
+
+// --- 렌더 ---
+function tmClockHtml(segs, i, el, end) {
+  const seg = segs[i];
+  const done = el >= end;
+  const left = Math.max(0, seg.at + seg.ms - el);
+  const pct = done ? 100 : Math.min(100, ((el - seg.at) / seg.ms) * 100);
+  const brk = seg.kind === 'break';
+  // 다음 레벨(브레이크는 건너뛰고 실제 블라인드를 보여준다)
+  let nxt = null;
+  for (let k = i + 1; k < segs.length; k++) if (segs[k].kind === 'level') { nxt = segs[k]; break; }
+
+  const head = brk
+    ? `<div class="tm-lv" style="color:#c084fc">BREAK</div><div class="tm-blinds" style="color:#c084fc">휴식 중</div>`
+    : `<div class="tm-lv">LEVEL ${seg.n}</div>
+       <div class="tm-blinds">${tmNum(seg.sb)} / ${tmNum(seg.bb)}${seg.ante ? ` <span style="font-size:14px;color:var(--dim)">ante ${tmNum(seg.ante)}</span>` : ''}</div>`;
+
+  const cls = done ? 'done' : brk ? 'brk' : (left <= 60000 ? 'warn' : '');
+  const clock = done ? '구조 종료' : tmFmt(left);
+  const next = done ? '마지막 레벨까지 모두 지났습니다'
+    : (nxt ? `다음 ${brk ? '레벨' : `레벨 ${nxt.n}`} · <b>${tmNum(nxt.sb)} / ${tmNum(nxt.bb)}</b>${nxt.ante ? ` (ante ${tmNum(nxt.ante)})` : ''}` : '마지막 레벨');
+
+  const total = Math.floor(el / 60000);
+  return `<div class="tm-top">${head}
+      <div style="text-align:right;color:var(--dim);font-size:12px">경과 ${Math.floor(total/60)}시간 ${total%60}분<br>
+        <span style="font-size:11px">${TM_PRESETS[TIMER.cfg.preset] ? TM_PRESETS[TIMER.cfg.preset].label : '직접 설정'} · ${TIMER.cfg.levelMin}분/레벨</span></div>
+    </div>
+    <div class="tm-clock ${cls}">${clock}</div>
+    <div class="tm-next">${next}</div>
+    <div class="tm-bar"><i class="${brk ? 'brk' : ''}" style="width:${pct.toFixed(1)}%"></i></div>`;
+}
+
+function tmStatsHtml() {
+  const c = TIMER.cfg, d = tmDerived();
+  const segs = tmSchedule();
+  const seg = segs[tmSegAt(segs, tmElapsed())];
+  const bb = seg.kind === 'level' ? seg.bb : (function () {   // 브레이크 중엔 직전 레벨의 BB
+    for (let k = tmSegAt(segs, tmElapsed()); k >= 0; k--) if (segs[k].kind === 'level') return segs[k].bb;
+    return c.startSb * 2;
+  })();
+  const bubble = d.toBubble > 0
+    ? `<div class="tm-stat bubble"><span>버블까지</span><b>${d.toBubble}명</b><em>탈락하면 ITM</em></div>`
+    : `<div class="tm-stat itm"><span>ITM</span><b>🎉 확정</b><em>${d.remaining}명 남음 · ${d.itm}위까지 인더머니</em></div>`;
+  return `
+    <div class="tm-stat"><span>상금풀</span><b>$${d.pool.toLocaleString(undefined, {maximumFractionDigits: 2})}</b>
+      <em>$${c.buyin} × ${d.entrants}명 × ${c.prizeRate}%</em></div>
+    <div class="tm-stat itm"><span>ITM 인원</span><b>${d.itm}위까지</b><em>상위 ${c.itmRate}%</em></div>
+    ${bubble}
+    <div class="tm-stat"><span>잔여 / 참가자
+        <button class="tm-mini" onclick="tmBust(-1)" title="한 명 탈락">−1</button>
+        <button class="tm-mini" onclick="tmBust(1)">+1</button></span>
+      <b>${d.remaining} / ${d.entrants}</b><em>생존 ${(d.remaining / d.entrants * 100).toFixed(0)}%</em></div>
+    <div class="tm-stat"><span>평균 스택</span><b>${tmNum(d.avg)}</b><em>${(d.avg / bb).toFixed(1)}bb · 시작 ${tmNum(c.startStack)}</em></div>`;
+}
+function tmRenderStats() {
+  const el = $('#tm-stats');
+  if (el) el.innerHTML = tmStatsHtml();
+}
+
+function tmStructHtml(segs, cur) {
+  let rows = '';
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    const t = Math.floor(s.at / 60000);
+    const at = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+    rows += s.kind === 'break'
+      ? `<tr class="brk ${i === cur ? 'cur' : ''}" id="tmrow${i}"><td>☕ 휴식</td><td colspan="2">${TIMER.cfg.breakMin}분</td><td>—</td><td>${at}</td></tr>`
+      : `<tr class="${i === cur ? 'cur' : ''}" id="tmrow${i}"><td>L${s.n}</td><td>${tmNum(s.sb)}</td><td>${tmNum(s.bb)}</td>
+         <td>${s.ante ? tmNum(s.ante) : '—'}</td><td>${at}</td></tr>`;
+  }
+  return `<div style="max-height:340px;overflow-y:auto"><table class="tm-struct">
+    <thead><tr><th>레벨</th><th>SB</th><th>BB</th><th>앤티</th><th>시작(경과)</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+function tmMarkStruct(cur) {
+  const box = $('#tm-struct');
+  if (!box) return;
+  const old = box.querySelector('tr.cur');
+  if (old) old.classList.remove('cur');
+  const row = $('#tmrow' + cur);
+  if (row) row.classList.add('cur');
+}
+
+function tmField(key, label, hint, step) {
+  return `<label class="tm-f"><span>${label}</span>
+    <input type="number" min="0" step="${step || 1}" value="${TIMER.cfg[key]}"
+           onchange="tmSet('${key}', this.value)">
+    ${hint ? `<em>${hint}</em>` : ''}</label>`;
+}
+
+function tmSidebarMeta() {
+  if (!TIMER.run.base && !TIMER.run.running) return '블라인드 카운트다운 · 상금풀/ITM';
+  const segs = tmSchedule();
+  const seg = segs[tmSegAt(segs, tmElapsed())];
+  const d = tmDerived();
+  return seg.kind === 'break'
+    ? `휴식 중 · 잔여 ${d.remaining}명`
+    : `L${seg.n} ${tmNum(seg.sb)}/${tmNum(seg.bb)} · 잔여 ${d.remaining}명`;
+}
+
+function selectTimer() {
+  SEL = -6; renderSidebar();
+  $('#mainhead').innerHTML = '<h2>⏱ 토너먼트 타이머</h2>';
+  renderTimer();
+  $('#main').scrollTop = 0;
+}
+
+function renderTimer() {
+  if (SEL !== -6) return;
+  const c = TIMER.cfg;
+  const segs = tmSchedule();
+  const el = tmElapsed();
+  const end = segs[segs.length - 1].at + segs[segs.length - 1].ms;
+  const cur = tmSegAt(segs, el);
+  TM_SEG = cur;
+
+  const presetBtns = Object.keys(TM_PRESETS).map(k =>
+    `<button class="${c.preset === k ? 'primary' : ''}" onclick="tmApplyPreset('${k}')">${TM_PRESETS[k].label}</button>`
+  ).join(' ') + (c.preset === 'custom'
+    ? ` <span style="align-self:center;color:var(--gold);font-size:12px">✏️ 직접 설정됨</span>` : '');
+
+  const ladderOpts = Object.keys(TM_LADDERS).map(k =>
+    `<option value="${k}" ${c.ladder === k ? 'selected' : ''}>${TM_LADDER_LABEL[k]}</option>`).join('');
+
+  const totalMin = Math.round(end / 60000);
+
+  $('#hands').innerHTML = `<div class="tm-wrap">
+    <div class="tm-card" id="tm-clock-card">${tmClockHtml(segs, cur, el, end)}</div>
+
+    <div class="tm-ctrl">
+      <button class="primary" onclick="tmToggle()" style="min-width:104px">${TIMER.run.running ? '⏸ 일시정지' : '▶ 시작'}</button>
+      <button onclick="tmJump(-1)" title="현재 레벨 처음으로 / 이전 레벨">⏮ 이전</button>
+      <button onclick="tmJump(1)">⏭ 다음 레벨</button>
+      <button onclick="tmReset()">↺ 리셋</button>
+      <span class="spacer"></span>
+      <button onclick="tmMute()" title="레벨업 1분 전·레벨업 순간 알림음">${c.mute ? '🔇 알림 꺼짐' : '🔔 알림 켜짐'}</button>
+    </div>
+
+    <div class="tm-stats" id="tm-stats">${tmStatsHtml()}</div>
+
+    <details class="tm-panel" ${TM_UI.cfg ? 'open' : ''} ontoggle="TM_UI.cfg=this.open">
+      <summary>⚙️ 설정</summary>
+      <div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${presetBtns}</div>
+        <div class="tm-form">
+          <h4>💵 상금</h4>
+          ${tmField('buyin', '바이인 ($)', '수수료 포함 실제 결제액', '0.01')}
+          ${tmField('prizeRate', '프라이즈율 (%)', '바이인 중 상금풀로 가는 비율', '0.1')}
+          ${tmField('itmRate', 'ITM 비율 (%)', '상위 몇 %가 인더머니인지', '0.1')}
+          ${tmField('entrants', '참가자 수', '리엔트리 포함 총 엔트리')}
+          ${tmField('remaining', '잔여 인원', '탈락할 때마다 −1 버튼으로')}
+          <h4>⏱ 구조</h4>
+          ${tmField('levelMin', '레벨당 시간 (분)')}
+          ${tmField('startStack', '시작 스택', '평균 스택 계산에 사용')}
+          ${tmField('startSb', '시작 SB', `BB = SB × 2 (현재 ${tmNum(c.startSb)}/${tmNum(c.startSb * 2)})`)}
+          <label class="tm-f"><span>블라인드 증가율</span>
+            <select onchange="tmSet('ladder', this.value)">${ladderOpts}</select>
+            <em>레벨당 대략 몇 배씩 오르는지</em></label>
+          ${tmField('anteFrom', '앤티 시작 레벨', '0 = 앤티 없음 · BB 앤티 방식')}
+          ${tmField('breakEvery', '브레이크 주기 (레벨)', '0 = 브레이크 없음')}
+          ${tmField('breakMin', '브레이크 길이 (분)')}
+        </div>
+      </div>
+    </details>
+
+    <details class="tm-panel" ${TM_UI.struct ? 'open' : ''} ontoggle="TM_UI.struct=this.open">
+      <summary>📋 블라인드 구조 <span style="color:var(--dim);font-weight:400">— ${segs.filter(s => s.kind === 'level').length}레벨 · 총 ${Math.floor(totalMin / 60)}시간 ${totalMin % 60}분</span></summary>
+      <div id="tm-struct">${tmStructHtml(segs, cur)}</div>
+    </details>
+  </div>`;
+}
+
+tmLoad();
+tmLoop();
 
 // 저장된 DB가 있으면 시작하자마자 표시
 fetch('/api/db').then(r => r.json()).then(d => {

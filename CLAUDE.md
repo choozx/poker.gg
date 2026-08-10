@@ -59,6 +59,26 @@ same-day deep-run preference (cashed rows resist being left unmatched). `set_ove
 specific entry and survives migration. API: `GET /api/bankroll`, `POST /api/bankroll/entry` and
 `/api/bankroll/delete`.
 
+### ⏱ 토너먼트 타이머 — frontend-only, no server state
+
+A live blind clock (sidebar `SEL = -6`), entirely inside `INDEX_HTML`'s JS (`tm*` functions,
+`TIMER` state). It touches **no Python, no endpoint, no `hands_db.json`** — settings and run state
+persist to `localStorage` under `ahh_timer_v1` only, so it is not cloud-synced. Keep it that way
+unless the user asks for cross-device timers.
+
+`tmSchedule()` flattens levels + breaks into one segment array (`at` = ms offset from start);
+blinds come from a multiplier ladder (`TM_LADDERS` slow/med/fast) applied to the starting SB and
+snapped to poker-friendly numbers by `tmNiceSb` (level 1 keeps the user's exact SB). Presets
+(`TM_PRESETS`: hyper/turbo/classic/deep) just bulk-set the config; editing any structure field
+(`TM_STRUCT_KEYS`) flips `preset` to `custom`. Elapsed time is `base + (now - startedAt)` — a
+wall-clock model, so closing the browser mid-tournament and returning advances the clock, which is
+intentional. The 250ms tick runs whenever the timer is playing (even on other tabs) so the level-up
+and 1-minute-warning beeps still fire; it only writes to the DOM when `SEL === -6`.
+
+Money side is pure arithmetic on the four user inputs (buy-in, prize %, ITM %, entrants):
+`pool = buyin × entrants × prizeRate%`, `itm = ceil(entrants × itmRate%)`, bubble = `remaining − itm`.
+No payout ladder is modeled — don't invent one.
+
 ### The key invariant: metadata is frozen at import time
 
 When a hand is imported, `convert.hand_meta()` computes derived fields (`vpip`, `pfr`, `rfi`,
