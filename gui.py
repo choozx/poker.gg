@@ -229,6 +229,13 @@ def _quiz_grade_of(text):
     return m.group(1) if m else None
 
 
+def _quiz_filters(qs):
+    """?pos=BB,SB&stack=pf,deep&street=turn,river → (포지션, 스택, 스트릿). 빈 값이면 전체."""
+    def split(key):
+        return [v for v in (qs.get(key, [""])[0] or "").split(",") if v]
+    return split("pos"), split("stack"), split("street")
+
+
 def _quiz_parse_gen(text):
     """AI가 생성한 문제 JSON 파싱. 코드펜스/앞뒤 잡담을 관대하게 걷어낸다."""
     s = (text or "").strip()
@@ -472,14 +479,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .tourney.quiz.sel { border-color: #ffa657; background: rgba(255,166,87,.08); }
   .tourney.quiz .tname { color: #ffa657; }
   .qz-wrap { max-width: 860px; }
-  .qz-spots { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
-  .qz-chip { background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
-             padding: 5px 12px; font-size: 12px; cursor: pointer; color: var(--dim); }
-  .qz-chip:hover { border-color: #ffa657; color: var(--text); }
-  .qz-chip.on { border-color: #ffa657; background: rgba(255,166,87,.12); color: #ffa657; font-weight: 600; }
-  .qz-chip b { color: var(--text); font-weight: 600; }
-  .qz-chip.on b { color: #ffa657; }
-  .qz-chip em { font-style: normal; color: #6f7889; margin-left: 5px; }
+  .qz-tgrow { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+  .qz-tglabel { color: var(--dim); font-size: 12px; min-width: 46px; }
+  .qz-tg { background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
+           padding: 4px 11px; font-size: 12.5px; cursor: pointer; color: var(--dim);
+           font-variant-numeric: tabular-nums; }
+  .qz-tg:hover { border-color: #ffa657; color: var(--text); }
+  .qz-tg.on { border-color: #ffa657; background: rgba(255,166,87,.14); color: #ffa657; font-weight: 600; }
+  .qz-tg.empty { opacity: .38; }          /* 해당 스팟이 없는 선택지 — 눌러도 되지만 비어 있음 */
   .qz-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
              padding: 18px 22px; margin-bottom: 12px; }
   .qz-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -2684,7 +2691,9 @@ function renderTimer() {
 let QUIZ = {
   status: 'idle',   // idle | loading | ready | grading | graded | error
   spots: null,      // /api/quiz/spots 응답
-  filter: null,     // 특정 스팟만 출제 (칩 클릭)
+  pos: [],          // 히어로 포지션 필터 (빈 배열 = 전체)
+  stack: [],        // 시작 스택대 필터 (빈 배열 = 전체)
+  street: [],       // 결정 스트릿 필터 (빈 배열 = 전체)
   q: null,          // 현재 문제
   picked: null,     // 고른 선택지
   text: '',         // 채점 텍스트 (스트리밍 중 누적)
@@ -2707,9 +2716,18 @@ function selectQuiz() {
   if (!QUIZ.spots) qzLoadSpots();
 }
 
+// 필터를 쿼리스트링으로 (빈 배열이면 파라미터 자체를 안 붙인다)
+function qzFilterQS() {
+  const p = [];
+  if (QUIZ.pos.length) p.push('pos=' + QUIZ.pos.join(','));
+  if (QUIZ.stack.length) p.push('stack=' + QUIZ.stack.join(','));
+  if (QUIZ.street.length) p.push('street=' + QUIZ.street.join(','));
+  return p.length ? '?' + p.join('&') : '';
+}
+
 async function qzLoadSpots() {
   try {
-    QUIZ.spots = await (await fetch('/api/quiz/spots')).json();
+    QUIZ.spots = await (await fetch('/api/quiz/spots' + qzFilterQS())).json();
   } catch (e) {
     QUIZ.spots = {spots: [], error: String(e)};
   }
@@ -2717,9 +2735,22 @@ async function qzLoadSpots() {
   if (SEL === -7) renderQuiz();
 }
 
-function qzPickSpot(key) {
-  QUIZ.filter = QUIZ.filter === key ? null : key;
-  renderQuiz();
+// 토글: 빈 문자열이면 '전체'(선택 해제). 같은 걸 다시 누르면 빠진다.
+function qzToggleIn(arr, key) {
+  if (!key) return [];
+  const i = arr.indexOf(key);
+  if (i >= 0) { arr.splice(i, 1); return arr; }
+  arr.push(key);
+  return arr;
+}
+
+function qzTogglePos(key)    { QUIZ.pos    = qzToggleIn(QUIZ.pos.slice(), key);    qzAfterToggle(); }
+function qzToggleStack(key)  { QUIZ.stack  = qzToggleIn(QUIZ.stack.slice(), key);  qzAfterToggle(); }
+function qzToggleStreet(key) { QUIZ.street = qzToggleIn(QUIZ.street.slice(), key); qzAfterToggle(); }
+
+function qzAfterToggle() {
+  renderQuiz();      // 토글 반응은 즉시, 스팟 수는 서버 응답 후 갱신
+  qzLoadSpots();
 }
 
 // 다음 문제. 실제 핸드가 소진된 스팟이면 서버가 generate 지시를 주고, 그때만 AI로 만든다.
@@ -2728,8 +2759,7 @@ async function qzNext() {
   QUIZ.text = ''; QUIZ.reveal = null; QUIZ.err = '';
   renderQuiz();
   try {
-    const url = '/api/quiz/next' + (QUIZ.filter ? '?spot=' + encodeURIComponent(QUIZ.filter) : '');
-    let data = await (await fetch(url)).json();
+    let data = await (await fetch('/api/quiz/next' + qzFilterQS())).json();
     if (data.generate) {
       QUIZ.status = 'generating'; renderQuiz();
       const res = await fetch('/api/quiz/gen', {
@@ -2798,21 +2828,40 @@ function qzGrade() {
   return m ? m[1] : null;
 }
 
+// 토글 한 줄. 선택된 게 없으면 '전체'가 켜진 것으로 본다.
+// o.n === null 이면 개수를 셀 수 없는 축(스트릿) — 흐리게 처리도 툴팁도 하지 않는다.
+function qzToggleRow(label, opts, sel, fn) {
+  const all = `<span class="qz-tg ${sel.length ? '' : 'on'}" onclick="${fn}('')">전체</span>`;
+  const btns = opts.map(o => `
+    <span class="qz-tg ${sel.includes(o.key) ? 'on' : ''} ${o.n === 0 ? 'empty' : ''}"
+          onclick="${fn}('${o.key}')"${o.n === null ? '' : ` title="${o.n}개 스팟"`}
+      >${esc(o.label)}</span>`).join('');
+  return `<div class="qz-tgrow"><span class="qz-tglabel">${label}</span>${all}${btns}</div>`;
+}
+
 function qzSpotsHtml() {
   const s = QUIZ.spots;
   if (!s) return '<div class="qz-note">약점 스팟을 찾는 중…</div>';
-  if (!s.spots.length) return `<div class="qz-note">
-    아직 출제할 리크 스팟이 없습니다. 핸드를 더 임포트해 보세요. (현재 ${s.total_hands.toLocaleString()}핸드)</div>`;
-  const chips = s.spots.map(sp => `
-    <span class="qz-chip ${QUIZ.filter === sp.key ? 'on' : ''}" onclick="qzPickSpot('${esc(sp.key)}')"
-          title="${esc(sp.detail)}">
-      ${sp.kind === 'freq' ? '📊' : '📌'} <b>${esc(sp.label)}</b>
-      <em>${sp.done ? `${sp.ok}/${sp.done}` : sp.detail}</em></span>`).join('');
+
+  const filters = s.options ? `
+    ${qzToggleRow('포지션', s.options.positions, QUIZ.pos, 'qzTogglePos')}
+    ${qzToggleRow('스택', s.options.stacks, QUIZ.stack, 'qzToggleStack')}
+    ${qzToggleRow('스트릿', s.options.streets, QUIZ.street, 'qzToggleStreet')}` : '';
+
   const warn = s.freq_available ? '' : `
     <div class="qz-note">📊 통계 이탈 스팟(포지션별 오픈/디펜스 빈도)은 <code>python3 gui.py --rebuild</code>
       실행 후에 나타납니다 — 기존 핸드에 <code>pf_faced</code>·<code>stack_bb</code>가 없습니다.</div>`;
-  return `<div class="qz-spots">${chips}</div>${warn}
-    <div class="qz-note">칩을 누르면 그 스팟만 집중 출제합니다${QUIZ.filter ? ' (다시 누르면 해제)' : ''}.</div>`;
+
+  const any = QUIZ.pos.length || QUIZ.stack.length || QUIZ.street.length;
+  const status = !s.matched
+    ? `<div class="qz-note">${any
+        ? '선택한 조합에 해당하는 리크 스팟이 없습니다. 필터를 넓혀 보세요.'
+        : `아직 출제할 리크 스팟이 없습니다. 핸드를 더 임포트해 보세요. (현재 ${s.total_hands.toLocaleString()}핸드)`}</div>`
+    : `<div class="qz-note">${s.matched}개 리크 스팟에서 출제합니다${
+        any ? '' : ' — 위 토글로 범위를 좁힐 수 있습니다'}.${
+        QUIZ.street.length && !QUIZ.street.includes('preflop')
+          ? ' 프리플랍을 빼면 통계 이탈(📊) 스팟은 프리플랍 지표라 제외됩니다.' : ''}</div>`;
+  return `${filters}${warn}${status}`;
 }
 
 function qzQuestionHtml() {
@@ -2989,11 +3038,17 @@ class Handler(BaseHTTPRequestHandler):
             resp = bankroll.summary(DB)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/quiz/spots":
-            self._send(json.dumps(quiz.spots_view(DB), ensure_ascii=False),
-                       "application/json; charset=utf-8")
+            qs = parse_qs(urlparse(self.path).query)
+            pos, stacks, streets = _quiz_filters(qs)
+            self._send(json.dumps(
+                quiz.spots_view(DB, positions=pos, stacks=stacks, streets=streets),
+                ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/quiz/next":
             qs = parse_qs(urlparse(self.path).query)
-            resp = quiz.next_question(DB, spot_key=qs.get("spot", [""])[0] or None, hero=HERO)
+            pos, stacks, streets = _quiz_filters(qs)
+            resp = quiz.next_question(DB, spot_key=qs.get("spot", [""])[0] or None,
+                                      hero=HERO, positions=pos, stacks=stacks,
+                                      streets=streets)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/quiz/reveal":
             qs = parse_qs(urlparse(self.path).query)
@@ -3165,11 +3220,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({"error": str(e)}, ensure_ascii=False),
                            "application/json; charset=utf-8", code=400)
                 return
+            street = spot.get("street")
             user = (f"학생의 약점 스팟: {spot.get('label')}\n"
                     f"근거: {spot.get('detail')}\n"
                     f"포지션: {spot.get('pos')} · 스택 깊이: {spot.get('stack')} · "
-                    f"상황 유형: {spot.get('reason')}\n\n"
-                    "이 스팟의 연습 문제를 JSON으로 하나 만드세요.")
+                    f"상황 유형: {spot.get('reason')}\n"
+                    + (f"결정 스트릿: {street} — 반드시 이 스트릿에서 히어로가 결정하는 "
+                       f"지점으로 끊으세요.\n" if street else "")
+                    + "\n이 스팟의 연습 문제를 JSON으로 하나 만드세요.")
             raw = []
             try:
                 for chunk in AI_BACKEND.stream(QUIZ_GEN_SYSTEM_PROMPT, user):
@@ -3185,7 +3243,8 @@ class Handler(BaseHTTPRequestHandler):
                     ensure_ascii=False), "application/json; charset=utf-8", code=502)
                 return
             q.update({"source": "ai", "spot": spot.get("key"),
-                      "spot_label": spot.get("label"), "street": "AI 생성"})
+                      "spot_label": spot.get("label"),
+                      "street": spot.get("street") or "AI 생성"})
             self._send(json.dumps({"question": q}, ensure_ascii=False),
                        "application/json; charset=utf-8")
         elif self.path in ("/api/bankroll/entry", "/api/bankroll/delete", "/api/bankroll/confirm"):

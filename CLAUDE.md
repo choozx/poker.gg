@@ -86,6 +86,27 @@ graded `[좋음]`. The two axes' scores are in different units, so `leak_spots` 
 by rank rather than sorting on a shared score (otherwise 통계 이탈 takes every top slot), and
 `next_question` weights by that interleaved rank.
 
+Three multi-select toggle rows scope what gets asked: `?pos=BB,SB&stack=pf,deep&street=turn,river`
+(empty = all). 포지션/스택 filter **spots** — a spot is keyed by `(포지션, 스택버킷, 사유)` — and
+position matching goes through `_norm_pos` so the one `MP` toggle covers MP1/MP2/MP3.
+`filter_options()` counts come from the **unfiltered** spot list, so toggles show what exists rather
+than reacting to the current selection.
+
+**스트릿 is not a spot attribute** — it belongs to the decision point inside a hand, so it can only
+be applied after parsing. Two places handle it: `leak_spots` drops 통계 이탈 spots when 프리플랍
+isn't selected (RFI/defend frequency are preflop metrics — a turn question must not be labelled
+"오픈 과다"), and `_pick_decision(spot, decisions, streets)` picks a decision on an allowed street,
+returning `None` if the hand never got there.
+
+Because of that, a spot can pass the pos/stack filter yet yield no hand on the wanted street
+(`<15bb · 올인 패배` never reaches a river decision). `next_question` therefore tries up to
+`MAX_SPOT_TRIES` spots × `SCAN_PER_SPOT` hands before falling back to AI generation — with one spot
+only, ~36% of river requests fell back needlessly. Keep that retry if you touch this: the fallback
+costs an AI call per question.
+
+`/api/quiz/next?spot=<key>` still pins one exact spot (looked up in the **unfiltered** list) but is
+no longer surfaced in the UI — the spot-chip row was removed as unused.
+
 When a spot's unserved real hands drop below 3, `next_question` returns `{"generate": spot}` and
 `POST /api/quiz/gen` has the AI invent a same-shape practice hand (`QUIZ_GEN_SYSTEM_PROMPT`, returns
 JSON parsed by `_quiz_parse_gen`). Generated questions are ephemeral — never written to the DB.

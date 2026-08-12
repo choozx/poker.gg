@@ -51,6 +51,11 @@ STACK_LABEL = {"pf": "<15bb", "short": "15–25bb", "mid": "25–40bb", "deep": 
 MAX_ATTEMPTS = 500    # DB에 남기는 최근 응시 기록 수 (DB는 클라우드 동기화 대상 — 작게 유지)
 MAX_CACHE = 400       # 채점 결과 캐시 항목 수
 
+# 출제 탐색 비용: 후보 핸드 1개당 parse_hand 1회. 최악 4×25 = 100회 ≈ 수백 ms이고,
+# 필터가 좁을 때만 끝까지 간다. 늘리면 AI 생성 폴백은 줄지만 응답이 느려진다.
+MAX_SPOT_TRIES = 4    # 한 스팟이 실패하면 다음 순위 스팟까지 시도할 횟수
+SCAN_PER_SPOT = 25    # 스팟당 훑어볼 미출제 핸드 수
+
 
 def _norm_pos(pos):
     """MP1/MP2/MP3 → MP 로 묶는다 (기준선 테이블 조회용)."""
@@ -185,13 +190,36 @@ def _freq_spots(db):
     return out
 
 
-def leak_spots(db):
-    """두 축을 번갈아 섞은 리크 스팟 목록.
+def _spot_matches(spot, positions, stacks):
+    """포지션/스택 필터에 걸리는 스팟인지. 빈 필터 = 전체 허용.
+
+    포지션은 `_norm_pos`로 비교하므로 토글 'MP' 하나가 MP1/MP2/MP3를 모두 잡는다.
+    스택 필터가 켜져 있는데 스팟에 스택 정보가 없으면(미rebuild DB의 휴리스틱 스팟)
+    걸러낸다 — 어느 구간인지 알 수 없는 걸 특정 구간으로 셀 수는 없다."""
+    if positions and _norm_pos(spot.get("pos")) not in positions:
+        return False
+    if stacks and spot.get("stack") not in stacks:
+        return False
+    return True
+
+
+def leak_spots(db, positions=None, stacks=None, streets=None):
+    """두 축을 번갈아 섞은 리크 스팟 목록 (포지션/스택/스트릿 필터 적용).
 
     두 축의 점수는 단위가 달라(빈도 이탈 %p vs 핸드 수) 그냥 합쳐 정렬하면 한쪽이
-    상위를 독식한다. 각 축을 따로 정렬한 뒤 번갈아 꺼내 양쪽이 모두 출제되게 한다."""
-    heur = sorted(_heuristic_spots(db), key=lambda s: -s["score"])
-    freq = sorted(_freq_spots(db), key=lambda s: -s["score"]) if freq_available(db) else []
+    상위를 독식한다. 각 축을 따로 정렬한 뒤 번갈아 꺼내 양쪽이 모두 출제되게 한다.
+
+    스트릿은 스팟의 속성이 아니라 핸드 안 '결정 지점'의 속성이라 여기서는 걸러낼 게
+    하나뿐이다: 통계 이탈 스팟은 RFI·디펜스 빈도라는 **프리플랍 지표**라서, 프리플랍을
+    뺀 스트릿 필터에서는 출제 대상이 되면 안 된다 (턴 문제에 '오픈 과다' 딱지가 붙는다).
+    나머지 스트릿 필터링은 `_pick_decision`이 결정 지점 단위로 처리한다."""
+    positions = set(positions or ())
+    stacks = set(stacks or ())
+    streets = set(streets or ())
+    keep = lambda ss: [s for s in ss if _spot_matches(s, positions, stacks)]
+    heur = sorted(keep(_heuristic_spots(db)), key=lambda s: -s["score"])
+    use_freq = freq_available(db) and (not streets or "preflop" in streets)
+    freq = sorted(keep(_freq_spots(db)), key=lambda s: -s["score"]) if use_freq else []
     out = []
     for i in range(max(len(heur), len(freq))):
         if i < len(freq):
@@ -201,26 +229,38 @@ def leak_spots(db):
     return out
 
 
-def spots_view(db, limit=14):
-    """UI용 요약 — hands 목록(수천 개일 수 있음)은 빼고 보낸다."""
+# 토글 버튼 순서 — 데이터에 없어도 자리는 유지해 UI가 흔들리지 않게 한다
+POS_ORDER = ["UTG", "MP", "CO", "BTN", "SB", "BB", "SB(BTN)"]
+STACK_ORDER = ["pf", "short", "mid", "deep"]
+STREET_ORDER = ["preflop", "flop", "turn", "river"]
+
+
+def filter_options(db):
+    """토글에 쓸 선택지. n은 그 선택지에 걸리는 스팟 수 (0이면 UI에서 흐리게).
+
+    스트릿만 n이 None인데, 스팟에는 스트릿이 없고 핸드를 전부 파싱해야만 셀 수 있어서다
+    (수만 핸드 × 매 토글 렌더 = 감당 안 됨). 세지 않고 흐리게 처리도 하지 않는다."""
     spots = leak_spots(db)
-    q = _state(db)
-    done = {}
-    for a in q["attempts"]:
-        d = done.setdefault(a.get("spot"), [0, 0])
-        d[0] += 1
-        if a.get("grade") in ("좋음", "무난"):
-            d[1] += 1
-    view = []
-    for s in spots[:limit]:
-        n_done, n_ok = done.get(s["key"], [0, 0])
-        view.append({
-            "key": s["key"], "kind": s["kind"], "label": s["label"],
-            "detail": s["detail"], "n": s["n"], "pool": len(s["hands"]),
-            "done": n_done, "ok": n_ok,
-        })
+    pos_n, stack_n = {}, {}
+    for s in spots:
+        pos_n[_norm_pos(s.get("pos"))] = pos_n.get(_norm_pos(s.get("pos")), 0) + 1
+        if s.get("stack"):
+            stack_n[s["stack"]] = stack_n.get(s["stack"], 0) + 1
     return {
-        "spots": view,
+        "positions": [{"key": p, "label": p, "n": pos_n.get(p, 0)}
+                      for p in POS_ORDER if p in pos_n or p != "SB(BTN)"],
+        "stacks": [{"key": k, "label": STACK_LABEL[k], "n": stack_n.get(k, 0)}
+                   for k in STACK_ORDER],
+        "streets": [{"key": k, "label": STREET_KO[k], "n": None} for k in STREET_ORDER],
+    }
+
+
+def spots_view(db, positions=None, stacks=None, streets=None):
+    """UI용 요약. 스팟 목록 자체는 UI에 노출하지 않으므로 개수만 보낸다
+    (핸드 id 리스트는 수천 개라 절대 그대로 내보내면 안 된다)."""
+    return {
+        "matched": len(leak_spots(db, positions, stacks, streets)),
+        "options": filter_options(db),
         "freq_available": freq_available(db),
         "total_hands": len(db.get("hands", {})),
         "scoreboard": scoreboard(db),
@@ -231,8 +271,13 @@ def spots_view(db, limit=14):
 # 출제
 # ---------------------------------------------------------------------------
 
-def _pick_decision(spot, decisions):
-    """스팟 성격에 맞는 결정 지점을 고른다."""
+def _pick_decision(spot, decisions, streets=None):
+    """스팟 성격에 맞는 결정 지점을 고른다. streets가 오면 그 스트릿 안에서만 고른다.
+
+    스트릿 필터가 실제로 적용되는 지점이 여기다 — 스팟에는 스트릿이 없고, 핸드를
+    파싱해야 비로소 '이 핸드에 리버 결정이 있나'를 알 수 있기 때문이다."""
+    if streets:
+        decisions = [d for d in decisions if d["street"] in streets]
     if not decisions:
         return None
     if spot["kind"] == "freq":
@@ -280,69 +325,85 @@ def _served_hands(db):
 STREET_KO = {"preflop": "프리플랍", "flop": "플랍", "turn": "턴", "river": "리버"}
 
 
-def next_question(db, spot_key=None, hero="Hero"):
+def next_question(db, spot_key=None, hero="Hero", positions=None, stacks=None,
+                  streets=None):
     """다음 문제. 실제 핸드가 남아 있으면 그걸 쓰고, 소진됐으면 AI 생성을 요청한다.
 
+    positions/stacks/streets는 히어로 포지션·시작 스택대·결정 스트릿 필터 (빈 값 = 전체).
+    spot_key가 오면 그 스팟만 — 칩 클릭으로 특정 리크를 콕 집어 연습하는 경우다.
+
     반환: {"question": {...}} 또는 {"generate": {...}}  (후자는 gui가 AI로 만든다)
-          스팟 자체가 없으면 {"error": ...}
+          거를 스팟이 없으면 {"error": ...}
     """
-    spots = leak_spots(db)
+    spots = leak_spots(db, positions, stacks, streets)
     if not spots:
+        if positions or stacks or streets:
+            return {"error": "선택한 필터 조합에 해당하는 리크 스팟이 없습니다. "
+                             "필터를 넓혀 보세요."}
         return {"error": "리크 스팟을 찾지 못했습니다. 핸드를 더 임포트하거나 분석해 보세요."}
 
     if spot_key:
-        spots = [s for s in spots if s["key"] == spot_key] or spots
-        spot = spots[0]
+        # 필터 밖의 스팟을 콕 집었을 수도 있으므로 전체에서 찾는다
+        match = [s for s in leak_spots(db) if s["key"] == spot_key]
+        order = [match[0]] if match else spots[:1]
     else:
         # 순위를 가중치로 뽑는다 — 큰 리크가 자주, 작은 리크도 가끔.
         # 두 축의 점수는 단위가 달라 직접 비교할 수 없으므로 leak_spots가 매겨준
         # 교차 순위를 쓴다 (점수를 그대로 쓰면 한쪽 축만 계속 뽑힌다).
         pool = spots[:12]
-        spot = random.choices(pool, weights=[len(pool) - i for i in range(len(pool))])[0]
+        order = []
+        while pool and len(order) < MAX_SPOT_TRIES:
+            i = random.choices(range(len(pool)),
+                               weights=[len(pool) - k for k in range(len(pool))])[0]
+            order.append(pool.pop(i))
 
-    served = _served_hands(db)
-    fresh = [h for h in spot["hands"] if h not in served]
-
-    # "실제 핸드에서 너무 많이 출제됐다" = 이 스팟의 미출제 핸드가 3개 미만 → AI 생성
-    if len(fresh) < 3:
+    def gen_req(spot):
+        """실제 핸드로 못 냈을 때 AI에게 넘길 요청 (스트릿 필터도 함께 전달)."""
+        want = [STREET_KO[s] for s in STREET_ORDER if s in (streets or ())]
         return {"generate": {
             "key": spot["key"], "label": spot["label"], "detail": spot["detail"],
             "pos": spot.get("pos"), "stack": STACK_LABEL.get(spot.get("stack")),
             "reason": spot.get("reason"), "exhausted": len(spot["hands"]),
+            "street": want[0] if len(want) == 1 else (", ".join(want) if want else None),
         }}
 
-    random.shuffle(fresh)
-    for hid in fresh[:25]:                        # 파싱 실패/결정 없음은 건너뛴다
-        rec = db["hands"].get(hid)
-        if not rec or not rec.get("raw"):
+    served = _served_hands(db)
+    # 스팟을 하나만 보고 포기하면 AI 생성으로 너무 쉽게 넘어간다. 스트릿 필터를 켜면
+    # 구조적으로 그 스트릿에 도달할 수 없는 스팟(예: <15bb 올인 패배 + 리버)이 섞여 있어서,
+    # 다음 순위 스팟들을 차례로 시도한 뒤에야 생성으로 폴백한다.
+    for spot in order:
+        fresh = [h for h in spot["hands"] if h not in served]
+        # "실제 핸드에서 너무 많이 출제됐다" = 이 스팟의 미출제 핸드가 3개 미만
+        if len(fresh) < 3:
             continue
-        try:
-            hand = convert.parse_hand(rec["raw"])
-        except Exception:
-            continue
-        decisions = convert.hero_decisions(hand, hero)
-        dec = _pick_decision(spot, decisions)
-        if dec is None:
-            continue
-        choices = _choices(hand, dec)
-        if len(choices) < 2:
-            continue
-        return {"question": {
-            "source": "real",
-            "hand_id": hid,
-            "didx": dec["idx"],
-            "spot": spot["key"],
-            "spot_label": spot["label"],
-            "street": STREET_KO.get(dec["street"], dec["street"]),
-            "situation": convert.render_markdown(hand, hero, stop_at=dec["action"]),
-            "choices": choices,
-            "cached": cache_get(db, hid, dec["idx"], None) is not None,
-        }}
-    return {"generate": {
-        "key": spot["key"], "label": spot["label"], "detail": spot["detail"],
-        "pos": spot.get("pos"), "stack": STACK_LABEL.get(spot.get("stack")),
-        "reason": spot.get("reason"), "exhausted": len(spot["hands"]),
-    }}
+        random.shuffle(fresh)
+        for hid in fresh[:SCAN_PER_SPOT]:         # 파싱 실패/조건 불일치는 건너뛴다
+            rec = db["hands"].get(hid)
+            if not rec or not rec.get("raw"):
+                continue
+            try:
+                hand = convert.parse_hand(rec["raw"])
+            except Exception:
+                continue
+            decisions = convert.hero_decisions(hand, hero)
+            dec = _pick_decision(spot, decisions, streets)
+            if dec is None:
+                continue                          # 이 핸드엔 해당 스트릿 결정이 없다
+            choices = _choices(hand, dec)
+            if len(choices) < 2:
+                continue
+            return {"question": {
+                "source": "real",
+                "hand_id": hid,
+                "didx": dec["idx"],
+                "spot": spot["key"],
+                "spot_label": spot["label"],
+                "street": STREET_KO.get(dec["street"], dec["street"]),
+                "situation": convert.render_markdown(hand, hero, stop_at=dec["action"]),
+                "choices": choices,
+                "cached": cache_get(db, hid, dec["idx"], None) is not None,
+            }}
+    return gen_req(order[0])
 
 
 def reveal(db, hand_id, didx, hero="Hero"):
