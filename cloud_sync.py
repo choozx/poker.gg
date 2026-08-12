@@ -236,9 +236,17 @@ def pull():
 
 
 def push(db):
-    """DB(dict)를 gzip 압축해 새 asset으로 업로드하고, 과거 버전은 KEEP_ASSETS개만 남긴다."""
+    """DB(dict)를 gzip 압축해 새 asset으로 업로드한다.
+
+    주의: 여기서 json.dumps를 하는 동안 다른 스레드가 db를 변경하면
+    'dictionary changed size during iteration'으로 업로드가 실패한다. 서버(gui.py)처럼
+    동시 변경이 가능한 곳에서는 이미 원자적으로 저장된 파일 바이트를 push_raw로 넘길 것."""
+    return push_raw(json.dumps(db, ensure_ascii=False, indent=1).encode("utf-8"))
+
+
+def push_raw(raw):
+    """직렬화까지 끝난 DB 바이트를 업로드하고, 과거 버전은 KEEP_ASSETS개만 남긴다."""
     rel = _ensure_release()
-    raw = json.dumps(db, ensure_ascii=False, indent=1).encode("utf-8")
     gz = gzip.compress(raw, compresslevel=6)
     name = f"{ASSET_PREFIX}{int(time.time())}{ASSET_SUFFIX}"
     url = f"{UPLOADS}/repos/{repo()}/releases/{rel['id']}/assets?name={name}"

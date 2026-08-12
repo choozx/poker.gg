@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import bankroll
 import cloud_sync
 import convert
+import quiz
 import store
 
 
@@ -67,6 +69,62 @@ REPORT_SYSTEM_PROMPT = """\
 - 반드시 핸드 번호를 인용해 근거를 제시하세요. 근거 없는 일반론 금지.
 - 분석 모음에 실수가 없으면 패턴을 억지로 만들지 말고 그렇다고 쓰세요.
 - 한국어, 간결하게.
+"""
+
+
+QUIZ_GRADE_SYSTEM_PROMPT = """\
+당신은 NLH 토너먼트 전문 포커 코치입니다. 학생에게 낸 스팟 문제의 답을 채점하세요.
+
+주어지는 것: 히어로의 결정 직전까지의 핸드 상황과, 학생이 고른 액션 하나.
+핸드는 결정 지점에서 잘려 있습니다 — 그 뒤에 무슨 일이 일어났는지는 당신도 모르고,
+알 필요도 없습니다. 결정 시점에 알 수 있던 정보만으로 판단하세요.
+
+형식 (정확히 준수):
+첫 줄: "판정: [좋음]" — [좋음/무난/의문/실수] 중 하나. 반드시 대괄호 포함.
+둘째 줄부터:
+- **왜** — 학생의 선택을 포지션·스택 깊이(bb)·팟 오즈·상대 예상 레인지로 2~3문장 평가.
+- **최선** — 이 스팟의 가장 좋은 액션과 그 이유 1~2문장. 학생의 선택이 최선이면 그렇다고 쓰세요.
+- **기억할 것** — 다음에 같은 스팟에서 쓸 판단 기준 한 줄.
+
+규칙:
+- 결과론 금지. 어떤 카드가 나왔을지 추측해서 평가하지 마세요.
+- 학생이 고른 액션이 실제로 히어로가 친 액션인지 아닌지는 알 수 없습니다. 추측하지 마세요.
+- 포스트플랍은 OOP(블라인드 쪽)가 먼저, IP(버튼 쪽)가 나중에 행동합니다.
+- 토너먼트이므로 스택 보존과 ICM 관점도 고려하세요.
+- 한국어, 마크다운, 간결하게. 상황 재서술 금지.
+"""
+
+QUIZ_GEN_SYSTEM_PROMPT = """\
+당신은 NLH 토너먼트 전문 포커 코치입니다. 학생의 약점 스팟에 맞는 연습 문제를 하나 만드세요.
+
+출력은 **JSON 객체 하나만**. 코드펜스·설명·인사말 없이 JSON만 출력하세요.
+{
+  "situation": "마크다운 문자열",
+  "choices": [{"id": "a", "label": "폴드"}, {"id": "b", "label": "콜 — 4,500 (3.0bb)"}, ...]
+}
+
+situation 마크다운은 아래 형식을 그대로 따르세요 (실제 핸드 히스토리와 같은 모양):
+## 연습 문제
+NLH | Blinds 300/600 ante 75 | 7-handed
+
+**Players:**
+- UTG player1: 24,000 (40.0bb)
+- ... (전 좌석. 히어로 줄 끝에 ` ← **HERO**`)
+
+**Hero hole cards: [Ah Kd]** (CO)
+
+**PREFLOP** (pot: 1,425 = 2.4bb)
+- UTG player1 raises to 1,500 (2.5bb)
+- ...
+- CO Hero → **???  당신의 차례입니다** (to call 1,500, pot 2,925, pot odds 34%)
+
+규칙:
+- 요청받은 포지션·스택 깊이·상황 유형을 정확히 반영하세요.
+- 히어로의 결정 지점에서 끊고, 그 뒤(히어로의 액션·이후 액션·다음 스트리트·결과)는 절대 쓰지 마세요.
+- 상대 홀카드는 쓰지 마세요.
+- choices는 2~4개, 그 시점에 실제로 가능한 액션만, 금액을 칩과 bb로 함께 표기하세요.
+- 정답이 뻔하지 않은, 실제로 고민되는 스팟으로 만드세요.
+- 칩·팟·bb 계산이 서로 맞아떨어지게 하세요.
 """
 
 
@@ -162,8 +220,46 @@ def select_backend(choice):
 # HTTP 서버
 # ---------------------------------------------------------------------------
 
+_QUIZ_GRADE_RE = re.compile(r"\[(좋음|무난|의문|실수)\]")
+
+
+def _quiz_grade_of(text):
+    """채점 텍스트에서 첫 [등급] 을 뽑는다. 프론트 배지와 성적표가 이 값을 쓴다."""
+    m = _QUIZ_GRADE_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def _quiz_parse_gen(text):
+    """AI가 생성한 문제 JSON 파싱. 코드펜스/앞뒤 잡담을 관대하게 걷어낸다."""
+    s = (text or "").strip()
+    if "```" in s:                                   # ```json ... ``` 펜스 제거
+        parts = s.split("```")
+        s = max(parts, key=len)
+        if s.lstrip().startswith("json"):
+            s = s.lstrip()[4:]
+    i, j = s.find("{"), s.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        obj = json.loads(s[i:j + 1])
+    except ValueError:
+        return None
+    situation = (obj.get("situation") or "").strip()
+    choices = obj.get("choices")
+    if not situation or not isinstance(choices, list) or len(choices) < 2:
+        return None
+    clean = []
+    for k, c in enumerate(choices[:4]):
+        if isinstance(c, dict) and c.get("label"):
+            clean.append({"id": str(c.get("id") or k), "label": str(c["label"])})
+    if len(clean) < 2:
+        return None
+    return {"situation": situation, "choices": clean}
+
+
 DB = None        # main()에서 로드되는 핸드 DB
 DB_PATH = None   # 로컬 저장 경로 (클라우드 모드면 ~/.cache 캐시, 아니면 --db)
+HERO = "Hero"    # --hero 로 지정하는 히어로 플레이어 이름 (main()에서 설정)
 
 # --- 클라우드 동기화 (opt-in) ------------------------------------------------
 # 저장(persist)될 때마다 변경을 표시하고, 잠잠해지면(디바운스) 딱 한 번 업로드한다.
@@ -176,8 +272,15 @@ _last_pushed_hash = None
 _db_dirty = False
 
 
-def _db_hash(db):
-    return hashlib.sha256(json.dumps(db, ensure_ascii=False).encode("utf-8")).hexdigest()
+def _db_snapshot():
+    """업로드할 DB 바이트 — **살아있는 DB dict가 아니라 디스크 파일에서** 읽는다.
+
+    푸시는 별도 스레드에서 도는데, 그 사이 요청 스레드가 DB를 조금이라도 건드리면
+    json.dumps가 'dictionary changed size during iteration'으로 터진다.
+    persist()가 이미 store.save_db로 원자적으로(.tmp → os.replace, 락 안에서) 써 둔
+    파일을 그대로 올리면 항상 일관된 스냅샷이 보장된다 (직렬화 형식도 indent=1로 동일)."""
+    with open(DB_PATH, "rb") as f:
+        return f.read()
 
 
 def _do_push():
@@ -186,12 +289,17 @@ def _do_push():
     with _push_lock:
         if not _db_dirty:
             return
-        h = _db_hash(DB)
+        try:
+            raw = _db_snapshot()
+        except OSError as e:
+            print(f"⚠️  DB 스냅샷 읽기 실패 — 업로드 건너뜀: {e}")
+            return
+        h = hashlib.sha256(raw).hexdigest()
         if h == _last_pushed_hash:        # 저장은 일어났지만 내용 동일(예: --rebuild)
             _db_dirty = False
             return
         try:
-            n = cloud_sync.push(DB)
+            n = cloud_sync.push_raw(raw)
             _last_pushed_hash = h
             _db_dirty = False
             print(f"☁️  클라우드 동기화 완료 ({n / 1e6:.1f} MB)")
@@ -359,6 +467,62 @@ INDEX_HTML = r"""<!DOCTYPE html>
   table.tm-struct tr.cur td { background: rgba(77,163,255,.13); color: var(--accent); font-weight: 700; }
   table.tm-struct tr.brk td { color: #c084fc; }
 
+  /* 🎯 문제 풀기 — 내 리크 스팟에서 뽑은 스팟 문제 */
+  .tourney.quiz { border-color: rgba(255,166,87,.45); }
+  .tourney.quiz.sel { border-color: #ffa657; background: rgba(255,166,87,.08); }
+  .tourney.quiz .tname { color: #ffa657; }
+  .qz-wrap { max-width: 860px; }
+  .qz-spots { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .qz-chip { background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+             padding: 5px 12px; font-size: 12px; cursor: pointer; color: var(--dim); }
+  .qz-chip:hover { border-color: #ffa657; color: var(--text); }
+  .qz-chip.on { border-color: #ffa657; background: rgba(255,166,87,.12); color: #ffa657; font-weight: 600; }
+  .qz-chip b { color: var(--text); font-weight: 600; }
+  .qz-chip.on b { color: #ffa657; }
+  .qz-chip em { font-style: normal; color: #6f7889; margin-left: 5px; }
+  .qz-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+             padding: 18px 22px; margin-bottom: 12px; }
+  .qz-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .qz-tag { font-size: 11px; font-weight: 700; border-radius: 5px; padding: 2px 8px;
+            background: rgba(255,166,87,.15); color: #ffa657; }
+  .qz-tag.street { background: rgba(77,163,255,.15); color: var(--accent); }
+  .qz-tag.ai { background: rgba(192,132,252,.15); color: #c084fc; }
+  .qz-tag.cache { background: var(--panel2); color: var(--dim); }
+  /* 핸드 마크다운 표시 — .hand-body 와 같은 규칙 (문제 카드 안에서 재사용) */
+  .qz-md h2 { font-size: 15px; margin-bottom: 4px; color: var(--gold); }
+  .qz-md p { margin: 2px 0; }
+  .qz-md ul { list-style: none; margin: 2px 0 10px 6px; }
+  .qz-md li { padding: 1px 0; }
+  .qz-md strong { color: #fff; }
+  .qz-md .sect { margin-top: 10px; font-weight: 700; color: var(--accent); }
+  .qz-sit { border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px; }
+  .qz-sit li.askturn { background: rgba(255,166,87,.13); border-left: 2px solid #ffa657;
+                       padding-left: 8px; color: #ffa657; font-weight: 600; }
+  .qz-choices { display: grid; gap: 8px; margin-top: 14px; }
+  .qz-choice { text-align: left; background: var(--panel2); border: 1px solid var(--border);
+               color: var(--text); border-radius: 8px; padding: 11px 14px; font-size: 14px;
+               cursor: pointer; transition: border-color .12s; }
+  .qz-choice:hover:not(:disabled) { border-color: #ffa657; }
+  .qz-choice:disabled { cursor: default; opacity: .5; }
+  .qz-choice.picked { border-color: #ffa657; background: rgba(255,166,87,.1); opacity: 1; }
+  .qz-choice .k { display: inline-block; min-width: 20px; color: var(--dim); font-weight: 700; }
+  .qz-verdict { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 700;
+                margin-bottom: 8px; }
+  .qz-verdict .g { font-size: 13px; border-radius: 6px; padding: 3px 10px; }
+  .qz-g-좋음 { background: rgba(63,191,111,.18); color: var(--green); }
+  .qz-g-무난 { background: rgba(77,163,255,.15); color: var(--accent); }
+  .qz-g-의문 { background: rgba(230,180,80,.18); color: var(--gold); }
+  .qz-g-실수 { background: rgba(255,107,125,.18); color: #ff6b7d; }
+  .qz-reveal { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px;
+               font-size: 13px; color: var(--dim); }
+  .qz-reveal b { color: var(--text); }
+  .qz-score { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .qz-score > div { background: var(--panel); border: 1px solid var(--border);
+                    border-radius: 10px; padding: 10px 14px; }
+  .qz-score span { color: var(--dim); font-size: 12px; }
+  .qz-score b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .qz-note { color: var(--dim); font-size: 12px; margin-bottom: 12px; line-height: 1.6; }
+
   .ai-box { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
   .ai-result { background: rgba(77,163,255,.05); border: 1px solid rgba(77,163,255,.25);
                border-radius: 9px; padding: 12px 16px; margin-top: 8px; }
@@ -500,7 +664,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤, -6 타이머
+let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤, -6 타이머, -7 문제
 let STACK_UNIT = 'chips';   // 스택 변화 차트 단위: 'chips'(절대 칩) | 'bb'
 let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
 let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null, BANK_CHART = 'cum';
@@ -553,7 +717,8 @@ function mdToHtml(md) {
       out.push('<h2>' + h.slice(3) + '</h2>'); continue; }
     if (line.startsWith('- ')) {
       if (!inList) { out.push('<ul>'); inList = true; }
-      const cls = line.includes('HERO DECISION') ? ' class="decision"' : '';
+      const cls = line.includes('당신의 차례') ? ' class="askturn"'
+                : line.includes('HERO DECISION') ? ' class="decision"' : '';
       out.push(`<li${cls}>` + h.slice(2) + '</li>'); continue;
     }
     if (inList) { out.push('</ul>'); inList = false; }
@@ -595,6 +760,10 @@ function renderSidebar() {
     <div class="tourney search ${(SEL===-3||inTourney)?'sel':''}" onclick="selectSearch()">
       <div class="tname">🔍 토너먼트</div>
       <div class="tmeta">${DATA.tournaments.length}개 · 검색해서 열기</div>
+    </div>
+    <div class="tourney quiz ${SEL===-7?'sel':''}" onclick="selectQuiz()">
+      <div class="tname">🎯 문제 풀기</div>
+      <div class="tmeta">${qzSidebarMeta()}</div>
     </div>
     <div class="tourney timer ${SEL===-6?'sel':''}" onclick="selectTimer()">
       <div class="tname">⏱ 토너먼트 타이머${TIMER.run.running ? ' <span style="color:var(--green)">●</span>' : ''}</div>
@@ -2507,6 +2676,255 @@ function renderTimer() {
   </div>`;
 }
 
+// ─────────────────────────────────────────────────────────────
+// 🎯 문제 풀기 (SEL = -7)
+// 서버가 내 리크 스팟을 뽑아 실제 핸드를 결정 지점에서 잘라 보내주고, 액션을 고르면
+// AI가 채점한다. 미래 정보(실제 액션·결과)는 채점이 끝난 뒤에만 서버에서 따로 받아온다.
+// ─────────────────────────────────────────────────────────────
+let QUIZ = {
+  status: 'idle',   // idle | loading | ready | grading | graded | error
+  spots: null,      // /api/quiz/spots 응답
+  filter: null,     // 특정 스팟만 출제 (칩 클릭)
+  q: null,          // 현재 문제
+  picked: null,     // 고른 선택지
+  text: '',         // 채점 텍스트 (스트리밍 중 누적)
+  backend: '',
+  reveal: null,     // 실제로는 어떻게 쳤는지 (채점 후 로드)
+  err: '',
+};
+
+function qzSidebarMeta() {
+  const s = QUIZ.spots && QUIZ.spots.scoreboard;
+  if (!s || !s.total) return '내 약점 스팟으로 AI가 문제 출제';
+  return `${s.total}문제 풀이 · 정답률 ${s.ok_rate === null ? '—' : s.ok_rate + '%'}`;
+}
+
+function selectQuiz() {
+  SEL = -7; renderSidebar();
+  $('#mainhead').innerHTML = '<h2>🎯 문제 풀기</h2>';
+  renderQuiz();
+  $('#main').scrollTop = 0;
+  if (!QUIZ.spots) qzLoadSpots();
+}
+
+async function qzLoadSpots() {
+  try {
+    QUIZ.spots = await (await fetch('/api/quiz/spots')).json();
+  } catch (e) {
+    QUIZ.spots = {spots: [], error: String(e)};
+  }
+  renderSidebar();
+  if (SEL === -7) renderQuiz();
+}
+
+function qzPickSpot(key) {
+  QUIZ.filter = QUIZ.filter === key ? null : key;
+  renderQuiz();
+}
+
+// 다음 문제. 실제 핸드가 소진된 스팟이면 서버가 generate 지시를 주고, 그때만 AI로 만든다.
+async function qzNext() {
+  QUIZ.status = 'loading'; QUIZ.q = null; QUIZ.picked = null;
+  QUIZ.text = ''; QUIZ.reveal = null; QUIZ.err = '';
+  renderQuiz();
+  try {
+    const url = '/api/quiz/next' + (QUIZ.filter ? '?spot=' + encodeURIComponent(QUIZ.filter) : '');
+    let data = await (await fetch(url)).json();
+    if (data.generate) {
+      QUIZ.status = 'generating'; renderQuiz();
+      const res = await fetch('/api/quiz/gen', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data.generate),
+      });
+      data = await res.json();
+    }
+    if (data.error) { QUIZ.status = 'error'; QUIZ.err = data.error; }
+    else { QUIZ.q = data.question; QUIZ.status = 'ready'; }
+  } catch (e) {
+    QUIZ.status = 'error'; QUIZ.err = String(e);
+  }
+  renderQuiz();
+}
+
+async function qzAnswer(idx) {
+  if (QUIZ.status !== 'ready' || !QUIZ.q) return;
+  const q = QUIZ.q;
+  QUIZ.picked = q.choices[idx];
+  QUIZ.status = 'grading'; QUIZ.text = '';
+  renderQuiz();
+  try {
+    const res = await fetch('/api/quiz/grade', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        situation: q.situation, choice_label: QUIZ.picked.label, choice_id: QUIZ.picked.id,
+        hand_id: q.hand_id ?? null, didx: q.didx ?? null,
+        spot: q.spot, street: q.street, source: q.source,
+      }),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      QUIZ.status = 'error'; QUIZ.err = d.error || ('HTTP ' + res.status);
+      renderQuiz(); return;
+    }
+    QUIZ.backend = res.headers.get('X-AI-Backend') || 'AI';
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      QUIZ.text += dec.decode(value, {stream: true});
+      qzRenderGrade();
+    }
+    QUIZ.text += dec.decode();
+    QUIZ.status = 'graded';
+    renderQuiz();
+    qzLoadSpots();                     // 성적표/사이드바 갱신
+    if (q.source === 'real') qzLoadReveal(q);
+  } catch (e) {
+    QUIZ.status = 'error'; QUIZ.err = String(e); renderQuiz();
+  }
+}
+
+// 채점이 끝난 뒤에만 호출 — 그 전에 받아오면 정답이 새어나간다
+async function qzLoadReveal(q) {
+  try {
+    QUIZ.reveal = await (await fetch(
+      `/api/quiz/reveal?hand_id=${encodeURIComponent(q.hand_id)}&didx=${q.didx}`)).json();
+  } catch (e) { QUIZ.reveal = null; }
+  if (SEL === -7) renderQuiz();
+}
+
+function qzGrade() {
+  const m = QUIZ.text.match(/\[(좋음|무난|의문|실수)\]/);
+  return m ? m[1] : null;
+}
+
+function qzSpotsHtml() {
+  const s = QUIZ.spots;
+  if (!s) return '<div class="qz-note">약점 스팟을 찾는 중…</div>';
+  if (!s.spots.length) return `<div class="qz-note">
+    아직 출제할 리크 스팟이 없습니다. 핸드를 더 임포트해 보세요. (현재 ${s.total_hands.toLocaleString()}핸드)</div>`;
+  const chips = s.spots.map(sp => `
+    <span class="qz-chip ${QUIZ.filter === sp.key ? 'on' : ''}" onclick="qzPickSpot('${esc(sp.key)}')"
+          title="${esc(sp.detail)}">
+      ${sp.kind === 'freq' ? '📊' : '📌'} <b>${esc(sp.label)}</b>
+      <em>${sp.done ? `${sp.ok}/${sp.done}` : sp.detail}</em></span>`).join('');
+  const warn = s.freq_available ? '' : `
+    <div class="qz-note">📊 통계 이탈 스팟(포지션별 오픈/디펜스 빈도)은 <code>python3 gui.py --rebuild</code>
+      실행 후에 나타납니다 — 기존 핸드에 <code>pf_faced</code>·<code>stack_bb</code>가 없습니다.</div>`;
+  return `<div class="qz-spots">${chips}</div>${warn}
+    <div class="qz-note">칩을 누르면 그 스팟만 집중 출제합니다${QUIZ.filter ? ' (다시 누르면 해제)' : ''}.</div>`;
+}
+
+function qzQuestionHtml() {
+  const q = QUIZ.q;
+  if (QUIZ.status === 'idle') return '';
+  if (QUIZ.status === 'loading') return '<div class="qz-card"><div class="ai-loading">문제를 고르는 중</div></div>';
+  if (QUIZ.status === 'generating') return `<div class="qz-card">
+    <div class="ai-loading">이 스팟의 실제 핸드를 다 풀었습니다 — AI가 새 문제를 만드는 중</div></div>`;
+  if (QUIZ.status === 'error') return `<div class="qz-card">
+    <div class="ai-error">${esc(QUIZ.err)}</div>
+    <button style="margin-top:10px" onclick="qzNext()">다시 시도</button></div>`;
+  if (!q) return '';
+
+  const graded = QUIZ.status === 'graded' || QUIZ.status === 'grading';
+  const keys = 'ABCD';
+  const choices = q.choices.map((c, i) => `
+    <button class="qz-choice ${QUIZ.picked && QUIZ.picked.id === c.id ? 'picked' : ''}"
+            ${graded ? 'disabled' : ''} onclick="qzAnswer(${i})">
+      <span class="k">${keys[i]}</span> ${esc(c.label)}</button>`).join('');
+
+  return `<div class="qz-card">
+    <div class="qz-head">
+      <span class="qz-tag">${esc(q.spot_label || '')}</span>
+      <span class="qz-tag street">${esc(q.street || '')}</span>
+      ${q.source === 'ai' ? '<span class="qz-tag ai">AI 생성 문제</span>' : ''}
+      ${q.cached ? '<span class="qz-tag cache">채점 이력 있음</span>' : ''}
+    </div>
+    <div class="qz-sit qz-md">${mdToHtml(stripHeader(q.situation))}</div>
+    <div class="qz-choices">${choices}</div>
+  </div>
+  <div id="qz-grade">${qzGradeHtml()}</div>`;
+}
+
+function qzGradeHtml() {
+  if (QUIZ.status !== 'grading' && QUIZ.status !== 'graded') return '';
+  if (QUIZ.status === 'grading' && !QUIZ.text) return '<div class="qz-card"><div class="ai-loading">채점 중</div></div>';
+  const g = qzGrade();
+  const streaming = QUIZ.status === 'grading';
+  return `<div class="qz-card">
+    <div class="qz-verdict">
+      <span>${g ? VERDICT_EMOJI[g] : '🤖'}</span>
+      ${g ? `<span class="g qz-g-${g}">${g}</span>` : ''}
+      <span style="font-size:13px;font-weight:400;color:var(--dim)">내 선택: ${esc(QUIZ.picked ? QUIZ.picked.label : '')}</span>
+    </div>
+    <div class="ai-result" style="margin-top:0">${mdToHtml(QUIZ.text)}${streaming ? '<span class="ai-cursor">▍</span>' : ''}</div>
+    ${streaming ? '' : qzRevealHtml()}
+    ${streaming ? '' : `<div style="margin-top:14px"><button class="primary" onclick="qzNext()">다음 문제 →</button>
+      <span style="margin-left:10px;color:var(--dim);font-size:12px">채점: ${esc(QUIZ.backend)}</span></div>`}
+  </div>`;
+}
+
+function qzRevealHtml() {
+  const r = QUIZ.reveal;
+  if (!QUIZ.q || QUIZ.q.source !== 'real') return '';
+  if (!r) return '<div class="qz-reveal">실제 플레이를 불러오는 중…</div>';
+  if (r.error) return '';
+  const net = r.net_bb === null || r.net_bb === undefined ? '—'
+    : `<span class="net ${r.net_bb >= 0 ? 'win' : 'lose'}">${r.net_bb >= 0 ? '+' : ''}${r.net_bb}bb</span>`;
+  const same = QUIZ.picked && QUIZ.picked.label.startsWith(r.actual);
+  return `<div class="qz-reveal">
+    이 스팟에서 <b>실제로는 ${esc(r.actual)}${r.actual_amount ? ' ' + esc(r.actual_amount) : ''}</b>
+    했고, 핸드 최종 손익은 ${net} 였습니다.
+    ${same ? '(내 선택과 같음)' : '(내 선택과 다름)'}
+    &nbsp;<a href="#" style="color:var(--accent)" onclick="event.preventDefault();qzToggleFull()">핸드 전체 보기</a>
+    <div id="qz-full" style="display:none;margin-top:10px" class="qz-md">${mdToHtml(stripHeader(r.full))}</div>
+  </div>`;
+}
+
+function qzToggleFull() {
+  const el = $('#qz-full');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+function qzScoreHtml() {
+  const s = QUIZ.spots && QUIZ.spots.scoreboard;
+  if (!s || !s.total) return '';
+  const st = s.by_street.map(x =>
+    `<div><span>${esc(x.street)}</span><b>${x.n ? Math.round(x.ok / x.n * 100) : 0}%</b>
+      <span style="font-size:11px">${x.ok}/${x.n}</span></div>`).join('');
+  return `<h3 style="margin:20px 0 10px;font-size:14px">성적</h3>
+    <div class="qz-score">
+      <div><span>푼 문제</span><b>${s.total}</b></div>
+      <div><span>정답률</span><b>${s.ok_rate === null ? '—' : s.ok_rate + '%'}</b>
+        <span style="font-size:11px">좋음+무난 기준</span></div>
+      ${Object.entries(s.grades).map(([g, n]) =>
+        `<div><span>${VERDICT_EMOJI[g]} ${g}</span><b>${n}</b></div>`).join('')}
+    </div>
+    ${st ? `<div class="qz-score" style="margin-top:10px">${st}</div>` : ''}`;
+}
+
+// 스트리밍 중엔 채점 영역만 다시 그린다 (문제 카드까지 새로 그리면 스크롤이 튄다)
+function qzRenderGrade() {
+  if (SEL !== -7) return;
+  const el = $('#qz-grade');
+  if (el) el.innerHTML = qzGradeHtml();
+}
+
+function renderQuiz() {
+  if (SEL !== -7) return;
+  $('#hands').innerHTML = `<div class="qz-wrap">
+    ${qzSpotsHtml()}
+    ${QUIZ.status === 'idle'
+      ? `<div class="qz-card" style="text-align:center;padding:34px 22px">
+           <div style="font-size:15px;margin-bottom:6px">내가 자주 실수하는 스팟에서 문제를 냅니다</div>
+           <div style="color:var(--dim);font-size:13px;margin-bottom:18px">
+             실제 내 핸드를 결정 직전에서 끊어 보여주고, 고른 액션을 AI가 채점합니다.</div>
+           <button class="primary" onclick="qzNext()">문제 시작 →</button></div>`
+      : qzQuestionHtml()}
+    ${qzScoreHtml()}
+  </div>`;
+}
+
 tmLoad();
 tmLoop();
 
@@ -2570,6 +2988,19 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/bankroll":
             resp = bankroll.summary(DB)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/quiz/spots":
+            self._send(json.dumps(quiz.spots_view(DB), ensure_ascii=False),
+                       "application/json; charset=utf-8")
+        elif path == "/api/quiz/next":
+            qs = parse_qs(urlparse(self.path).query)
+            resp = quiz.next_question(DB, spot_key=qs.get("spot", [""])[0] or None, hero=HERO)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/quiz/reveal":
+            qs = parse_qs(urlparse(self.path).query)
+            resp = quiz.reveal(DB, qs.get("hand_id", [""])[0],
+                               int(qs.get("didx", ["0"])[0] or 0), hero=HERO)
+            self._send(json.dumps(resp or {"error": "핸드를 찾지 못했습니다."}, ensure_ascii=False),
+                       "application/json; charset=utf-8")
         else:
             self.send_error(404)
 
@@ -2682,6 +3113,81 @@ class Handler(BaseHTTPRequestHandler):
                     "hand_count": len(analyzed),
                 }
                 persist(DB)
+        elif self.path == "/api/quiz/grade":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                situation = (body.get("situation") or "").strip()
+                choice = (body.get("choice_label") or "").strip()
+                if not situation or not choice:
+                    raise ValueError("문제 또는 선택한 액션이 비어 있습니다.")
+                if AI_BACKEND is None:
+                    raise RuntimeError(
+                        "사용 가능한 AI 백엔드가 없습니다. claude CLI 설치 또는 "
+                        "ANTHROPIC_API_KEY 설정 후 다시 실행하세요.")
+            except Exception as e:
+                self._send(json.dumps({"error": str(e)}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=400)
+                return
+            hand_id, didx = body.get("hand_id"), body.get("didx")
+            choice_id = body.get("choice_id") or "?"
+            # 같은 핸드·같은 결정 지점·같은 선택은 이미 채점한 적이 있으면 재사용 (AI 호출 0회)
+            hit = (quiz.cache_get(DB, hand_id, didx, choice_id)
+                   if hand_id is not None and didx is not None else None)
+            if hit:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("X-AI-Backend", "cache")
+                self.end_headers()
+                self.wfile.write(hit["text"].encode("utf-8"))
+                text, grade = hit["text"], hit["grade"]
+            else:
+                text = self._stream_ai(
+                    QUIZ_GRADE_SYSTEM_PROMPT,
+                    f"[문제 상황]\n{situation}\n\n[학생이 고른 액션]\n{choice}\n\n채점하세요.")
+                grade = _quiz_grade_of(text) if text else None
+            if text:
+                if hand_id is not None and didx is not None and not hit:
+                    quiz.cache_put(DB, hand_id, didx, choice_id, grade, text)
+                quiz.record_attempt(DB, body.get("spot"), hand_id, body.get("street"),
+                                    choice_id, grade, generated=body.get("source") == "ai")
+                persist(DB)
+        elif self.path == "/api/quiz/gen":
+            # 실제 핸드가 소진된 스팟 — AI가 같은 성격의 연습 문제를 새로 만든다
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                spot = json.loads(self.rfile.read(length).decode("utf-8"))
+                if AI_BACKEND is None:
+                    raise RuntimeError(
+                        "사용 가능한 AI 백엔드가 없습니다. claude CLI 설치 또는 "
+                        "ANTHROPIC_API_KEY 설정 후 다시 실행하세요.")
+            except Exception as e:
+                self._send(json.dumps({"error": str(e)}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=400)
+                return
+            user = (f"학생의 약점 스팟: {spot.get('label')}\n"
+                    f"근거: {spot.get('detail')}\n"
+                    f"포지션: {spot.get('pos')} · 스택 깊이: {spot.get('stack')} · "
+                    f"상황 유형: {spot.get('reason')}\n\n"
+                    "이 스팟의 연습 문제를 JSON으로 하나 만드세요.")
+            raw = []
+            try:
+                for chunk in AI_BACKEND.stream(QUIZ_GEN_SYSTEM_PROMPT, user):
+                    raw.append(chunk)
+            except Exception as e:
+                self._send(json.dumps({"error": f"문제 생성 실패: {e}"}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=500)
+                return
+            q = _quiz_parse_gen("".join(raw))
+            if not q:
+                self._send(json.dumps(
+                    {"error": "AI가 만든 문제를 해석하지 못했습니다. 다시 시도해 주세요."},
+                    ensure_ascii=False), "application/json; charset=utf-8", code=502)
+                return
+            q.update({"source": "ai", "spot": spot.get("key"),
+                      "spot_label": spot.get("label"), "street": "AI 생성"})
+            self._send(json.dumps({"question": q}, ensure_ascii=False),
+                       "application/json; charset=utf-8")
         elif self.path in ("/api/bankroll/entry", "/api/bankroll/delete", "/api/bankroll/confirm"):
             length = int(self.headers.get("Content-Length", 0))
             try:
@@ -2757,7 +3263,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global DB, DB_PATH, AI_BACKEND, CLOUD, _last_pushed_hash
+    global DB, DB_PATH, AI_BACKEND, CLOUD, HERO, _last_pushed_hash
     ap = argparse.ArgumentParser(description="핸드 히스토리 컨버터 웹 GUI")
     ap.add_argument("input", nargs="*", help="DB에 임포트할 핸드 히스토리 파일 (선택)")
     ap.add_argument("--port", type=int, default=8765)
@@ -2771,6 +3277,7 @@ def main():
     args = ap.parse_args()
 
     DB_PATH = args.db
+    HERO = args.hero
     CLOUD = cloud_sync.available()
     if CLOUD:
         # 클라우드 모드: 로컬 작업폴더는 깨끗하게 두고 ~/.cache에 캐시(안전망)만 둔다.
@@ -2790,7 +3297,12 @@ def main():
         except cloud_sync.CloudError as e:
             DB = store.load_db(DB_PATH)                      # 받기 실패 → 캐시로 시작
             print(f"⚠️  클라우드 받기 실패 — 로컬 캐시로 시작: {e}")
-        _last_pushed_hash = _db_hash(DB)                    # 받은 직후 = 이미 업로드된 상태
+        # 받은 직후 = 이미 업로드된 상태. _do_push와 같은 기준(파일 바이트)으로 재야
+        # 첫 저장 때 불필요한 업로드가 한 번 더 나가지 않는다.
+        try:
+            _last_pushed_hash = hashlib.sha256(_db_snapshot()).hexdigest()
+        except OSError:
+            _last_pushed_hash = None
     else:
         hint = cloud_sync.config_hint()
         if hint:

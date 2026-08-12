@@ -279,7 +279,13 @@ def chips_str(x):
     return f"{x:,.0f}" if x == int(x) else f"{x:,.2f}"
 
 
-def render_markdown(hand, hero="Hero"):
+def render_markdown(hand, hero="Hero", stop_at=None):
+    """핸드를 AI 분석용 마크다운으로 렌더.
+
+    stop_at에 Action 객체를 주면 **그 액션 직전까지만** 렌더하고 멈춘다(문제 출제용).
+    그 뒤의 모든 정보 — 히어로의 실제 선택, 이후 상대 액션, 다음 스트리트, 쇼다운,
+    결과 — 는 한 줄도 나가지 않는다. 미래 정보가 새면 문제가 성립하지 않으므로
+    이 '자르기'가 이 함수에서 가장 중요한 부분이다."""
     out = []
     n = len(hand.players)
     out.append(f"## Hand #{hand.hand_id} — {hand.tournament or hand.game}")
@@ -308,7 +314,10 @@ def render_markdown(hand, hero="Hero"):
 
     streets = ["preflop", "flop", "turn", "river"]
     board_so_far = []
+    cut = False                      # stop_at에 도달 — 이후 스트리트/쇼다운/결과 전부 생략
     for st in streets:
+        if cut:
+            break
         acts = [a for a in hand.actions if a.street == st and not a.verb.startswith("posts")]
         if st != "preflop":
             cards = hand.board.get(st)
@@ -331,6 +340,16 @@ def render_markdown(hand, hero="Hero"):
         out.append(header)
 
         for a in acts:
+            if stop_at is not None and a is stop_at:
+                # 여기가 문제의 결정 지점. 히어로가 실제로 뭘 했는지는 쓰지 않는다.
+                extra = ""
+                if a.to_call > 0:
+                    pot_if_call = a.pot_before + a.to_call
+                    extra = (f" (to call {chips_str(a.to_call)}, pot {chips_str(a.pot_before)}, "
+                             f"pot odds {a.to_call / pot_if_call * 100:.0f}%)")
+                out.append(f"- {label(a.player)} → **???  당신의 차례입니다**{extra}")
+                cut = True
+                break
             line = f"- {label(a.player)}"
             if a.verb == "folds":
                 line += " folds"
@@ -361,6 +380,9 @@ def render_markdown(hand, hero="Hero"):
             out.append(line)
         out.append("")
 
+    if cut:
+        return "\n".join(out).rstrip() + "\n"
+
     if hand.showdown:
         out.append("**SHOWDOWN**")
         for name, cards, rank in hand.showdown:
@@ -386,6 +408,50 @@ def render_markdown(hand, hero="Hero"):
     out.append(f"- Hero net: {sign}{chips_str(net)} ({sign}{bb(hand, net)})")
     out.append("")
     return "\n".join(out)
+
+
+def hero_decisions(hand, hero="Hero"):
+    """히어로가 실제로 '선택'을 한 지점 목록 (문제 출제 후보).
+
+    블라인드/앤티 포스팅과 미콜 반환(return)은 선택이 아니므로 제외한다.
+    각 항목은 그 시점에 히어로가 **알 수 있었던 정보만** 담는다 — 결과는 담지 않는다.
+    (실제로 뭘 했는지인 verb/to_amount는 채점 후 '실제로는' 공개용으로만 쓴다.)"""
+    hero_p = next((p for p in hand.players if p.name == hero), None)
+    if hero_p is None:
+        return []
+    spent = 0.0
+    out = []
+    for a in hand.actions:
+        if a.player != hero:
+            continue
+        if a.verb.startswith("posts") or a.verb == "return":
+            spent += a.amount
+            continue
+        out.append({
+            "idx": len(out),
+            "street": a.street,
+            "pot_before": a.pot_before,
+            "to_call": a.to_call,
+            "stack_before": max(0.0, hero_p.chips - spent),
+            "board": _board_upto(hand, a.street),
+            "verb": a.verb,
+            "amount": a.amount,
+            "to_amount": a.to_amount,
+            "action": a,
+        })
+        spent += a.amount
+    return out
+
+
+_STREET_SEQ = ["preflop", "flop", "turn", "river"]
+
+
+def _board_upto(hand, street):
+    """해당 스트리트 시점에 이미 깔려 있던 보드 카드."""
+    cards = []
+    for st in _STREET_SEQ[1:_STREET_SEQ.index(street) + 1]:
+        cards += hand.board.get(st, [])
+    return cards
 
 
 # ---------------------------------------------------------------------------
@@ -414,8 +480,13 @@ def hand_meta(h, hero="Hero"):
     #  rfi     = 그 기회에 첫 레이즈했는지 (솔버 오픈 차트와 동일, rfi/rfi_opp로 봄)
     #  pf_action = 첫 자발적 액션 분류 (open/3bet/call/allin/fold) — 액션 구성 스택바용
     #   · open = 앞 레이즈 없이 첫 레이즈(리밋 위 이졸 포함) / 3bet = 레이즈에 맞서 레이즈
+    #  pf_faced = 히어로 차례에 **앞에서 무슨 일이 있었는지** (none=폴드 투 히어로 /
+    #   limp=콜만 있었음 / raise=레이즈가 있었음 / None=프리플랍에 결정 자체가 없었음(BB 워크)).
+    #   rfi_opp/pf_action만으로는 '레이즈에 직면'과 '림프에 직면'과 '워크'가 구분되지 않아
+    #   포지션별 빈도 리크(quiz._freq_spots)를 계산할 수 없다.
     rfi_opp = rfi = False
     pf_action = "fold"
+    pf_faced = None
     prior_raise = prior_vol = False
     for a in h.actions:
         if a.street != "preflop":
@@ -424,6 +495,7 @@ def hand_meta(h, hero="Hero"):
             continue                                  # 블라인드/앤티는 자발적 액션 아님
         if a.player == hero:
             rfi_opp = not prior_vol                   # 폴드 투 히어로면 오픈 기회
+            pf_faced = "raise" if prior_raise else ("limp" if prior_vol else "none")
             if a.verb in ("raises", "bets"):
                 pf_action = "3bet" if prior_raise else "open"
             elif a.verb == "allin":
@@ -461,6 +533,7 @@ def hand_meta(h, hero="Hero"):
         "rfi": rfi,
         "rfi_opp": rfi_opp,
         "pf_action": pf_action,
+        "pf_faced": pf_faced,
         "stack_bb": stack_bb,
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,

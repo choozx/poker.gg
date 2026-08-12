@@ -29,7 +29,7 @@ There are no tests, linters, or CI. Verify changes by running `gui.py` against `
 
 ## Architecture
 
-Three modules, strict dependency direction `convert ← store ← gui`:
+Modules, strict dependency direction `convert ← store ← {bankroll, quiz} ← gui`:
 
 - **`convert.py`** — the parser. Regex-based, line-by-line. `parse_hand(text)` → `Hand` dataclass;
   `split_hands(text)` splits a file on `CoinPoker Hand #`. Also renders markdown (`render_markdown`,
@@ -39,6 +39,7 @@ Three modules, strict dependency direction `convert ← store ← gui`:
 - **`gui.py`** — the HTTP server (`http.server`, threaded) **and the entire frontend**, which lives
   as one big `INDEX_HTML` string (HTML+CSS+vanilla JS). Also holds the AI backends and prompts.
 - **`bankroll.py`** — the **real-money** domain (kept strictly separate from chip EV; see below).
+- **`quiz.py`** — the 🎯 문제 풀기 domain: leak-spot detection + question picking (see below).
 
 ### Bankroll (real money) — a parallel domain to the hands
 
@@ -58,6 +59,43 @@ detection (`is_satellite`/`is_ticket_entry` — a name's ₮ is the *destination
 same-day deep-run preference (cashed rows resist being left unmatched). `set_override` force-links a
 specific entry and survives migration. API: `GET /api/bankroll`, `POST /api/bankroll/entry` and
 `/api/bankroll/delete`.
+
+### 🎯 문제 풀기 (`quiz.py`) — 리크 스팟에서 출제, AI는 채점만
+
+Sidebar `SEL = -7`. The design rule is **출제는 로컬(공짜), 채점만 AI**: a real hand from the DB is
+cut at a hero decision point and served as a multiple-choice question; the AI only grades the
+answer. The correct answer is deliberately **not** "what hero actually did" — the hand was selected
+*because* that action was suspect. `quiz.reveal()` discloses the real action and result only after
+grading, via a separate endpoint, so nothing leaks early.
+
+The cut is `convert.render_markdown(hand, hero, stop_at=<Action>)`, which stops before that action
+and drops later streets, `SHOWDOWN` and `RESULT`. **Any change there risks leaking the outcome into
+the question** — that is the one thing this feature must never do.
+
+Two leak axes (`quiz.leak_spots`), deliberately kept separate because they degrade differently:
+
+- **휴리스틱** (`_heuristic_spots`) — groups the frozen `review` field (큰 손실 / 쇼다운 패배 /
+  올인 패배) by position (× stack bucket). Works on **old, un-rebuilt DBs**.
+- **통계 이탈** (`_freq_spots`) — position × stack-bucket RFI% and vs-raise continue% versus
+  `RFI_BASE`/`VS_RAISE_BASE`. Needs `pf_faced`/`stack_bb`, so it **auto-disables** on un-rebuilt DBs
+  (`freq_available()`), and the UI shows a `--rebuild` hint. Both states must keep working.
+
+The baselines are rough MTT reference values, *not* solver output — they only choose which spot to
+ask about; the AI does the judging, so a slightly-off baseline just means a fine spot gets asked and
+graded `[좋음]`. The two axes' scores are in different units, so `leak_spots` **interleaves** them
+by rank rather than sorting on a shared score (otherwise 통계 이탈 takes every top slot), and
+`next_question` weights by that interleaved rank.
+
+When a spot's unserved real hands drop below 3, `next_question` returns `{"generate": spot}` and
+`POST /api/quiz/gen` has the AI invent a same-shape practice hand (`QUIZ_GEN_SYSTEM_PROMPT`, returns
+JSON parsed by `_quiz_parse_gen`). Generated questions are ephemeral — never written to the DB.
+
+`db["quiz"]` holds `attempts` (capped 500) and `cache` (capped 400) — the cache keys on
+`hand_id:didx:choice_id`, so re-answering an identical question costs **zero AI calls**
+(`X-AI-Backend: cache`). Keep both caps: the DB is cloud-synced.
+
+API: `GET /api/quiz/spots` · `/api/quiz/next?spot=` · `/api/quiz/reveal?hand_id=&didx=` ·
+`POST /api/quiz/grade` (streams) · `/api/quiz/gen`.
 
 ### ⏱ 토너먼트 타이머 — frontend-only, no server state
 
@@ -82,7 +120,7 @@ No payout ladder is modeled — don't invent one.
 ### The key invariant: metadata is frozen at import time
 
 When a hand is imported, `convert.hand_meta()` computes derived fields (`vpip`, `pfr`, `rfi`,
-`rfi_opp`, `pf_action`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
+`rfi_opp`, `pf_action`, `pf_faced`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
 the DB record alongside the original `raw` text and rendered `markdown`. The aggregate queries in
 `store.py` (`stats`, `hand_grid`) read these frozen fields directly — they never re-parse `raw`.
 
@@ -130,6 +168,11 @@ format if you touch the prompt.
 - **RFI** (`rfi`/`rfi_opp`) follows the solver "open" definition: `rfi_opp` = folded-to-hero (open
   opportunity), `rfi` = first-in raise. `pf_action` classifies hero's first voluntary preflop action
   (open / 3bet / call / allin / fold) for the hand-grid action stack-bars.
+- **`pf_faced`** records what hero *faced* preflop: `none` (folded to hero) / `limp` / `raise` /
+  `None` (no preflop decision at all, e.g. a BB walk). Don't try to re-derive this from
+  `rfi_opp` + `pf_action` + `no_action_fold` — those can't separate "faced a raise" from "faced a
+  limp" from "walk", and `no_action_fold` is `True` for exactly the clean preflop fold, so filtering
+  it out silently drops every fold from a defend-frequency denominator.
 - **Chip EV (`net_bb`)** is a play-quality metric, not winnings — tournament chips ≠ prize money, so
   the app never sums P&L as money.
 - Hand-grid stack buckets: `<15` (push/fold) / `15–25` / `25–40` / `40+` bb.
