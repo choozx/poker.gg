@@ -62,6 +62,14 @@ same-day deep-run preference (cashed rows resist being left unmatched). `set_ove
 specific entry and survives migration. API: `GET /api/bankroll`, `POST /api/bankroll/entry` and
 `/api/bankroll/delete`.
 
+The 캠페인 트리 (`campaigns`) nests satellites under their main event by name/date inference. When that
+guess is wrong, or for multi-day events (Day 1 flights → Day 2), an entry can carry a **manual**
+`kind` (`single` 싱글데이 / `satellite` / `qualifier` Day1·플라이트) plus `parent_id`, set from the
+edit form's 게임 타입 select. No `kind` = auto-detect (old behaviour); `kind: "auto"` on update
+clears it. Manual children are pulled out of the inference and attached afterwards under the root
+that their `parent_id` chain resolves to (the tree is 2 levels deep, so chains flatten; a cycle or a
+deleted parent leaves a standalone row). The tree is display-only: money totals ignore it.
+
 ### 🎯 문제 풀기 (`quiz.py`) — 리크 스팟에서 출제, AI는 채점만
 
 Sidebar `SEL = -7`. The design rule is **출제는 로컬(공짜), 채점만 AI**: a real hand from the DB is

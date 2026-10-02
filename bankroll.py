@@ -342,10 +342,28 @@ def _normalize_entry(db, e):
     e["pnl"] = round(e["cash"] - e["cost"], 2)
     e["rank"] = str(e.get("rank") or "").strip()
     e["memo"] = str(e.get("memo") or "").strip()
+    _normalize_kind(e)
     if not e.get("tournament_id"):
         idx = _build_index(hand_tournaments(db))
         e["tournament_id"] = match_tid(idx, e["name"], e["date"])
     return e
+
+
+# 수동 게임 타입 — 자동 추론(이름 정규식+날짜)이 틀릴 때, 또는 Day1→Day2 같은 멀티데이 연결용.
+# kind 없음 = 자동 감지(기존 동작). single = 싱글데이(단일 게임, 어디에도 안 붙음).
+# satellite/qualifier = parent_id(상위 게임 엔트리) 밑으로 강제 배치. 돈 합계엔 영향 없음.
+KINDS = ("single", "satellite", "qualifier")
+CHILD_KINDS = ("satellite", "qualifier")
+
+
+def _normalize_kind(e):
+    k = e.get("kind")
+    if k not in KINDS:                      # "auto"/빈값 → 자동 감지로 되돌림
+        e.pop("kind", None)
+        e.pop("parent_id", None)
+        return
+    if k not in CHILD_KINDS or not e.get("parent_id") or e.get("parent_id") == e.get("id"):
+        e.pop("parent_id", None)
 
 
 # ---------------------------------------------------------------------------
@@ -410,14 +428,26 @@ def campaigns(db):
     def outcome(e):
         return _sat_outcome(by_tid, e.get("tournament_id"))
 
+    def kind_of(e):
+        return e.get("kind") or ("satellite" if is_satellite(e["name"]) else "single")
+
     def deco(e):
         t = ht.get(e.get("tournament_id"))
+        k = kind_of(e)
         return {**e, "hands": t["hands"] if t else 0, "net_bb": t["net_bb"] if t else None,
-                "is_sat": is_satellite(e["name"]), "_start": t["start"] if t else "",
-                "outcome": outcome(e) if is_satellite(e["name"]) else None, "children": []}
+                "is_sat": k == "satellite", "kind_eff": k, "kind_manual": bool(e.get("kind")),
+                "_start": t["start"] if t else "",
+                "outcome": outcome(e) if k in CHILD_KINDS else None, "children": []}
 
-    mains = [e for e in entries if not is_satellite(e["name"])]
-    sats = [e for e in entries if is_satellite(e["name"])]
+    # 수동 하위(세틀/퀄리파잉 + 상위 지정)는 자동 추론에서 빼고, 트리를 다 만든 뒤 상위 밑에 붙임.
+    by_id = {e["id"]: e for e in entries}
+    manual_kids = [e for e in entries
+                   if e.get("kind") in CHILD_KINDS and e.get("parent_id") in by_id]
+    mk_ids = {e["id"] for e in manual_kids}
+    rest = [e for e in entries if e["id"] not in mk_ids]
+    mains = [e for e in rest if kind_of(e) == "single"]
+    # 수동 '세틀'(상위 미지정)은 자동 부착 대상에서 제외 — 사용자가 명시한 건 추론으로 덮지 않음
+    sats = [e for e in rest if kind_of(e) != "single" and not e.get("kind")]
 
     kids, orphans = defaultdict(list), []
     for s in sats:
@@ -435,8 +465,10 @@ def campaigns(db):
         kids[best["id"]].append(s) if best else orphans.append(s)
 
     # 자식 정렬: 본선에 가까운 단계가 위(세틀 < Step2 < Step3 < Step4 순으로 아래), 같으면 비싼 바이인 위.
+    # 퀄리파잉(Day1·플라이트)은 세틀보다 위 — 본게임 바로 전 단계라.
     def _kid_sort(lst):
-        return sorted(lst, key=lambda e: (-_tier(e["name"]), -(e.get("buyin") or 0), e.get("date") or ""))
+        return sorted(lst, key=lambda e: (kind_of(e) != "qualifier", -_tier(e["name"]),
+                                          -(e.get("buyin") or 0), e.get("date") or ""))
 
     roots = []
     for m in mains:
@@ -461,6 +493,28 @@ def campaigns(db):
             roots.append(node)
         else:
             roots.extend(deco(s) for s in grp)
+    roots.extend(deco(e) for e in rest if e.get("kind") in CHILD_KINDS)   # 상위 미지정 수동 세틀
+
+    # 수동 하위 부착: parent_id 체인을 따라 올라가 최종 상위가 속한 루트 노드 밑으로.
+    # (트리는 2단계 표시라 Day1 밑의 세틀도 Day2 루트에 평평하게 붙음. 순환/삭제된 상위면 단독 행.)
+    node_of = {}
+    for n in roots:
+        node_of[n["id"]] = n
+        for c in n["children"]:
+            node_of[c["id"]] = n
+    for e in manual_kids:
+        cur, seen = e, set()
+        while cur["id"] in mk_ids and cur["id"] not in seen:
+            seen.add(cur["id"])
+            cur = by_id.get(cur.get("parent_id")) or cur
+        host = node_of.get(cur["id"]) if cur["id"] not in mk_ids else None
+        if host is None:
+            roots.append(deco(e))
+        else:
+            host["children"].append(deco(e))
+    for n in roots:
+        if n["children"]:
+            n["children"] = _kid_sort(n["children"])
 
     # 확인 대기(미확인) 토너를 항상 상단에. 그 안/그 외엔 최신순(같은 날짜는 시작시각→id).
     def _pending(n):

@@ -1839,6 +1839,7 @@ function bankForm() {
     <input type="hidden" id="bf-id" value="${BANK_EDIT || ''}">
     <div style="font-weight:600;margin-bottom:10px">${BANK_EDIT ? '✏️ 결과 수정' : '➕ 토너 결과 입력'}</div>
     <div style="display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center;max-width:640px">
+      ${bankKindRows(fv)}
       <label class="small">날짜</label>${inp('date', 'YYYY-MM-DD', v('date'), 'type="date"')}
       <label class="small">토너먼트명</label>${inp('name', '예: ₮5.50 Turbo', v('name'), 'oninput="bankAutoBuyin()"')}
       <label class="small">바이인 ($)</label>${inp('buyin', '0', v('buyin'), 'type="number" step="0.01" oninput="bankRecost()"')}
@@ -1854,6 +1855,113 @@ function bankForm() {
     </div>
   </div>`;
 }
+// 게임 타입 (수동 지정) — 자동 감지가 틀리거나 Day1→Day2처럼 연결된 게임을 직접 묶을 때.
+// 세틀/퀄리파잉을 고르면 상위 게임을 골라 그 밑으로 들어감. 손대지 않으면 kind를 안 보냄(자동 감지 유지).
+const BANK_KIND_LABEL = {single: '싱글데이 (단일 게임)', satellite: '새틀라이트', qualifier: '퀄리파잉 (Day 1 · 플라이트)'};
+function bankTreePos(id) {      // 트리에서 이 엔트리의 현재 (효과) 타입·상위
+  for (const n of (BANKROLL.tree || [])) {
+    if (n.id === id) return {kind: n.kind_eff || 'single', parent: n.parent_id || ''};
+    const c = (n.children || []).find(c => c.id === id);
+    if (c) return {kind: c.kind_eff || 'satellite', parent: c.parent_id || n.id};
+  }
+  return {kind: 'single', parent: ''};
+}
+function bankKindRows(fv) {
+  const pos = fv.id ? bankTreePos(fv.id) : {kind: 'single', parent: ''};
+  const manual = !!fv.kind;
+  const ents = BANKROLL.entries;
+  // 상위 후보: 자기 자신과 (수동) 자손 제외, 이 게임 날짜 이후(−1일)부터 가까운 순 → 검색으로 좁힘
+  const desc = new Set(fv.id ? [fv.id] : []);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const e of ents) if (e.parent_id && desc.has(e.parent_id) && !desc.has(e.id)) { desc.add(e.id); grew = true; }
+  }
+  const d0 = fv.date ? Date.parse(fv.date) : Date.now();
+  const dd = e => (Date.parse(e.date) - d0) / 864e5;
+  BANK_PCANDS = ents.filter(e => !desc.has(e.id) && e.date)
+    .sort((a, b) => ((dd(a) < -1) - (dd(b) < -1)) || Math.abs(dd(a)) - Math.abs(dd(b)))
+    .map(e => ({id: e.id, label: `${e.date} · ${e.name}${e.cash ? ` · $${e.cash.toFixed(2)}` : ''}`}));
+  const cur = BANK_PCANDS.find(c => c.id === pos.parent);
+  const opt = (val, label, sel) => `<option value="${val}" ${sel ? 'selected' : ''}>${esc(label)}</option>`;
+  const kindSel = Object.keys(BANK_KIND_LABEL).map(k => opt(k, BANK_KIND_LABEL[k], k === pos.kind)).join('');
+  const st = 'background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:13px';
+  const note = manual
+    ? `수동 지정됨 · <a href="#" onclick="event.preventDefault();bankKindReset()">↺ 자동 감지로 되돌리기</a>`
+    : (fv.id ? '자동 감지된 값 — 바꾸면 수동 지정으로 고정됩니다' : '');
+  const hide = pos.kind === 'single' ? 'display:none' : '';
+  return `<label class="small">게임 타입</label>
+    <div><select id="bf-kind" onchange="bankKindChange()" style="${st}">${kindSel}</select>
+      <input type="hidden" id="bf-kind-dirty" value="">
+      <span class="small" style="color:var(--dim);margin-left:8px">${note}</span></div>
+    <label class="small" id="bf-parent-lbl" style="${hide}">상위 게임</label>
+    <div id="bf-parent-box" style="position:relative;${hide}">
+      <input type="hidden" id="bf-parent" value="${esc(pos.parent)}">
+      <input id="bf-parent-q" autocomplete="off" placeholder="🔍 이름·날짜로 검색 (예: legends 09-28)"
+        value="${cur ? esc(cur.label) : ''}" style="${st};width:100%;box-sizing:border-box"
+        onfocus="this.select();bankParentList()" oninput="bankParentList()" onkeydown="bankParentKey(event)"
+        onblur="setTimeout(bankParentClose, 150)">
+      <div id="bf-parent-list" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:30;margin-top:2px;
+        max-height:260px;overflow-y:auto;background:var(--panel2);border:1px solid var(--border);border-radius:6px;
+        box-shadow:0 4px 12px rgba(0,0,0,.35)"></div>
+    </div>`;
+}
+// 검색 콤보: 공백으로 나눈 단어가 모두 포함된 후보만 (대소문자 무시), 최대 50개
+let BANK_PCANDS = [], BANK_PIDX = 0;
+function bankParentList() {
+  const words = ($('#bf-parent-q').value || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const cur = BANK_PCANDS.find(c => c.id === $('#bf-parent').value);
+  // 이미 선택된 값이 그대로 들어있으면 필터 없이 전체(가까운 순) 보여줌
+  const all = cur && $('#bf-parent-q').value === cur.label;
+  const hits = BANK_PCANDS.filter(c => all || words.every(w => c.label.toLowerCase().includes(w))).slice(0, 50);
+  BANK_PIDX = 0;
+  const box = $('#bf-parent-list');
+  box.innerHTML = hits.length
+    ? hits.map((c, i) => `<div class="bpc" data-id="${c.id}" onmousedown="event.preventDefault();bankParentPick('${c.id}')"
+        style="padding:6px 9px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--border);
+        ${c.id === $('#bf-parent').value ? 'color:var(--accent);' : ''}${i === 0 ? 'background:rgba(77,163,255,.15)' : ''}"
+        onmouseenter="bankParentHi(${i})">${esc(c.label)}</div>`).join('')
+    : `<div style="padding:6px 9px;color:var(--dim);font-size:13px">검색 결과 없음</div>`;
+  box.style.display = 'block';
+}
+function bankParentHi(i) {
+  const items = document.querySelectorAll('#bf-parent-list .bpc');
+  if (!items.length) return;
+  BANK_PIDX = Math.max(0, Math.min(items.length - 1, i));
+  items.forEach((el, j) => el.style.background = j === BANK_PIDX ? 'rgba(77,163,255,.15)' : '');
+  items[BANK_PIDX].scrollIntoView({block: 'nearest'});
+}
+function bankParentKey(ev) {
+  const box = $('#bf-parent-list');
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+    ev.preventDefault();
+    if (box.style.display !== 'block') bankParentList();
+    else bankParentHi(BANK_PIDX + (ev.key === 'ArrowDown' ? 1 : -1));
+  } else if (ev.key === 'Enter') {
+    ev.preventDefault();
+    const el = document.querySelectorAll('#bf-parent-list .bpc')[BANK_PIDX];
+    if (el && box.style.display === 'block') bankParentPick(el.dataset.id);
+  } else if (ev.key === 'Escape') bankParentClose();
+}
+function bankParentPick(id) {
+  const c = BANK_PCANDS.find(c => c.id === id); if (!c) return;
+  $('#bf-parent').value = id; $('#bf-parent-q').value = c.label;
+  $('#bf-kind-dirty').value = '1';
+  bankParentClose();
+}
+function bankParentClose() {
+  const box = $('#bf-parent-list'); if (box) box.style.display = 'none';
+  // 검색어만 치고 고르지 않았으면 선택된 값의 라벨로 복원
+  const q = $('#bf-parent-q'); if (!q) return;
+  const cur = BANK_PCANDS.find(c => c.id === $('#bf-parent').value);
+  q.value = cur ? cur.label : '';
+}
+function bankKindChange() {
+  const single = $('#bf-kind').value === 'single';
+  $('#bf-parent-box').style.display = single ? 'none' : '';
+  $('#bf-parent-lbl').style.display = single ? 'none' : '';
+  $('#bf-kind-dirty').value = '1';
+}
+function bankKindReset() { $('#bf-kind-dirty').value = 'auto'; bankSave(); }
 function bankShowForm() { BANK_SHOWFORM = true; BANK_EDIT = null; BANK_PREFILL = null; renderBankroll(); }
 function bankCancel() { BANK_SHOWFORM = false; BANK_EDIT = null; BANK_PREFILL = null; renderBankroll(); }
 function bankEdit(id) { BANK_EDIT = id; BANK_SHOWFORM = true; BANK_PREFILL = null; renderBankroll(); $('#main').scrollTop = 0; }
@@ -1869,6 +1977,13 @@ async function bankSave() {
     cash: num('cash') || 0, rank: $('#bf-rank').value, memo: $('#bf-memo').value,
   };
   if (!body.name) { toast('토너먼트명을 입력하세요'); return; }
+  const kdirty = $('#bf-kind-dirty').value;
+  if (kdirty === 'auto') body.kind = 'auto';
+  else if (kdirty) {
+    body.kind = $('#bf-kind').value;
+    body.parent_id = body.kind === 'single' ? '' : $('#bf-parent').value;
+    if (body.kind !== 'single' && !body.parent_id) { toast('상위 게임을 선택하세요'); return; }
+  }
   const data = await fetch('/api/bankroll/entry', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
   }).then(r => r.json());
@@ -1949,15 +2064,21 @@ function bankRowTr(e, opts) {
     : `<span style="color:var(--gold)" title="연결된 핸드 없음">핸드없음</span>`;
   let name;
   if (opts.nKids) {
-    name = `<span id="tw-${opts.campId}" onclick="bankToggle('${opts.campId}')" style="cursor:pointer;color:var(--dim);user-select:none;margin-right:5px">▶</span>${esc(e.name)}<span style="color:var(--dim);font-size:11px"> · 세틀 ${opts.nKids}</span>`;
+    const ks = e.children || [], nq = ks.filter(c => c.kind_eff === 'qualifier').length, ns = ks.length - nq;
+    const cnt = [nq ? `Day1 ${nq}` : '', ns ? `세틀 ${ns}` : ''].filter(Boolean).join(' · ');
+    name = `<span id="tw-${opts.campId}" onclick="bankToggle('${opts.campId}')" style="cursor:pointer;color:var(--dim);user-select:none;margin-right:5px">▶</span>${esc(e.name)}<span style="color:var(--dim);font-size:11px"> · ${cnt}</span>`;
   } else if (opts.isChild) {
     name = `<span style="color:var(--dim);margin-left:16px">└ ${esc(e.name)}</span>`;
   } else {
     name = esc(e.name);
   }
-  const oc = e.is_sat && e.outcome ? (e.outcome === 'won'
-    ? ` <span style="color:var(--green);font-size:11px" title="세틀에서 살아남아 시트 획득(핸드 판정)">🎟 시트</span>`
-    : ` <span style="color:var(--dim);font-size:11px" title="세틀에서 버스트(핸드 판정)">버스트</span>`) : '';
+  const isQ = e.kind_eff === 'qualifier';
+  const oc = (e.is_sat || isQ) && e.outcome ? (e.outcome === 'won'
+    ? (isQ ? ` <span style="color:var(--green);font-size:11px" title="Day 1 생존 → 다음 날 진출(핸드 판정)">✅ 진출</span>`
+           : ` <span style="color:var(--green);font-size:11px" title="세틀에서 살아남아 시트 획득(핸드 판정)">🎟 시트</span>`)
+    : ` <span style="color:var(--dim);font-size:11px" title="버스트(핸드 판정)">버스트</span>`) : '';
+  const kTag = e.kind_manual ? ` <span style="color:var(--dim);font-size:10px;border:1px solid var(--border);border-radius:4px;padding:0 4px"
+      title="게임 타입 수동 지정됨">${{single: '단일', satellite: '세틀', qualifier: 'Day1'}[e.kind_eff] || ''}</span>` : '';
   const extra = `${e.entries>1?` <span style="color:var(--dim)">×${e.entries}</span>`:''}${e.rank?` <span style="color:var(--dim)">${esc(e.rank)}</span>`:''}`;
   const hide = opts.isChild ? 'display:none;background:rgba(0,0,0,.15);' : '';
   const pending = e.confirmed === false;        // 신규 자동등록 → 확인 대기
@@ -1969,7 +2090,7 @@ function bankRowTr(e, opts) {
   return `<tr class="${opts.isChild?('kid-'+opts.kidOf):''}" style="border-bottom:1px solid var(--border);${hide}">
     ${statusCell}
     <td style="padding:6px 8px;white-space:nowrap;color:var(--dim)">${esc(e.date || '')}</td>
-    <td style="padding:6px 8px">${name}${oc}${extra}</td>
+    <td style="padding:6px 8px">${name}${oc}${kTag}${extra}</td>
     <td style="padding:6px 8px;text-align:right;color:var(--dim)">$${e.cost.toFixed(2)}</td>
     <td style="padding:6px 8px;text-align:right">${e.cash?('$'+e.cash.toFixed(2)):'<span style="color:var(--dim)">-</span>'}</td>
     <td style="padding:6px 8px;text-align:right;font-weight:600">${bankMoney(e.pnl, true)}</td>
