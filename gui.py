@@ -846,6 +846,11 @@ function renderSidebar() {
       <div class="tname">🎯 문제 풀기</div>
       <div class="tmeta">${qzSidebarMeta()}</div>
     </div>
+    <div class="tourney ${SEL===-8?'sel':''}" style="border-color:rgba(77,163,255,.4)"
+         onclick="selectRangeChart()">
+      <div class="tname">📊 레인지 차트</div>
+      <div class="tmeta">${rgvSidebarMeta()}</div>
+    </div>
     <div class="tourney timer ${SEL===-6?'sel':''}" onclick="selectTimer()">
       <div class="tname">⏱ 토너먼트 타이머${TIMER.run.running ? ' <span style="color:var(--green)">●</span>' : ''}</div>
       <div class="tmeta">${tmSidebarMeta()}</div>
@@ -2912,17 +2917,11 @@ function selectQuiz() {
   SEL = -7; renderSidebar();
   renderQuiz();
   $('#main').scrollTop = 0;
-  if (QUIZ.mode === 'chart') rgLoadState();        // 밖에서(grab_chart.py) 넣은 차트도 바로 뜨게
-  else if (QUIZ.mode === 'range') { if (!RANGE.state) rgLoadState(); }
+  if (QUIZ.mode === 'range') { if (!RANGE.state) rgLoadState(); }
   else if (!QUIZ.spots) qzLoadSpots();
 }
 
 function qzSetMode(m) {
-  // 드릴에 문제가 떠 있는 채로 차트 모드로 넘어가면 그 문제의 답이 그대로 보인다 — 비우고 간다
-  if (m === 'chart' && RANGE.status === 'ready') {
-    RANGE.status = 'idle'; RANGE.q = null; RANGE.picked = null;
-    RANGE.res = null; RANGE.chart = null; RANGE.showChart = false;
-  }
   QUIZ.mode = m;
   selectQuiz();
 }
@@ -3214,6 +3213,7 @@ async function rgLoadState() {
   catch (e) { RANGE.state = {error: String(e)}; }
   renderSidebar();
   if (SEL === -7) renderQuiz();
+  if (SEL === -8) renderRangeChart();
 }
 
 // 드롭다운은 '전체(빈 값) 또는 하나' — 쿼리스트링 형식은 그대로라 서버는 손댈 게 없다
@@ -3467,12 +3467,35 @@ function rgScoreHtml() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 📊 레인지 차트 — 문제를 내지 않고 차트만 본다 (가져온 슬롯 전용).
+// 📊 레인지 차트 (SEL = -8) — 문제를 내지 않고 차트만 본다 (가져온 슬롯 전용).
 // 드릴에서 차트를 채점 전에 보면 정답이 새지만, 여기는 출제 자체가 없으므로 그 제약이 없다.
 // 대신 드릴에 풀던 문제가 떠 있는 채로 넘어오면 그 문제의 답이 보이므로 qzSetMode에서 비운다.
 // ─────────────────────────────────────────────────────────────
 // 스택 슬라이더를 끌면 한 번에 여러 장을 지나가므로, 받은 차트는 캐시해 두고 다시
 // 요청하지 않는다. 캐시에 있으면 로딩 표시 없이 그 자리에서 다시 그린다.
+function rgvSidebarMeta() {
+  const n = ((RANGE.state && RANGE.state.custom) || []).length;
+  return n ? `가져온 차트 ${n}장 · 포지션 × 스택` : 'GTO 차트를 가져와서 펼쳐 보기';
+}
+
+function selectRangeChart() {
+  // 드릴에 문제가 떠 있는 채로 넘어오면 그 문제의 답이 차트에 그대로 보인다 — 비우고 간다
+  if (RANGE.status === 'ready') {
+    RANGE.status = 'idle'; RANGE.q = null; RANGE.picked = null;
+    RANGE.res = null; RANGE.chart = null; RANGE.showChart = false;
+  }
+  SEL = -8; renderSidebar();
+  renderRangeChart();
+  $('#main').scrollTop = 0;
+  rgLoadState();                 // 밖에서(grab_chart.py) 넣은 차트도 탭을 누르면 바로 뜨게
+}
+
+function renderRangeChart() {
+  if (SEL !== -8) return;
+  $('#mainhead').innerHTML = '<h2>📊 레인지 차트</h2>';
+  renderRangeView();
+}
+
 async function rgvOpen(pos, stack) {
   const slots = (RANGE.state && RANGE.state.custom) || [];
   if (stack === undefined) {                       // 포지션만 고른 경우
@@ -3492,9 +3515,9 @@ async function rgvOpen(pos, stack) {
   // 캐시 키에 그 슬롯의 저장 시각을 넣는다 — 같은 칸을 다시 가져오면 ts가 바뀌어 저절로 미스
   const v = RANGE.view, key = pos + '|' + stack + '|' + ((slot && slot.ts) || '');
   v.pos = pos; v.stack = stack; v.err = '';
-  if (v.cache[key]) { v.chart = v.cache[key]; v.loading = false; renderQuiz(); return; }
+  if (v.cache[key]) { v.chart = v.cache[key]; v.loading = false; renderRangeChart(); return; }
   v.chart = null; v.loading = true;
-  renderQuiz();
+  renderRangeChart();
   let got, err = '';
   try {
     got = await (await fetch(
@@ -3504,7 +3527,7 @@ async function rgvOpen(pos, stack) {
   if (v.pos !== pos || String(v.stack) !== String(stack)) return;
   if (got && !got.error) v.cache[key] = got;
   v.chart = got; v.err = err; v.loading = false;
-  renderQuiz();
+  renderRangeChart();
 }
 
 // 그 포지션의 스택 슬롯을 **작은 것부터** (슬라이더 축 순서). bb 없는 구형 슬롯은 맨 앞.
@@ -3520,7 +3543,7 @@ function rgvSlide(i) {
   if (s && String(s.stack) !== String(RANGE.view.stack)) rgvOpen(RANGE.view.pos, s.stack);
 }
 
-function rgvToggleRate() { RANGE.view.rate = !RANGE.view.rate; renderQuiz(); }
+function rgvToggleRate() { RANGE.view.rate = !RANGE.view.rate; renderRangeChart(); }
 
 function rgvGridHtml(c) {
   const showRate = RANGE.view.rate;
@@ -3678,8 +3701,7 @@ function renderQuiz() {
   if (SEL !== -7) return;
   const mb = (k, l) => `<button class="${QUIZ.mode === k ? 'primary' : ''}" onclick="qzSetMode('${k}')">${l}</button>`;
   $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">🎯 문제 풀기</h2>
-    ${mb('hand', '🃏 핸드 리뷰')}${mb('range', '📐 오픈 레인지')}${mb('chart', '📊 레인지 차트')}`;
-  if (QUIZ.mode === 'chart') return renderRangeView();
+    ${mb('hand', '🃏 핸드 리뷰')}${mb('range', '📐 오픈 레인지')}`;
   if (QUIZ.mode === 'range') return renderRangeQuiz();
   $('#hands').innerHTML = `<div class="qz-wrap">
     ${qzSpotsHtml()}
