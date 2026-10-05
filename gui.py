@@ -3242,9 +3242,9 @@ async function rgDeleteChart(pos, stack) {
 
 function rgImportHtml() {
   const st = RANGE.state;
-  if (!st || !st.positions) return '';
+  if (!st || !st.import_positions) return '';
   const i = RANGE.imp;
-  const posOpts = st.positions.map(p =>
+  const posOpts = st.import_positions.map(p =>
     `<option value="${p.key}" ${i.pos === p.key ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
   const stackOpts = st.stacks.map(s =>
     `<option value="${s.key}" ${i.stack === s.key ? 'selected' : ''}>${esc(s.label)}</option>`).join('');

@@ -221,6 +221,12 @@ a delete-back-to-builtin button. `delete_chart` removes a custom slot.
 `store._stack_bucket`으로 버킷을 정한다(기준을 두 벌 만들지 않는다). 버킷은 4개뿐이라 40bb와 100bb가
 같은 `deep` 슬롯을 공유한다 — 덮어쓰게 되면 기존 차트의 출처·오픈%를 경고로 먼저 보여준다.
 
+**포지션은 두 체계다.** 가져오는 차트(grab_chart·가져오기 패널)는 8맥스 GTO 툴 이름
+`ranges.POS_8MAX` = UTG UTG1 LJ HJ CO BTN SB BB만 받는다. 내장 `RFI` 차트는 옛 체계(UTG/MP/CO/BTN/SB,
+SB(BTN))를 그대로 쓰고, 8맥스 이름엔 내장 차트가 없다(가져온 것만 있다). 핸드 기록의 `hero_pos`는
+`convert.assign_positions`가 준 MP1/MP2/MP3이라, `_hero_rfi`가 `_pos_8max`로 테이블 인원(`players`)을
+보고 UTG1/LJ/HJ로 바꿔 **두 이름 모두에** 센다 — 그래서 가져온 LJ 차트에도 내 오픈률이 겹쳐진다.
+
 API: `GET /api/range/state` · `/api/range/next?pos=&stack=` · `/api/range/chart?pos=&stack=` ·
 `POST /api/range/grade` (plain JSON, no streaming) · `/api/range/import`
 (`{pos, stack, text, source}`) · `/api/range/delete-chart` (`{pos, stack}`).

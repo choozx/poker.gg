@@ -9,10 +9,10 @@ GTO 위자드 무료 플랜처럼 레인지를 **텍스트로 복사할 수 없�
 사용법:
     python3 grab_chart.py UTG 20                    # 캡처 → 파싱 → 임포트
     python3 grab_chart.py UTG 20 --delay 3          # 3초 뒤 캡처 (브라우저로 전환할 시간)
-    python3 grab_chart.py MP 30 --image ~/a.png     # 캡처 대신 이미지 파일에서
+    python3 grab_chart.py LJ 30 --image ~/a.png     # 캡처 대신 이미지 파일에서
     python3 grab_chart.py CO 50 --dry-run           # 읽기만 하고 보내지 않음
 
-포지션: UTG MP CO BTN SB (MP1/MP2/MP3도 MP로 들어간다)
+포지션: UTG UTG1 LJ HJ CO BTN SB BB (8맥스, `ranges.POS_8MAX`. 소문자·UTG+1도 받는다)
 스택:   GTO 툴에 적힌 bb 숫자를 그대로 준다 (13, 20, 100 …). 버킷 키(pf/short/mid/deep)도 받는다.
 
 **bb 숫자는 그대로 슬롯이 된다** — 10bb와 13bb 차트가 따로 산다. 드릴 채점은 여전히 4버킷
@@ -38,9 +38,15 @@ import urllib.request
 
 RANKS = "AKQJT98765432"
 MIN_TONE_GAP = 30          # 빨강 두 톤으로 보려면 밝기가 이만큼은 떨어져 있어야 한다
-POS = ["UTG", "MP", "CO", "BTN", "SB"]
 BUCKETS = ["pf", "short", "mid", "deep"]
 BUCKET_LABEL = {"pf": "<15bb", "short": "15–25bb", "mid": "25–40bb", "deep": "40bb+"}
+
+
+def parse_pos(arg):
+    """포지션 인자 → 8맥스 이름 (없는 포지션이면 None). 목록은 앱의 `ranges.POS_8MAX` 하나뿐."""
+    import ranges
+    pos = ranges._norm_pos(arg)
+    return pos if pos in ranges.POS_8MAX else None
 
 
 def parse_stack(arg):
@@ -336,7 +342,7 @@ def send(port, pos, stack, freq, jam, source):
 
 def main():
     ap = argparse.ArgumentParser(description="GTO 툴 화면의 레인지 그리드를 캡처해서 차트로 가져온다")
-    ap.add_argument("pos", help="포지션: UTG MP CO BTN SB")
+    ap.add_argument("pos", help="포지션: UTG UTG1 LJ HJ CO BTN SB BB")
     ap.add_argument("stack", help="스택: GTO 툴의 bb 숫자 (20, 12.5, 100 …) 또는 pf/short/mid/deep")
     ap.add_argument("--image", help="화면 캡처 대신 이 이미지 파일에서 읽기")
     ap.add_argument("--region", help="캡처 영역 x,y,w,h")
@@ -346,10 +352,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="읽기만 하고 앱에 보내지 않음")
     a = ap.parse_args()
 
-    pos = a.pos.upper()
-    pos = "MP" if pos.startswith("MP") else pos
-    if pos not in POS:
-        raise SystemExit(f"포지션은 {' / '.join(POS)} 중 하나여야 합니다 (받은 값: {a.pos})")
+    pos = parse_pos(a.pos)
+    if not pos:
+        import ranges
+        raise SystemExit(f"포지션은 {' / '.join(ranges.POS_8MAX)} 중 하나여야 합니다 "
+                         f"(받은 값: {a.pos})")
     slot, bb, bucket = parse_stack(a.stack)
     if not slot:
         raise SystemExit(f"스택은 bb 숫자(예: 20) 또는 {' / '.join(BUCKETS)} 중 하나여야 합니다 "

@@ -200,20 +200,43 @@ _BUCKET_FALLBACK = {"deep": ["deep", "mid", "short", "pf"],
                     "short": ["short", "mid", "pf", "deep"],
                     "pf": ["pf", "short", "mid", "deep"]}
 
-POS_ORDER = ["UTG", "MP", "CO", "BTN", "SB", "SB(BTN)"]
+# 가져오는 차트(grab_chart·가져오기 패널)의 포지션 — 8맥스 GTO 툴 이름 그대로.
+# 내장 차트(위 RFI)는 MP 하나로 묶은 옛 체계라 여기 없는 MP·SB(BTN)은 내장 전용이다.
+POS_8MAX = ["UTG", "UTG1", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+POS_ORDER = ["UTG", "UTG1", "LJ", "HJ", "MP", "CO", "BTN", "SB", "BB", "SB(BTN)"]
 STACK_ORDER = ["pf", "short", "mid", "deep"]
 STACK_LABEL = {"pf": "<15bb", "short": "15–25bb", "mid": "25–40bb", "deep": "40bb+"}
-POS_KO = {"UTG": "UTG (얼리)", "MP": "MP (미들)", "CO": "CO (컷오프)",
-          "BTN": "BTN (버튼)", "SB": "SB (스몰블라인드)", "SB(BTN)": "SB/BTN (헤즈업)"}
+POS_KO = {"UTG": "UTG (얼리)", "UTG1": "UTG+1 (얼리)", "LJ": "LJ (로우잭)",
+          "HJ": "HJ (하이잭)", "MP": "MP (미들)", "CO": "CO (컷오프)",
+          "BTN": "BTN (버튼)", "SB": "SB (스몰블라인드)", "BB": "BB (빅블라인드)",
+          "SB(BTN)": "SB/BTN (헤즈업)"}
 
 _CHART_CACHE = {}
 
 
 def _norm_pos(pos):
-    """MP1/MP2/MP3 → MP (차트 조회용). quiz._norm_pos와 같은 규칙."""
+    """MP1/MP2/MP3 → MP (차트 조회용). quiz._norm_pos와 같은 규칙.
+    사용자 입력도 여기를 지나므로 소문자·'UTG+1' 표기도 받는다."""
     if not pos:
         return None
+    pos = str(pos).strip().upper().replace("UTG+1", "UTG1")
     return "MP" if pos.startswith("MP") else pos
+
+
+def _pos_8max(pos, players):
+    """핸드 기록의 포지션(UTG/MP1…/CO) → 8맥스 이름. 가져온 차트에 내 실전 기록을
+    겹쳐 보려면 같은 이름이어야 해서다. 버튼에서 거꾸로 CO·HJ·LJ를 세고 첫 자리는
+    늘 UTG (7명: UTG LJ HJ CO / 6명: UTG HJ CO), 9명 이상에서 남는 얼리는 UTG1로 묶는다.
+    `players`가 없는 옛 레코드는 MP를 나눌 수 없어 그대로 둔다."""
+    if not pos or not pos.startswith("MP"):
+        return pos
+    if pos == "MP":                      # 6명 테이블 (convert.assign_positions)
+        return "HJ"
+    try:
+        gap = (int(players) - 5) - int(pos[2:])   # HJ까지 남은 자리 수
+    except (TypeError, ValueError):
+        return pos
+    return "HJ" if gap <= 0 else ("LJ" if gap == 1 else "UTG1")
 
 
 # 빈도 → 판정. 0.75 이상이면 확실한 오픈, 0.25 이하면 확실한 폴드, 사이는 경계(혼합).
@@ -316,9 +339,9 @@ def chart(pos, stack, db=None):
     버킷 대체는 가져온 차트와 내장 차트를 같은 사슬에서 훑는다: 예를 들어 헤즈업은
     내장 차트가 deep 한 장뿐이라, short를 가져오면 short가 그 자리를 차지한다."""
     pos = _norm_pos(pos)
-    table = RFI.get(pos)
-    if not table:
+    if pos not in RFI and pos not in POS_8MAX:
         return None
+    table = RFI.get(pos) or {}          # 8맥스 이름은 내장 차트가 없다 — 가져온 것만
     slot, bb_req, bucket = parse_stack(stack)
     if not bucket:
         return None
@@ -449,8 +472,8 @@ def import_chart(db, pos, stack, text, source=None, jam=None):
     `jam`은 그중 올인으로 치는 빈도 — 같은 형식의 레인지 텍스트로 따로 받는다.
     채점은 합계 기준이므로 jam이 없어도 동작은 똑같다."""
     pos = _norm_pos(pos)
-    if pos not in RFI:
-        return {"error": f"알 수 없는 포지션: {pos}"}
+    if pos not in POS_8MAX:
+        return {"error": f"알 수 없는 포지션: {pos} ({' / '.join(POS_8MAX)} 중 하나)"}
     slot, bb, bucket = parse_stack(stack)
     if not slot:
         return {"error": f"알 수 없는 스택: {stack} (bb 숫자나 {'/'.join(STACK_ORDER)})"}
@@ -540,10 +563,12 @@ def _hero_rfi(db):
         combo = store._combo(r.get("hero_cards") or [])
         if not pos or not sb or not combo:
             continue
-        e = data.setdefault((pos, sb, combo), [0, 0])
-        e[1] += 1
-        if r.get("rfi"):
-            e[0] += 1
+        # 내장 차트용(MP)과 가져온 8맥스 차트용(UTG1/LJ/HJ) 두 이름에 같이 센다
+        for p in {pos, _pos_8max(r.get("hero_pos"), r.get("players"))}:
+            e = data.setdefault((p, sb, combo), [0, 0])
+            e[1] += 1
+            if r.get("rfi"):
+                e[0] += 1
     _HERO_CACHE.update({"n": len(hands), "data": data})
     return data
 
@@ -776,19 +801,23 @@ def scoreboard(db):
 
 def state_view(db):
     """UI 초기 상태 — 토글 선택지와 성적표."""
+    custom = custom_slots(db)
+    have = set(RFI) | {s["pos"] for s in custom}
     return {
         # n=None → 프론트 토글이 개수 배지/흐림 처리를 하지 않는다 (차트는 항상 있다)
-        "positions": [{"key": p, "label": p, "n": None} for p in POS_ORDER],
+        "positions": [{"key": p, "label": p, "n": None} for p in POS_ORDER if p in have],
+        # 가져오기 패널의 포지션 선택지 (grab_chart와 같은 8맥스 이름)
+        "import_positions": [{"key": p, "label": POS_KO[p], "n": None} for p in POS_8MAX],
         "stacks": [{"key": s, "label": STACK_LABEL[s], "n": None} for s in STACK_ORDER],
         "personalized": personalized(db),
-        "custom": custom_slots(db),
+        "custom": custom,
         "scoreboard": scoreboard(db),
     }
 
 
 if __name__ == "__main__":                        # 차트 점검용 (python3 ranges.py)
     print(f"{'포지션':<9}{'스택':>9}  {'오픈%':>7} {'경계%':>7}  {'폴드칸':>6}")
-    for p in POS_ORDER:
+    for p in RFI:
         for b in STACK_ORDER:
             c = chart(p, b)
             bad = set(c["weights"]) - _ALL
