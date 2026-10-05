@@ -223,20 +223,28 @@ def _norm_pos(pos):
     return "MP" if pos.startswith("MP") else pos
 
 
+# 뒤에 남은 인원 수 → 8맥스 자리 이름. 오픈 레인지를 정하는 건 '내 뒤에 몇 명 남았나'
+# 하나뿐이라, 테이블 인원이 달라도 이 수가 같으면 같은 자리다.
+_BEHIND_8MAX = {7: "UTG", 6: "UTG1", 5: "LJ", 4: "HJ", 3: "CO", 2: "BTN", 1: "SB", 0: "BB"}
+
+
 def _pos_8max(pos, players):
     """핸드 기록의 포지션(UTG/MP1…/CO) → 8맥스 이름. 가져온 차트에 내 실전 기록을
-    겹쳐 보려면 같은 이름이어야 해서다. 버튼에서 거꾸로 CO·HJ·LJ를 세고 첫 자리는
-    늘 UTG (7명: UTG LJ HJ CO / 6명: UTG HJ CO), 9명 이상에서 남는 얼리는 UTG1로 묶는다.
-    `players`가 없는 옛 레코드는 MP를 나눌 수 없어 그대로 둔다."""
-    if not pos or not pos.startswith("MP"):
+    겹쳐 보려면 같은 이름이어야 해서다.
+
+    **뒤에 남은 인원 수로 옮긴다**: 7인 테이블의 UTG는 뒤에 6명이라 8맥스 UTG+1과
+    같은 자리고, 6인 UTG는 LJ다. 8맥스 UTG(뒤에 7명)는 8인 테이블에서만 나온다.
+    CO·BTN·SB·BB는 버튼 기준이라 인원과 무관하게 이름이 그대로다.
+    `players`가 없는 옛 레코드는 자리를 셀 수 없어 손대지 않는다 (6인 MP만 확정적)."""
+    if not pos or not (pos == "UTG" or pos.startswith("MP")):
         return pos
-    if pos == "MP":                      # 6명 테이블 (convert.assign_positions)
-        return "HJ"
     try:
-        gap = (int(players) - 5) - int(pos[2:])   # HJ까지 남은 자리 수
+        n = int(players)
     except (TypeError, ValueError):
-        return pos
-    return "HJ" if gap <= 0 else ("LJ" if gap == 1 else "UTG1")
+        return "HJ" if pos == "MP" else pos
+    # 프리플랍 행동 순서에서 몇 번째인가 (UTG=0, MP1=1 …). 6인 테이블의 MP는 1번.
+    idx = 0 if pos == "UTG" else (1 if pos == "MP" else int(pos[2:]))
+    return _BEHIND_8MAX.get(n - 1 - idx, pos)
 
 
 # 빈도 → 판정. 0.75 이상이면 확실한 오픈, 0.25 이하면 확실한 폴드, 사이는 경계(혼합).

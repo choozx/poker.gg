@@ -662,6 +662,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .rgv-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
   .rgv-head h3 { font-size: 16px; }
   .rgv-head .pct { color: var(--red); font-weight: 700; }
+  .rgv-stack { margin-right: 16px; min-width: 300px; }
+  .rgv-stack-top { display: flex; align-items: baseline; gap: 6px; }
+  .rgv-bb { font-size: 15px; color: #ffa657; font-variant-numeric: tabular-nums; }
+  .rgv-range { -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+               border-radius: 2px; background: var(--border); outline: none; margin: 8px 0 2px; }
+  .rgv-range::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px;
+               border-radius: 50%; background: #ffa657; cursor: pointer;
+               box-shadow: 0 0 0 3px rgba(255,166,87,.18); }
+  .rgv-range::-moz-range-thumb { width: 15px; height: 15px; border: none; border-radius: 50%;
+               background: #ffa657; cursor: pointer; }
+  /* 눈금은 bb 값이 아니라 인덱스 위치 — 양끝은 썸 반지름만큼 안으로 들인다 */
+  .rgv-ticks { position: relative; height: 14px; margin: 0 7px; }
+  .rgv-ticks span { position: absolute; transform: translateX(-50%); font-size: 10px;
+                    color: var(--dim); cursor: pointer; font-variant-numeric: tabular-nums; }
+  .rgv-ticks span:hover { color: var(--text); }
+  .rgv-ticks span.on { color: #ffa657; font-weight: 700; }
 
   .tourney.search { border-color: rgba(86,211,100,.4); }
   .tourney.search.sel { border-color: var(--green); background: rgba(86,211,100,.08); }
@@ -2896,7 +2912,8 @@ function selectQuiz() {
   SEL = -7; renderSidebar();
   renderQuiz();
   $('#main').scrollTop = 0;
-  if (QUIZ.mode === 'range' || QUIZ.mode === 'chart') { if (!RANGE.state) rgLoadState(); }
+  if (QUIZ.mode === 'chart') rgLoadState();        // 밖에서(grab_chart.py) 넣은 차트도 바로 뜨게
+  else if (QUIZ.mode === 'range') { if (!RANGE.state) rgLoadState(); }
   else if (!QUIZ.spots) qzLoadSpots();
 }
 
@@ -3182,7 +3199,7 @@ let RANGE = {
   showImport: false,
   imp: {pos: '', stack: '', text: '', source: '', busy: false, err: '', msg: ''},
   // 📊 레인지 차트 뷰어 (문제를 내지 않는 보기 전용 모드)
-  view: {pos: '', stack: '', chart: null, loading: false, err: '', rate: false},
+  view: {pos: '', stack: '', chart: null, loading: false, err: '', rate: false, cache: {}},
 };
 
 function rgFilterQS() {
@@ -3454,22 +3471,53 @@ function rgScoreHtml() {
 // 드릴에서 차트를 채점 전에 보면 정답이 새지만, 여기는 출제 자체가 없으므로 그 제약이 없다.
 // 대신 드릴에 풀던 문제가 떠 있는 채로 넘어오면 그 문제의 답이 보이므로 qzSetMode에서 비운다.
 // ─────────────────────────────────────────────────────────────
+// 스택 슬라이더를 끌면 한 번에 여러 장을 지나가므로, 받은 차트는 캐시해 두고 다시
+// 요청하지 않는다. 캐시에 있으면 로딩 표시 없이 그 자리에서 다시 그린다.
 async function rgvOpen(pos, stack) {
   const slots = (RANGE.state && RANGE.state.custom) || [];
   if (stack === undefined) {                       // 포지션만 고른 경우
-    const first = slots.find(s => s.pos === pos);
-    if (!first) return;
-    stack = first.stack;
+    const list = rgvStacks(pos);
+    if (!list.length) return;
+    // 보던 스택을 그대로 유지한다 — 포지션끼리 같은 스택을 비교하는 게 이 화면의 쓸모다.
+    // 그 포지션에 그 스택이 없으면 가장 가까운 bb로 붙인다 (맨 처음으로 튀지 않게).
+    const cur = String(RANGE.view.stack);
+    const same = list.find(s => String(s.stack) === cur);
+    const bbOf = s => (s && s.bb !== null && s.bb !== undefined ? s.bb : -1);
+    const curBb = bbOf(slots.find(s => s.pos === RANGE.view.pos && String(s.stack) === cur));
+    stack = same ? same.stack
+      : list.reduce((a, b) =>
+          Math.abs(bbOf(b) - curBb) < Math.abs(bbOf(a) - curBb) ? b : a).stack;
   }
-  RANGE.view.pos = pos; RANGE.view.stack = stack;
-  RANGE.view.chart = null; RANGE.view.err = ''; RANGE.view.loading = true;
+  const slot = slots.find(x => x.pos === pos && String(x.stack) === String(stack));
+  // 캐시 키에 그 슬롯의 저장 시각을 넣는다 — 같은 칸을 다시 가져오면 ts가 바뀌어 저절로 미스
+  const v = RANGE.view, key = pos + '|' + stack + '|' + ((slot && slot.ts) || '');
+  v.pos = pos; v.stack = stack; v.err = '';
+  if (v.cache[key]) { v.chart = v.cache[key]; v.loading = false; renderQuiz(); return; }
+  v.chart = null; v.loading = true;
   renderQuiz();
+  let got, err = '';
   try {
-    RANGE.view.chart = await (await fetch(
+    got = await (await fetch(
       `/api/range/chart?pos=${encodeURIComponent(pos)}&stack=${stack}`)).json();
-  } catch (e) { RANGE.view.err = String(e); }
-  RANGE.view.loading = false;
+  } catch (e) { err = String(e); }
+  // 끄는 동안 응답이 뒤섞일 수 있다 — 그 사이 다른 칸으로 옮겼으면 버린다
+  if (v.pos !== pos || String(v.stack) !== String(stack)) return;
+  if (got && !got.error) v.cache[key] = got;
+  v.chart = got; v.err = err; v.loading = false;
   renderQuiz();
+}
+
+// 그 포지션의 스택 슬롯을 **작은 것부터** (슬라이더 축 순서). bb 없는 구형 슬롯은 맨 앞.
+function rgvStacks(pos) {
+  return ((RANGE.state && RANGE.state.custom) || [])
+    .filter(s => s.pos === pos)
+    .slice().sort((a, b) => (a.bb === null ? -1 : a.bb) - (b.bb === null ? -1 : b.bb));
+}
+
+function rgvSlide(i) {
+  const list = rgvStacks(RANGE.view.pos);
+  const s = list[Math.max(0, Math.min(list.length - 1, +i))];
+  if (s && String(s.stack) !== String(RANGE.view.stack)) rgvOpen(RANGE.view.pos, s.stack);
 }
 
 function rgvToggleRate() { RANGE.view.rate = !RANGE.view.rate; renderQuiz(); }
@@ -3526,20 +3574,31 @@ function renderRangeView() {
   // 가져온 슬롯이 없는 포지션은 아예 목록에 넣지 않는다 (빈 차트를 고를 수 없게)
   const positions = [...new Set(slots.map(s => s.pos))];
   if (!v.pos || !positions.includes(v.pos)) { rgvOpen(slots[0].pos, slots[0].stack); return; }
-  const mine = slots.filter(s => s.pos === v.pos);
+  const mine = rgvStacks(v.pos);
   if (!mine.some(s => String(s.stack) === String(v.stack))) { rgvOpen(v.pos, mine[0].stack); return; }
-  const cur = mine.find(s => String(s.stack) === String(v.stack));
-  const picker = `<div class="qz-tgrow">
+  const idx = mine.findIndex(s => String(s.stack) === String(v.stack));
+  const cur = mine[idx];
+  // 스택은 순서가 있는 축이라 슬라이더로 — 끌면 레인지가 변하는 게 그대로 보인다.
+  // 눈금 간격은 bb 값이 아니라 **인덱스** 기준이다 (13·15·20…35는 간격이 들쭉날쭉하다).
+  const ticks = mine.length < 2 ? '' : mine.map((s, i) => `
+    <span style="left:${i / (mine.length - 1) * 100}%"
+          class="${i === idx ? 'on' : ''}" onclick="rgvSlide(${i})"
+      >${s.bb === null ? esc(s.stack_label) : s.bb}</span>`).join('');
+  const picker = `<div class="qz-tgrow" style="align-items:flex-end">
     <span class="qz-tglabel">포지션</span>
     <select class="qz-sel" onchange="rgvOpen(this.value)">
       ${positions.map(p => `<option value="${esc(p)}" ${p === v.pos ? 'selected' : ''}>${esc(p)}</option>`).join('')}
     </select>
-    <span class="qz-tglabel">스택</span>
-    <select class="qz-sel" onchange="rgvOpen('${esc(v.pos)}', this.value)">
-      ${mine.map(s => `<option value="${esc(s.stack)}" ${String(s.stack) === String(v.stack) ? 'selected' : ''}
-        >${esc(s.stack_label)}</option>`).join('')}
-    </select>
-    <span style="color:var(--dim);font-size:12px">${slots.length}장 가져옴${
+    ${mine.length < 2 ? `<span class="qz-tglabel">스택</span><b class="rgv-bb">${esc(cur.stack_label)}</b>` : `
+      <div class="rgv-stack">
+        <div class="rgv-stack-top"><span class="qz-tglabel">스택</span>
+          <b class="rgv-bb">${esc(cur.stack_label)}</b></div>
+        <input type="range" class="rgv-range" min="0" max="${mine.length - 1}" step="1"
+               value="${idx}" oninput="rgvSlide(this.value)"
+               title="좌우 방향키로도 이동합니다">
+        <div class="rgv-ticks">${ticks}</div>
+      </div>`}
+    <span style="color:var(--dim);font-size:12px;padding-bottom:2px">${v.pos} ${mine.length}장${
       cur && cur.ts ? ' · 이 차트 ' + esc(cur.ts) : ''}</span>
   </div>`;
   const c = v.chart;

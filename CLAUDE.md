@@ -168,8 +168,12 @@ leaks the answer, the same invariant as `quiz.reveal()`.
 
 **📊 레인지 차트 (`QUIZ.mode = 'chart'`)** — a third, view-only mode of the same tab: no question, no
 grading, just the chart drawn GTO-tool style (each cell filled horizontally in proportion to its
-frequency, `rgvGridHtml`). It picks a chart with a **포지션 + 스택 dropdown** pair built from the imported slots — the stack
-list is rebuilt per position, so an empty combination cannot be selected. It lists **only imported
+frequency, `rgvGridHtml`). It picks a chart with a **포지션 dropdown + 스택 slider** built from the imported slots. The slider
+steps by **index, not bb value** (13·15·20…35 are unevenly spaced, so a value axis bunches up), and
+fetched charts are cached under `pos|stack|ts` — sliding is instant on a revisit, and re-importing a
+slot changes its `ts` so the stale chart cannot survive. A late response is dropped unless the view
+is still on that slot. Changing position **keeps the current stack** (comparing one stack across
+positions is the point of the screen), falling back to the nearest bb when that position lacks it. It lists **only imported
 slots** (`state_view().custom`) — the built-in
 `RFI` approximations are deliberately not browsable here, since the point is to read back what was
 imported. A button swaps the cell numbers between chart frequency and **hero's own open rate**, which
@@ -233,8 +237,14 @@ a delete-back-to-builtin button. `delete_chart` removes a custom slot.
 **포지션은 두 체계다.** 가져오는 차트(grab_chart·가져오기 패널)는 8맥스 GTO 툴 이름
 `ranges.POS_8MAX` = UTG UTG1 LJ HJ CO BTN SB BB만 받는다. 내장 `RFI` 차트는 옛 체계(UTG/MP/CO/BTN/SB,
 SB(BTN))를 그대로 쓰고, 8맥스 이름엔 내장 차트가 없다(가져온 것만 있다). 핸드 기록의 `hero_pos`는
-`convert.assign_positions`가 준 MP1/MP2/MP3이라, `_hero_rfi`가 `_pos_8max`로 테이블 인원(`players`)을
-보고 UTG1/LJ/HJ로 바꿔 **두 이름 모두에** 센다 — 그래서 가져온 LJ 차트에도 내 오픈률이 겹쳐진다.
+`convert.assign_positions`가 준 UTG/MP1/MP2/MP3이라, `_hero_rfi`가 `_pos_8max`로 테이블 인원(`players`)을
+보고 8맥스 이름으로 바꿔 **두 이름 모두에** 센다 — 그래서 가져온 LJ 차트에도 내 오픈률이 겹쳐진다.
+환산 기준은 **뒤에 남은 인원 수**(`_BEHIND_8MAX`) 하나다: 오픈 레인지를 정하는 건 그 수뿐이라 테이블
+인원이 달라도 같으면 같은 자리다. **UTG도 예외가 아니다** — 7인 UTG는 뒤에 6명이라 8맥스 UTG+1이고,
+6인 UTG는 LJ다. 8맥스 UTG(뒤에 7명)는 8인 테이블에서만 나온다. 이걸 빼먹고 UTG를 그대로 두면,
+7·6맥스만 치는 사람의 UTG 기록이 **제 자리보다 2~3칸 타이트한 차트**에 겹쳐져 "차트대로 잘 치고
+있다"로 보인다 (실측: 내 UTG 오픈 17.1% vs 8맥스 UTG 차트 17.2% — 맞는 자리인 UTG1/LJ 기준으로는
+19.4~22.1%라 5p 가까이 타이트했다). CO·BTN·SB·BB는 버튼 기준이라 인원과 무관하게 이름이 그대로다.
 
 API: `GET /api/range/state` · `/api/range/next?pos=&stack=` · `/api/range/chart?pos=&stack=` ·
 `POST /api/range/grade` (plain JSON, no streaming) · `/api/range/import`
