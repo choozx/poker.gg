@@ -18,3 +18,7 @@ tournament_*.md
 __pycache__/
 *.pyc
 .DS_Store
+
+# 폰용으로 내보낸 레인지 차트 (GTO 툴에서 가져온 레인지가 들어 있다 — 공개 repo에 올리지 않는다)
+range_charts.html
+*.range.html

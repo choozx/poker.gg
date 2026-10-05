@@ -247,6 +247,13 @@ SB(BTN))를 그대로 쓰고, 8맥스 이름엔 내장 차트가 없다(가져�
 있다"로 보인다 (실측: 내 UTG 오픈 17.1% vs 8맥스 UTG 차트 17.2% — 맞는 자리인 UTG1/LJ 기준으로는
 19.4~22.1%라 5p 가까이 타이트했다). CO·BTN·SB·BB는 버튼 기준이라 인원과 무관하게 이름이 그대로다.
 
+**`export_chart.py` — 폰용 내보내기 (선택 도구).** 가져온 차트를 전부 인라인한 **HTML 한 장**을
+쓴다. 서버도 네트워크도 타지 않으므로 폰에 옮겨 열면 그대로 돌고, '홈 화면에 추가'하면 앱처럼
+보인다 — 56장이 74KB(gzip 7KB)뿐이라 APK로 감쌀 이유가 없다(감싸도 이 파일을 띄우는 WebView다).
+셀은 `[합계, 올인, 콜]` 0~100 정수로만 싣고(폰 화면에서 소수점은 의미가 없다), `--hero`면 실전
+기록도 함께 넣는다. **기본 출력 경로는 레포 밖(`~/Desktop`)이고 결과물은 `.gitignore`에 있다** —
+이 repo는 공개라 GTO 툴에서 가져온 레인지가 담긴 파일을 커밋하면 인터넷에 그대로 공개된다.
+
 API: `GET /api/range/state` · `/api/range/next?pos=&stack=` · `/api/range/chart?pos=&stack=` ·
 `POST /api/range/grade` (plain JSON, no streaming) · `/api/range/import`
 (`{pos, stack, text, source}`) · `/api/range/delete-chart` (`{pos, stack}`).
