@@ -652,6 +652,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .rgv-c .fill { position: absolute; inset: 0 auto 0 0; background: #dd4c45; }
   /* 올인은 레이즈보다 진한 빨강 — GTO 툴의 두 톤을 그대로 따른다 */
   .rgv-c .jamfill { position: absolute; inset: 0 auto 0 0; background: #72271f; }
+  /* 콜(림프)은 초록 — 빨강(레이즈·올인) 바로 오른쪽, 나머지가 파랑(폴드) */
+  .rgv-c .callfill { position: absolute; top: 0; bottom: 0; background: #4f9a5c; }
   .rgv-c .t { position: relative; }
   .rgv-c .pc { position: absolute; right: 2px; bottom: 1px; font-size: 9px; font-weight: 600;
                opacity: .9; z-index: 1; }
@@ -3348,6 +3350,8 @@ function rgQuestionHtml() {
   const q = RANGE.q;
   if (!q) return '';
   const graded = RANGE.status === 'graded';
+  // 콜(초록)이 있는 차트만 서버가 call 선택지를 넣어 보낸다 → 3지선다
+  const hasCall = q.choices.some(c => c.id === 'call');
   const btn = (id, label, key) => `
     <button class="${RANGE.picked === id ? 'picked ' : ''}${!graded && id === 'open' ? 'primary' : ''}"
             ${graded ? 'disabled' : ''} onclick="rgAnswer('${id}')">
@@ -3357,11 +3361,12 @@ function rgQuestionHtml() {
       <span class="qz-tag">${esc(q.pos_label)}</span>
       <span class="qz-tag street">${esc(q.stack_label)}</span>
     </div>
-    <div class="rg-ctx">${esc(q.prompt)}<b>${esc(q.verb)}할까요?</b></div>
+    <div class="rg-ctx">${esc(q.prompt)}<b>${hasCall ? '어떻게 할까요?' : esc(q.verb) + '할까요?'}</b></div>
     <div class="rg-hero">${q.cards.map(rgCardHtml).join('')}</div>
     <div class="rg-combo">${esc(q.combo)}</div>
     <div class="rg-acts">
       ${btn('open', q.choices[0].label, 'O')}
+      ${hasCall ? btn('call', '콜(림프)', 'C') : ''}
       ${btn('fold', '폴드', 'F')}
     </div>
     ${graded ? rgResultHtml() : ''}
@@ -3376,7 +3381,8 @@ function rgResultHtml() {
       <span>${VERDICT_EMOJI[r.grade] || ''}</span>
       <span class="g qz-g-${r.grade}">${r.grade}</span>
       <span style="font-size:13px;font-weight:500;color:var(--dim)">
-        차트 정답: ${r.correct === 'open' ? r.verb : (r.correct === 'mix' ? '혼합(경계)' : '폴드')}</span>
+        차트 정답: ${r.correct === 'open' ? r.verb : r.correct === 'call' ? '콜(림프)'
+          : (r.correct === 'mix' ? '혼합(경계)' : '폴드')}</span>
     </div>
     <div class="why">${mdToHtml(r.text)}</div>
     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
@@ -3391,7 +3397,8 @@ function rgChartHtml() {
   const c = RANGE.chart;
   if (!c) return '<div class="ai-loading" style="margin-top:12px">차트 여는 중</div>';
   if (c.error) return `<div class="qz-note" style="margin-top:12px">${esc(c.error)}</div>`;
-  const BG = {open: 'rgba(77,163,255,.55)', mix: 'rgba(230,180,80,.35)', fold: 'var(--panel2)'};
+  const BG = {open: 'rgba(77,163,255,.55)', call: 'rgba(79,154,92,.55)',
+              mix: 'rgba(230,180,80,.35)', fold: 'var(--panel2)'};
   let rows = '<tr><th></th>' + GRID_RANKS.map(r => `<th>${r}</th>`).join('') + '</tr>';
   for (let i = 0; i < 13; i++) {
     let tds = `<th>${GRID_RANKS[i]}</th>`;
@@ -3402,7 +3409,8 @@ function rgChartHtml() {
       // 내 실전 오픈 비율이 차트와 크게 어긋나는 칸에 빨간 테두리 — 여기가 리크다
       const dev = d.rate !== undefined &&
         ((d.v === 'open' && d.rate < 50) || (d.v === 'fold' && d.rate > 25)) ? ' rg-dev' : '';
-      const t = `${combo} · 차트 ${d.v === 'open' ? c.verb : (d.v === 'mix' ? '혼합' : '폴드')}` +
+      const t = `${combo} · 차트 ${d.v === 'open' ? c.verb : d.v === 'call' ? '콜'
+          : (d.v === 'mix' ? '혼합' : '폴드')}` + (d.call ? ` (콜 ${Math.round(d.call * 100)}%)` : '') +
         (d.rate === undefined ? ' · 실전 기회 없음' : ` · 실전 ${d.opps}회 중 ${d.opens}회 오픈 (${d.rate}%)`);
       tds += `<td><div class="hc${i === j ? ' pair' : ''}${cur}${dev}" style="background:${BG[d.v]}" title="${esc(t)}">
         <div class="lab">${combo}</div>${d.rate === undefined ? '' : `<div class="val">${d.rate}%</div>`}</div></td>`;
@@ -3411,7 +3419,9 @@ function rgChartHtml() {
   }
   return `<div style="margin-top:14px">
     <div class="rg-legend">
-      <span><i style="background:${BG.open}"></i>${esc(c.verb)} ${c.pct}%</span>
+      <span><i style="background:${BG.open}"></i>${esc(c.verb)} ${c.has_call
+        ? Math.round((c.pct - c.call_pct) * 10) / 10 : c.pct}%</span>
+      ${c.has_call ? `<span><i style="background:${BG.call}"></i>콜(림프) ${c.call_pct}%</span>` : ''}
       <span><i style="background:${BG.mix}"></i>경계(혼합) ${c.mix_pct}%</span>
       <span><i style="background:var(--panel2)"></i>폴드</span>
       <span><i style="box-shadow:inset 0 0 0 1px #ff6b7d"></i>내 실전 기록이 차트와 어긋난 칸</span>
@@ -3472,20 +3482,25 @@ function rgvGridHtml(c) {
       const combo = comboLabel(i, j);
       const d = c.cells[combo] || {v: 'fold', w: 0};
       const w = Math.round((d.w || 0) * 100);
-      const jm = Math.round((d.jam || 0) * 100);      // 올인 몫 (레이즈 몫 = w - jm)
+      const jm = Math.round((d.jam || 0) * 100);      // 올인 몫 (레이즈 몫 = w - jm - cl)
+      const cl = Math.round((d.call || 0) * 100);     // 콜(림프) 몫 — 빨강 오른쪽에 초록으로
       // 내 실전 오픈 비율이 차트와 어긋난 칸 — 겹쳐 보기를 켰을 때만 표시
       const dev = showRate && d.rate !== undefined &&
         ((d.v === 'open' && d.rate < 50) || (d.v === 'fold' && d.rate > 25));
       const num = showRate
         ? (d.rate === undefined ? '' : d.rate + '%')
         : (w > 0 && w < 100 ? w + '%' : '');
-      const act = jm > 0 ? `레이즈 ${w - jm}% · 올인 ${jm}%` : `${w}% ${c.verb}`;
+      const act = (jm > 0 || cl > 0)
+        ? [`레이즈 ${w - jm - cl}%`, jm > 0 ? `올인 ${jm}%` : '', cl > 0 ? `콜 ${cl}%` : '']
+            .filter(Boolean).join(' · ')
+        : `${w}% ${c.verb}`;
       const t = `${combo} · 차트 ${act}` +
         (d.rate === undefined ? ' · 실전 기회 없음'
           : ` · 실전 ${d.opps}회 중 ${d.opens}회 (${d.rate}%)`);
       cells += `<div class="rgv-c${i === j ? ' pair' : ''}${dev ? ' dev' : ''}" title="${esc(t)}">
-        ${w > 0 ? `<div class="fill" style="width:${w}%"></div>` : ''}
+        ${w - cl > 0 ? `<div class="fill" style="width:${w - cl}%"></div>` : ''}
         ${jm > 0 ? `<div class="jamfill" style="width:${jm}%"></div>` : ''}
+        ${cl > 0 ? `<div class="callfill" style="left:${w - cl}%;width:${cl}%"></div>` : ''}
         <span class="t">${combo}</span>${num ? `<span class="pc">${num}</span>` : ''}</div>`;
     }
   }
@@ -3535,9 +3550,11 @@ function renderRangeView() {
   else body = `
     <div class="rgv-head">
       <h3>${esc(c.label)}</h3>
-      <span class="pct">${c.has_jam ? '액션' : esc(c.verb)} ${c.pct}%</span>
-      ${c.has_jam ? `<span style="font-size:12px">레이즈 ${Math.round((c.pct - c.jam_pct) * 10) / 10}%
-        · <b style="color:#b8463a">올인 ${c.jam_pct}%</b></span>` : ''}
+      <span class="pct">${c.has_jam || c.has_call ? '액션' : esc(c.verb)} ${c.pct}%</span>
+      ${c.has_jam || c.has_call ? `<span style="font-size:12px">레이즈 ${
+        Math.round((c.pct - c.jam_pct - c.call_pct) * 10) / 10}%${
+        c.has_jam ? ` · <b style="color:#b8463a">올인 ${c.jam_pct}%</b>` : ''}${
+        c.has_call ? ` · <b style="color:#4f9a5c">콜 ${c.call_pct}%</b>` : ''}</span>` : ''}
       <span style="color:var(--dim);font-size:12px">경계 ${c.mix_pct}%${
         c.source ? ' · 출처 ' + esc(c.source) : ''}</span>
       <span style="flex:1"></span>
@@ -3546,7 +3563,8 @@ function renderRangeView() {
     ${rgvGridHtml(c)}
     <div class="rg-legend" style="margin-top:10px">
       ${c.has_jam ? '<span><i style="background:#72271f"></i>올인</span>' : ''}
-      <span><i style="background:#dd4c45"></i>${c.has_jam ? '레이즈' : esc(c.verb)}</span>
+      <span><i style="background:#dd4c45"></i>${c.has_jam || c.has_call ? '레이즈' : esc(c.verb)}</span>
+      ${c.has_call ? '<span><i style="background:#4f9a5c"></i>콜(림프)</span>' : ''}
       <span><i style="background:#4d7bb3"></i>폴드</span>
       <span>칸이 가로로 채워진 비율 = 그 조합의 액션 빈도</span>
       ${v.rate ? '<span><i style="box-shadow:inset 0 0 0 2px #ffdd57"></i>내 실전 기록이 차트와 어긋난 칸</span>' : ''}
@@ -3591,6 +3609,8 @@ document.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (RANGE.status === 'ready' && (k === 'o' || k === 'r')) { e.preventDefault(); rgAnswer('open'); }
   else if (RANGE.status === 'ready' && k === 'f') { e.preventDefault(); rgAnswer('fold'); }
+  else if (RANGE.status === 'ready' && k === 'c' && RANGE.q &&
+           RANGE.q.choices.some(c => c.id === 'call')) { e.preventDefault(); rgAnswer('call'); }
   else if ((RANGE.status === 'graded' || RANGE.status === 'idle') &&
            (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); rgNext(); }
 });
@@ -3891,7 +3911,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             resp = ranges.import_chart(DB, body.get("pos"), body.get("stack"),
                                        body.get("text"), source=body.get("source"),
-                                       jam=body.get("jam"))
+                                       jam=body.get("jam"), call=body.get("call"))
             if resp.get("ok"):
                 persist(DB)
             self._send(json.dumps(resp, ensure_ascii=False),

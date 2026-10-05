@@ -199,6 +199,15 @@ calls the darker cluster all-in, falling back to a single tone when the clusters
 asks open-or-fold, and `jam` exists only so the chart view can draw both tones. If the drill ever
 asks raise-vs-jam, that is a new question type, not a change to `_class`.
 
+**Call (green) is different — it is graded.** A chart can also carry `call` (combo → call/limp
+frequency, the green in GTO tools; `grab_chart.kind` detects it before blue so teal can't leak into
+fold). `weights` stays the non-fold total (raise + jam + call), so the raise share is
+`weights - jam - call`. A chart with any `call` turns the drill into **open / call / fold**
+(`next_question` adds the `call` choice; no-call charts stay two-way). `_class(w, call)` and
+`_grade3` judge by the chosen action's own share: ≥75% [좋음] / >25% [무난] / else [실수] — with
+`call=0` this is exactly the old two-way rule, so existing charts grade the same. Personalization
+compares hero's `rfi` against `weights - call`, since `rfi` counts raises only.
+
 **Importing real GTO-tool ranges.** `ranges.parse_range` reads pasted range text leniently — plain
 combo lists, `combo:freq` (0–1 or 0–100, scale inferred from the max value seen), or the same
 shorthand notation the built-in charts use (`22+`, `A5s-A2s`) — and `import_chart` stores the result

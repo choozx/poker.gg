@@ -243,8 +243,18 @@ def _pos_8max(pos, players):
 OPEN_HI, FOLD_LO = 0.75, 0.25
 
 
-def _class(w):
-    return "open" if w >= OPEN_HI else ("fold" if w <= FOLD_LO else "mix")
+def _dist(w, call=0.0):
+    """조합 빈도 → 액션별 몫. `w`는 폴드가 아닌 액션 합계, `call`은 그중 콜(림프) 몫."""
+    call = min(call, w)
+    return {"open": w - call, "call": call, "fold": 1.0 - w}
+
+
+def _class(w, call=0.0):
+    """확실한(75% 이상) 액션이 있으면 그 액션, 없으면 "mix". 콜이 없는 차트에선
+    예전 규칙(w ≥ 0.75 오픈 / w ≤ 0.25 폴드 / 사이는 경계)과 정확히 같다."""
+    d = _dist(w, call)
+    best = max(d, key=d.get)
+    return best if d[best] >= OPEN_HI else "mix"
 
 
 def _builtin_weights(pos, bucket_used):
@@ -334,7 +344,8 @@ def chart(pos, stack, db=None):
     mix=0.5로 같은 모양에 맞춰 들어오므로 아래 로직은 출처를 구분하지 않는다 —
     GTO 툴에서 가져온 혼합 빈도가 그대로 채점에 반영된다. 가져온 차트는 여기에
     `jam`(올인 빈도)을 더 들고 올 수 있는데, **채점은 여전히 합계(weights) 기준**이고
-    jam은 차트를 그릴 때 레이즈/올인을 나눠 보여주는 데만 쓴다.
+    jam은 차트를 그릴 때 레이즈/올인을 나눠 보여주는 데만 쓴다. `call`(콜·림프 빈도)은
+    다르다 — 있으면 드릴이 오픈/콜/폴드 3지선다가 되고 채점도 세 몫으로 한다.
 
     버킷 대체는 가져온 차트와 내장 차트를 같은 사슬에서 훑는다: 예를 들어 헤즈업은
     내장 차트가 deep 한 장뿐이라, short를 가져오면 short가 그 자리를 차지한다."""
@@ -345,12 +356,13 @@ def chart(pos, stack, db=None):
     slot, bb_req, bucket = parse_stack(stack)
     if not bucket:
         return None
-    weights = source = jam = None
+    weights = source = jam = call = None
     bb_used = None
     exact = _charts(db).get(f"{pos}|{slot}") if bb_req is not None else None
     if exact and exact.get("weights"):          # 정확히 그 bb 차트가 있으면 그걸로
         weights = {k: float(v) for k, v in exact["weights"].items()}
         jam = {k: float(v) for k, v in (exact.get("jam") or {}).items()}
+        call = {k: float(v) for k, v in (exact.get("call") or {}).items()}
         source, bucket_used, bb_used = exact.get("source") or "가져온 차트", bucket, bb_req
     else:
         for b in _BUCKET_FALLBACK.get(bucket, STACK_ORDER):
@@ -358,6 +370,7 @@ def chart(pos, stack, db=None):
             if cu:
                 weights = {k: float(v) for k, v in cu["weights"].items()}
                 jam = {k: float(v) for k, v in (cu.get("jam") or {}).items()}
+                call = {k: float(v) for k, v in (cu.get("call") or {}).items()}
                 source, bucket_used, bb_used = cu.get("source") or "가져온 차트", b, cu_bb
                 break
             if b in table:
@@ -371,11 +384,14 @@ def chart(pos, stack, db=None):
     pct, mix_pct = _summary(weights)
     jam_pct = (sum(min(w, weights.get(c, 0.0)) * combo_weight(c)
                    for c, w in (jam or {}).items()) / 1326 * 100)
+    call_pct = (sum(min(w, weights.get(c, 0.0)) * combo_weight(c)
+                    for c, w in (call or {}).items()) / 1326 * 100)
     return {
         "pos": pos, "stack": slot, "chart_stack": bucket_used,
         "bucket": bucket, "bb": bb_used,
-        "weights": weights, "jam": jam or {}, "source": source,
+        "weights": weights, "jam": jam or {}, "call": call or {}, "source": source,
         "pct": pct, "mix_pct": mix_pct, "jam_pct": round(jam_pct, 1),
+        "call_pct": round(call_pct, 1),
         # 15bb 미만은 레이즈가 아니라 푸시폴드 구간이라 묻는 액션 자체가 다르다
         "verb": "올인" if bucket == "pf" else "오픈",
         "label": f"{pos} · {slot_label(bb_used if bb_req is None else bb_req, bucket)}",
@@ -387,7 +403,7 @@ def verdict(pos, bucket, combo, db=None):
     c = chart(pos, bucket, db)
     if not c or not combo:
         return None
-    return _class(c["weights"].get(combo, 0.0))
+    return _class(c["weights"].get(combo, 0.0), c["call"].get(combo, 0.0))
 
 
 _ALL = frozenset(all_combos())
@@ -465,12 +481,13 @@ def _combos_of(tok):
     return got if got and got <= _ALL else None
 
 
-def import_chart(db, pos, stack, text, source=None, jam=None):
+def import_chart(db, pos, stack, text, source=None, jam=None, call=None):
     """가져온 레인지를 (포지션, 스택) 슬롯에 저장. 내장 차트를 덮어쓴다.
 
     `stack`이 bb 숫자면 **그 숫자 그대로** 슬롯이 된다 (13bb와 10bb가 따로 산다).
     `jam`은 그중 올인으로 치는 빈도 — 같은 형식의 레인지 텍스트로 따로 받는다.
-    채점은 합계 기준이므로 jam이 없어도 동작은 똑같다."""
+    채점은 합계 기준이므로 jam이 없어도 동작은 똑같다. `call`도 같은 형식으로, 합계 중
+    콜(림프) 몫 — 이건 채점에 들어간다 (드릴이 3지선다가 된다)."""
     pos = _norm_pos(pos)
     if pos not in POS_8MAX:
         return {"error": f"알 수 없는 포지션: {pos} ({' / '.join(POS_8MAX)} 중 하나)"}
@@ -488,9 +505,17 @@ def import_chart(db, pos, stack, text, source=None, jam=None):
         # 올인 빈도가 합계를 넘을 수는 없다 (읽기 오차로 1~2%p 넘칠 수 있어 깎는다)
         jam_w = {k: round(min(v, weights.get(k, 0.0)), 4) for k, v in jw.items()
                  if weights.get(k, 0.0) > 0}
+    call_w = {}
+    if call:
+        cw, cwarn = parse_range(call)
+        warnings = warnings + cwarn
+        # 콜 몫도 합계를 넘을 수 없고, 올인 몫과는 겹치지 않는다
+        call_w = {k: round(min(v, weights.get(k, 0.0) - jam_w.get(k, 0.0)), 4)
+                  for k, v in cw.items() if weights.get(k, 0.0) > jam_w.get(k, 0.0)}
     _state_mut(db)["charts"][f"{pos}|{slot}"] = {
         "weights": {k: round(v, 4) for k, v in sorted(weights.items())},
         "jam": {k: jam_w[k] for k in sorted(jam_w)},
+        "call": {k: call_w[k] for k in sorted(call_w)},
         "bb": bb, "bucket": bucket,
         "source": (source or "").strip() or "가져온 차트",
         "ts": time.strftime("%Y-%m-%d %H:%M"),
@@ -519,10 +544,14 @@ def custom_slots(db):
         pct, mix_pct = _summary(w)
         jam_pct = sum(min(v, w.get(k, 0.0)) * combo_weight(k)
                       for k, v in jam.items()) / 1326 * 100
+        call = {k: float(v) for k, v in (c.get("call") or {}).items()}
+        call_pct = sum(min(v, w.get(k, 0.0)) * combo_weight(k)
+                       for k, v in call.items()) / 1326 * 100
         out.append({"pos": pos, "stack": slot, "bb": bb, "bucket": bucket,
                     "stack_label": slot_label(bb, bucket),
                     "n": len(w), "pct": pct, "mix_pct": mix_pct,
                     "jam_pct": round(jam_pct, 1), "has_jam": bool(jam),
+                    "call_pct": round(call_pct, 1), "has_call": bool(call),
                     "source": c.get("source"), "ts": c.get("ts")})
     order = {p: i for i, p in enumerate(POS_ORDER)}
     out.sort(key=lambda s: (order.get(s["pos"], 99),
@@ -632,8 +661,9 @@ def next_question(db, positions=None, stacks=None):
         if not c:
             continue
         for combo in all_combos():
-            # 차트 빈도가 곧 목표치다 — 가져온 차트의 혼합 빈도(0.62 등)도 그대로 쓴다
-            target = c["weights"].get(combo, 0.0)
+            # 차트 빈도가 곧 목표치다 — 가져온 차트의 혼합 빈도(0.62 등)도 그대로 쓴다.
+            # 실전 기록(rfi)은 레이즈만 세므로 콜(림프) 몫은 빼고 비교한다
+            target = c["weights"].get(combo, 0.0) - c["call"].get(combo, 0.0)
             w = 1.0
             rec = hero.get((pos, bucket, combo))
             if rec and rec[1]:
@@ -659,8 +689,10 @@ def next_question(db, positions=None, stacks=None):
         "chart_source": c.get("source"),
         "prompt": ("헤즈업, 상대 BB. " if pos == "SB(BTN)"
                    else "앞이 전부 폴드하고 나에게 왔습니다. "),
+        # 콜(초록)이 있는 차트만 3지선다 — 없는 차트에 콜 버튼을 띄우면 정답이 없는 선택지가 된다
         "choices": [
             {"id": "open", "label": f"{verb}" + ("(푸시)" if verb == "올인" else "(레이즈)")},
+            *([{"id": "call", "label": "콜(림프)"}] if c["call"] else []),
             {"id": "fold", "label": "폴드"},
         ],
     }}
@@ -681,7 +713,10 @@ def grade(db, pos, bucket, combo, choice, record=True):
     if combo not in _ALL:
         return {"error": f"알 수 없는 조합: {combo}"}
     freq = c["weights"].get(combo, 0.0)
-    v, verb = _class(freq), c["verb"]
+    call_f = min(c["call"].get(combo, 0.0), freq)
+    v, verb = _class(freq, call_f), c["verb"]
+    if c["call"]:
+        return _grade3(db, c, pos, bucket, combo, choice, freq, call_f, v, record)
     # 0/1이 아닌 빈도는 그 자체가 정보다 — 가져온 차트에서만 나온다
     fs = f" (차트 빈도 {freq * 100:.0f}% {verb})" if 0.0 < freq < 1.0 else ""
     if v == "mix":
@@ -699,6 +734,37 @@ def grade(db, pos, bucket, combo, choice, record=True):
     lines = [head,
              f"{c['pos']} · {STACK_LABEL.get(bucket, '?')} {verb} 레인지는 상위 "
              f"**{c['pct']}%** (경계 {c['mix_pct']}% 포함)."]
+    return _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record)
+
+
+def _grade3(db, c, pos, bucket, combo, choice, freq, call_f, v, record):
+    """콜(림프)이 있는 차트의 3지선다 채점. 고른 액션의 차트 빈도로 판정한다:
+    75% 이상 [좋음] / 25% 초과 [무난] / 그 이하 [실수] (2지선다 규칙을 셋으로 늘린 것)."""
+    verb = c["verb"]
+    d = _dist(freq, call_f)
+    name = {"open": verb, "call": "콜(림프)", "fold": "폴드"}
+    p = d.get(choice, 0.0)
+    g = GRADE_OK if p >= OPEN_HI else (GRADE_MIX if p > FOLD_LO else GRADE_BAD)
+    mix = " · ".join(f"{name[k]} {d[k] * 100:.0f}%" for k in ("open", "call", "fold")
+                     if d[k] > 0.005)
+    best = max(d, key=d.get)
+    if g == GRADE_OK:
+        head = f"{combo}는 차트상 **{name[best]}** 구간입니다 ({mix})."
+    elif g == GRADE_MIX:
+        head = (f"{combo}는 **혼합** 구간입니다 ({mix}) — "
+                f"{name.get(choice, choice)}도 됩니다.")
+    else:
+        head = (f"{combo}는 차트상 **{name[best]}** 쪽입니다 ({mix}) — "
+                f"{name.get(choice, choice)} 빈도는 {p * 100:.0f}%뿐입니다.")
+    lines = [head,
+             f"{c['pos']} · {STACK_LABEL.get(bucket, '?')} 차트: 액션 합계 **{c['pct']}%** "
+             f"(그중 콜 {c['call_pct']}%, 경계 {c['mix_pct']}% 포함)."]
+    return _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record)
+
+
+def _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record):
+    """채점 공통 뒷부분 — 출처·실전 기록 문구, 응시 기록, 응답."""
+    verb = c["verb"]
     if c.get("source"):
         lines.append(f"차트 출처: **{c['source']}**"
                      + ("" if c["chart_stack"] == bucket
@@ -710,6 +776,7 @@ def grade(db, pos, bucket, combo, choice, record=True):
     if record:
         record_attempt(db, pos, bucket, combo, choice, g)
     return {"grade": g, "correct": v, "verb": verb, "freq": round(freq, 3),
+            "call": round(min(c["call"].get(combo, 0.0), freq), 3),
             "text": "\n".join(lines), "hero": rec, "source": c.get("source"),
             "pct": c["pct"], "mix_pct": c["mix_pct"]}
 
@@ -721,7 +788,8 @@ def grade(db, pos, bucket, combo, choice, record=True):
 def chart_view(db, pos, stack):
     """그리드용 셀 맵. 내 실전 오픈 비율을 같이 실어 차트와 겹쳐 볼 수 있게 한다.
 
-    셀의 `w`는 액션 합계, `jam`은 그중 올인 몫이다 (레이즈 몫 = w - jam)."""
+    셀의 `w`는 액션 합계, `jam`은 그중 올인 몫, `call`은 콜(림프) 몫이다
+    (레이즈 몫 = w - jam - call)."""
     c = chart(pos, stack, db)
     if not c:
         return {"error": "해당 포지션·스택 차트가 없습니다."}
@@ -729,10 +797,13 @@ def chart_view(db, pos, stack):
     cells = {}
     for combo in all_combos():
         w = c["weights"].get(combo, 0.0)
-        cell = {"v": _class(w), "w": round(w, 3)}
+        cl = min(c["call"].get(combo, 0.0), w)
+        cell = {"v": _class(w, cl), "w": round(w, 3)}
         j = min(c["jam"].get(combo, 0.0), w)
         if j > 0:
             cell["jam"] = round(j, 3)
+        if cl > 0:
+            cell["call"] = round(cl, 3)
         # 실전 기록은 버킷 단위로만 쌓인다 (핸드마다 스택이 제각각이라 bb로는 안 묶인다)
         e = hero.get((_norm_pos(pos), c["bucket"], combo))
         if e and e[1]:
@@ -743,7 +814,8 @@ def chart_view(db, pos, stack):
             "bucket": c["bucket"], "bb": c["bb"],
             "label": c["label"], "verb": c["verb"], "source": c.get("source"),
             "pct": c["pct"], "mix_pct": c["mix_pct"], "jam_pct": c["jam_pct"],
-            "has_jam": bool(c["jam"]), "cells": cells}
+            "has_jam": bool(c["jam"]), "call_pct": c["call_pct"],
+            "has_call": bool(c["call"]), "cells": cells}
 
 
 # ---------------------------------------------------------------------------
@@ -823,7 +895,7 @@ if __name__ == "__main__":                        # 차트 점검용 (python3 ra
             bad = set(c["weights"]) - _ALL
             assert not bad, f"{p}/{b}: 알 수 없는 조합 {bad}"
             # 전부 open/mix면 [실수]가 나올 수 없는 차트다 — 드릴로서 무의미
-            folds = sum(1 for x in _ALL if _class(c["weights"].get(x, 0.0)) == "fold")
+            folds = sum(1 for x in _ALL if _class(c["weights"].get(x, 0.0)) == "fold")  # 내장엔 콜 없음
             assert folds, f"{p}/{b}: 폴드 구간이 없다"
             fb = "" if c["chart_stack"] == b else f"  ←{c['chart_stack']}"
             print(f"{p:<9}{STACK_LABEL[b]:>9}  {c['pct']:>6.1f}% "

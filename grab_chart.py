@@ -24,6 +24,8 @@ GTO 위자드 무료 플랜처럼 레인지를 **텍스트로 복사할 수 없�
 **파랑 계열=폴드 / 빨강 계열=액션**으로 가른 뒤, 빨강의 **진하기**를 2-평균으로 다시 갈라
 진한 쪽을 올인, 밝은 쪽을 레이즈로 본다(`split_reds`). 올인 빈도는 `jam`으로 따로 보내
 차트에 두 톤 그대로 그려진다 — 다만 **채점은 합계 기준**이다 (오픈이냐 폴드냐만 묻는다).
+**초록=콜(림프)**은 따로 센다: `call`로 보내지고, 콜이 있는 차트는 드릴이 오픈/콜/폴드
+3지선다가 된다(채점도 세 몫으로).
 """
 import argparse
 import json
@@ -38,6 +40,7 @@ import urllib.request
 
 RANKS = "AKQJT98765432"
 MIN_TONE_GAP = 30          # 빨강 두 톤으로 보려면 밝기가 이만큼은 떨어져 있어야 한다
+CALL = "call"              # read_grid에서 '콜 열' 표시 (빨강 열은 픽셀 튜플, 폴드는 None)
 BUCKETS = ["pf", "short", "mid", "deep"]
 BUCKET_LABEL = {"pf": "<15bb", "short": "15–25bb", "mid": "25–40bb", "deep": "40bb+"}
 
@@ -126,7 +129,7 @@ def capture(region=None, delay=0.0):
 # ── 색 판정 ────────────────────────────────────────────────────────────────────
 
 def kind(p):
-    """픽셀 한 점 → 'fold'(파랑) / 'act'(빨강) / 'line'(어두움) / None(글자·그 외).
+    """픽셀 한 점 → 'fold'(파랑) / 'act'(빨강) / 'call'(초록) / 'line'(어두움) / None(글자·그 외).
 
     팔레트를 고정하지 않는다. 툴 테마가 바뀌어 빨강·파랑의 정확한 값이 달라져도 동작한다.
     빨강 두 톤(레이즈/올인)은 여기서 나누지 않고 `split_reds`가 밝기로 가른다."""
@@ -135,6 +138,8 @@ def kind(p):
         return "line"
     if min(p) > 150 and max(p) - min(p) < 50:
         return None                  # 흰 글자
+    if g - max(r, b) > 25:           # 초록 = 콜(림프). 청록이 파랑으로 새지 않게 파랑보다 먼저 본다
+        return "call"
     if b - r > 30:
         return "fold"
     if r - b > 30:
@@ -181,7 +186,7 @@ def grid_box(im, step=4):
     for yi in range(ny):
         y = yi * step
         for xi in range(nx):
-            if kind(im.px(xi * step, y)) in ("fold", "act"):
+            if kind(im.px(xi * step, y)) in ("fold", "act", "call"):
                 cols[xi] += 1
                 rows[yi] += 1
 
@@ -247,7 +252,10 @@ def cell_edges(im, box, horiz):
 # ── 그리드 읽기 ────────────────────────────────────────────────────────────────
 
 def read_grid(im):
-    """이미지 → ({조합: 액션 빈도}, {조합: 올인 빈도}, 메모 dict)."""
+    """이미지 → ({조합: 액션 빈도}, {조합: 올인 빈도}, {조합: 콜 빈도}, 메모 dict).
+
+    액션 빈도는 폴드가 아닌 전부(레이즈+올인+콜)의 합계다. 콜 열도 분모에 들어가야
+    '레이즈 50 · 콜 50'인 칸이 레이즈 100%로 부풀지 않는다."""
     box = grid_box(im)
     vx, vok = cell_edges(im, box, True)
     hy, hok = cell_edges(im, box, False)
@@ -266,15 +274,18 @@ def read_grid(im):
                 for y in ys:
                     p = im.px(x, y)
                     k = kind(p)
-                    if k in ("fold", "act"):
+                    if k in ("fold", "act", "call"):
                         tally[k] = tally.get(k, 0) + 1
                         if k == "act":
                             pix.append(p)
                 if not tally:
                     continue
-                if max(tally, key=tally.get) == "act":
+                top = max(tally, key=tally.get)
+                if top == "act":
                     cols.append(pix[len(pix) // 2])         # 그 열의 대표 빨강
                     reds.append(pix[len(pix) // 2])
+                elif top == "call":
+                    cols.append(CALL)
                 else:
                     cols.append(None)                       # 폴드
             grid[(r, c)] = cols
@@ -282,12 +293,13 @@ def read_grid(im):
     # 2차: 빨강 전체의 밝기 분포로 올인/레이즈 경계를 정하고 열마다 배분
     cut = split_reds(reds)
     notes["two_tone"] = cut is not None
-    freq, jam, mixed = {}, {}, []
+    freq, jam, call, mixed = {}, {}, {}, []
     for (r, c), cols in grid.items():
         if not cols:
             continue
-        act = [p for p in cols if p is not None]
-        f = len(act) / len(cols)
+        act = [p for p in cols if p is not None and p is not CALL]
+        n_call = sum(1 for p in cols if p is CALL)
+        f = (len(act) + n_call) / len(cols)
         lab = (RANKS[r] * 2 if r == c else
                RANKS[r] + RANKS[c] + "s" if c > r else RANKS[c] + RANKS[r] + "o")
         if f <= 0.005:
@@ -297,10 +309,12 @@ def read_grid(im):
             j = sum(1 for p in act if lum(p) < cut) / len(cols)
             if j > 0.005:
                 jam[lab] = round(j, 3)
+        if n_call / len(cols) > 0.005:
+            call[lab] = round(n_call / len(cols), 3)
         if 0.25 < f < 0.75:
             mixed.append((lab, f))
     notes["mixed"] = mixed
-    return freq, jam, notes
+    return freq, jam, call, notes
 
 
 # ── 앱에 보내기 ────────────────────────────────────────────────────────────────
@@ -323,9 +337,10 @@ def existing(port, pos, slot):
     return None
 
 
-def send(port, pos, stack, freq, jam, source):
+def send(port, pos, stack, freq, jam, call, source):
     body = json.dumps({"pos": pos, "stack": stack, "text": to_text(freq),
                        "jam": to_text(jam) if jam else "",
+                       "call": to_text(call) if call else "",
                        "source": source}, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(f"http://127.0.0.1:{port}/api/range/import", data=body,
                                  headers={"Content-Type": "application/json"})
@@ -366,7 +381,7 @@ def main():
           + (f" (채점 구간 {BUCKET_LABEL[bucket]})" if bb is not None else ""))
 
     im = load_image(os.path.expanduser(a.image)) if a.image else capture(a.region, a.delay)
-    freq, jam, notes = read_grid(im)
+    freq, jam, call, notes = read_grid(im)
     if not freq:
         raise SystemExit("그리드는 찾았지만 액션 색을 하나도 읽지 못했습니다. --region 으로 영역을 좁혀 보세요.")
     if not notes["lines_ok"]:
@@ -375,9 +390,12 @@ def main():
     cw = lambda c: 6 if len(c) == 2 else 4 if c.endswith("s") else 12
     pct = sum(v * cw(c) for c, v in freq.items()) / 1326 * 100
     jpct = sum(v * cw(c) for c, v in jam.items()) / 1326 * 100
+    cpct = sum(v * cw(c) for c, v in call.items()) / 1326 * 100
     print(f"읽음: 비폴드 {len(freq)}조합 · 가중 액션 {pct:.1f}%  (영역 {notes['box']})")
+    if call:
+        print(f"  초록(콜·림프) 감지 — 콜 {cpct:.1f}% ({len(call)}조합) · 드릴은 오픈/콜/폴드 3지선다가 됩니다")
     if notes["two_tone"]:
-        print(f"  빨강 두 톤 감지 — 레이즈 {pct - jpct:.1f}% · 올인 {jpct:.1f}% "
+        print(f"  빨강 두 톤 감지 — 레이즈 {pct - jpct - cpct:.1f}% · 올인 {jpct:.1f}% "
               f"({len(jam)}조합에 올인 섞임)")
     else:
         print("  빨강이 한 톤이라 전부 같은 액션으로 읽었습니다 "
@@ -390,12 +408,14 @@ def main():
         print("\n[액션 합계] " + to_text(freq))
         if jam:
             print("\n[올인] " + to_text(jam))
+        if call:
+            print("\n[콜] " + to_text(call))
         return
     old = existing(a.port, pos, slot)
     if old:
         print(f"⚠️  이 슬롯엔 이미 차트가 있습니다 — 덮어씁니다 "
               f"(기존: 오픈 {old['pct']}% · {old.get('source') or '출처 없음'} · {old.get('ts')})")
-    res = send(a.port, pos, slot, freq, jam, a.source or f"GTOWizard {pos} {label}")
+    res = send(a.port, pos, slot, freq, jam, call, a.source or f"GTOWizard {pos} {label}")
     if res.get("error"):
         raise SystemExit(f"임포트 실패: {res['error']}")
     print(f"✅ {res['pos']} · {res['label']} 슬롯에 저장 — "
