@@ -246,12 +246,72 @@ def _charts(db):
     return ((db or {}).get("ranges") or {}).get("charts") or {}
 
 
-def chart(pos, bucket, db=None):
-    """(포지션, 스택버킷) → 차트. db를 주면 **가져온 차트가 내장 차트를 덮어쓴다**.
+# 버킷 하나에 bb별 차트가 여러 장 들어올 수 있다 (10bb·13bb 둘 다 pf). 드릴은 버킷
+# 단위로 묻기 때문에 그중 한 장을 골라야 해서, 그 구간에서 실제로 가장 흔한 스택에
+# 가까운 것을 쓴다. 값은 내 기록의 구간별 중앙값 (hands_db 기준).
+_BUCKET_MID = {"pf": 11, "short": 20, "mid": 31, "deep": 60}
 
-    차트의 실체는 `weights` (조합 → 0~1 빈도) 하나뿐이다. 내장 표기법 차트도
-    open=1.0 / mix=0.5로 같은 모양에 맞춰 들어오므로, 아래 로직은 출처를 구분하지
-    않는다 — GTO 툴에서 가져온 혼합 빈도가 그대로 채점에 반영된다.
+
+def parse_stack(stack):
+    """슬롯 인자 → (슬롯키, bb, 버킷). bb 숫자도 버킷키도 받는다.
+
+    '13' → ("13", 13, "pf") / 'pf' → ("pf", None, "pf")."""
+    s = str(stack or "").strip().lower().rstrip("b")
+    if s in STACK_ORDER:
+        return s, None, s
+    try:
+        bb = int(round(float(s)))
+    except ValueError:
+        return None, None, None
+    bucket = store._stack_bucket(bb)
+    return (str(bb), bb, bucket) if bucket else (None, None, None)
+
+
+def slot_label(bb, bucket):
+    """슬롯 표시 이름. bb로 들어온 차트는 **넣을 때 준 숫자 그대로** 보여준다."""
+    return f"{bb}bb" if bb is not None else STACK_LABEL.get(bucket, bucket)
+
+
+def _slot_meta(key, rec):
+    """저장된 차트 레코드 → (bb, 버킷). 구 레코드(버킷키로 저장된 것)도 읽힌다."""
+    _, _, slot = key.partition("|")
+    bb = rec.get("bb")
+    if bb is None and slot not in STACK_ORDER:
+        try:
+            bb = int(slot)
+        except ValueError:
+            bb = None
+    bucket = rec.get("bucket") or (slot if slot in STACK_ORDER else
+                                   (store._stack_bucket(bb) if bb is not None else None))
+    return bb, bucket
+
+
+def _pick_custom(db, pos, bucket):
+    """그 버킷에서 쓸 가져온 차트 한 장. bb 차트를 버킷 차트보다 우선한다."""
+    best = None
+    for key, rec in _charts(db).items():
+        p, _, _ = key.partition("|")
+        if p != pos or not rec.get("weights"):
+            continue
+        bb, bk = _slot_meta(key, rec)
+        if bk != bucket:
+            continue
+        # bb 차트 우선, 그중에서는 이 구간에서 내가 가장 자주 노는 스택에 가까운 것
+        rank = (0, abs(bb - _BUCKET_MID.get(bucket, 0))) if bb is not None else (1, 0)
+        if best is None or rank < best[0]:
+            best = (rank, rec, bb)
+    return (best[1], best[2]) if best else (None, None)
+
+
+def chart(pos, stack, db=None):
+    """(포지션, 스택) → 차트. 스택은 **bb 숫자**도 버킷키도 된다.
+    db를 주면 **가져온 차트가 내장 차트를 덮어쓴다**.
+
+    차트의 실체는 `weights` (조합 → 0~1 빈도)다. 내장 표기법 차트도 open=1.0 /
+    mix=0.5로 같은 모양에 맞춰 들어오므로 아래 로직은 출처를 구분하지 않는다 —
+    GTO 툴에서 가져온 혼합 빈도가 그대로 채점에 반영된다. 가져온 차트는 여기에
+    `jam`(올인 빈도)을 더 들고 올 수 있는데, **채점은 여전히 합계(weights) 기준**이고
+    jam은 차트를 그릴 때 레이즈/올인을 나눠 보여주는 데만 쓴다.
 
     버킷 대체는 가져온 차트와 내장 차트를 같은 사슬에서 훑는다: 예를 들어 헤즈업은
     내장 차트가 deep 한 장뿐이라, short를 가져오면 short가 그 자리를 차지한다."""
@@ -259,30 +319,43 @@ def chart(pos, bucket, db=None):
     table = RFI.get(pos)
     if not table:
         return None
-    custom = _charts(db)
-    weights = source = None
-    for b in _BUCKET_FALLBACK.get(bucket, STACK_ORDER):
-        cu = custom.get(f"{pos}|{b}")
-        if cu and cu.get("weights"):
-            weights = {k: float(v) for k, v in cu["weights"].items()}
-            source, bucket_used = cu.get("source") or "가져온 차트", b
-            break
-        if b in table:
-            key = (pos, b)
-            if key not in _CHART_CACHE:
-                _CHART_CACHE[key] = _builtin_weights(pos, b)
-            weights, bucket_used = _CHART_CACHE[key], b
-            break
+    slot, bb_req, bucket = parse_stack(stack)
+    if not bucket:
+        return None
+    weights = source = jam = None
+    bb_used = None
+    exact = _charts(db).get(f"{pos}|{slot}") if bb_req is not None else None
+    if exact and exact.get("weights"):          # 정확히 그 bb 차트가 있으면 그걸로
+        weights = {k: float(v) for k, v in exact["weights"].items()}
+        jam = {k: float(v) for k, v in (exact.get("jam") or {}).items()}
+        source, bucket_used, bb_used = exact.get("source") or "가져온 차트", bucket, bb_req
+    else:
+        for b in _BUCKET_FALLBACK.get(bucket, STACK_ORDER):
+            cu, cu_bb = _pick_custom(db, pos, b)
+            if cu:
+                weights = {k: float(v) for k, v in cu["weights"].items()}
+                jam = {k: float(v) for k, v in (cu.get("jam") or {}).items()}
+                source, bucket_used, bb_used = cu.get("source") or "가져온 차트", b, cu_bb
+                break
+            if b in table:
+                key = (pos, b)
+                if key not in _CHART_CACHE:
+                    _CHART_CACHE[key] = _builtin_weights(pos, b)
+                weights, bucket_used = _CHART_CACHE[key], b
+                break
     if weights is None:
         return None
     pct, mix_pct = _summary(weights)
+    jam_pct = (sum(min(w, weights.get(c, 0.0)) * combo_weight(c)
+                   for c, w in (jam or {}).items()) / 1326 * 100)
     return {
-        "pos": pos, "stack": bucket, "chart_stack": bucket_used,
-        "weights": weights, "source": source,
-        "pct": pct, "mix_pct": mix_pct,
+        "pos": pos, "stack": slot, "chart_stack": bucket_used,
+        "bucket": bucket, "bb": bb_used,
+        "weights": weights, "jam": jam or {}, "source": source,
+        "pct": pct, "mix_pct": mix_pct, "jam_pct": round(jam_pct, 1),
         # 15bb 미만은 레이즈가 아니라 푸시폴드 구간이라 묻는 액션 자체가 다르다
         "verb": "올인" if bucket == "pf" else "오픈",
-        "label": f"{pos} · {STACK_LABEL.get(bucket, '?')}",
+        "label": f"{pos} · {slot_label(bb_used if bb_req is None else bb_req, bucket)}",
     }
 
 
@@ -369,43 +442,68 @@ def _combos_of(tok):
     return got if got and got <= _ALL else None
 
 
-def import_chart(db, pos, bucket, text, source=None):
-    """가져온 레인지를 (포지션, 스택버킷) 슬롯에 저장. 내장 차트를 덮어쓴다."""
+def import_chart(db, pos, stack, text, source=None, jam=None):
+    """가져온 레인지를 (포지션, 스택) 슬롯에 저장. 내장 차트를 덮어쓴다.
+
+    `stack`이 bb 숫자면 **그 숫자 그대로** 슬롯이 된다 (13bb와 10bb가 따로 산다).
+    `jam`은 그중 올인으로 치는 빈도 — 같은 형식의 레인지 텍스트로 따로 받는다.
+    채점은 합계 기준이므로 jam이 없어도 동작은 똑같다."""
     pos = _norm_pos(pos)
     if pos not in RFI:
         return {"error": f"알 수 없는 포지션: {pos}"}
-    if bucket not in STACK_ORDER:
-        return {"error": f"알 수 없는 스택 구간: {bucket}"}
+    slot, bb, bucket = parse_stack(stack)
+    if not slot:
+        return {"error": f"알 수 없는 스택: {stack} (bb 숫자나 {'/'.join(STACK_ORDER)})"}
     weights, warnings = parse_range(text)
     if not weights:
         return {"error": "레인지를 하나도 읽지 못했습니다. 형식을 확인해 주세요.",
                 "warnings": warnings}
-    _state_mut(db)["charts"][f"{pos}|{bucket}"] = {
+    jam_w = {}
+    if jam:
+        jw, jwarn = parse_range(jam)
+        warnings = warnings + jwarn
+        # 올인 빈도가 합계를 넘을 수는 없다 (읽기 오차로 1~2%p 넘칠 수 있어 깎는다)
+        jam_w = {k: round(min(v, weights.get(k, 0.0)), 4) for k, v in jw.items()
+                 if weights.get(k, 0.0) > 0}
+    _state_mut(db)["charts"][f"{pos}|{slot}"] = {
         "weights": {k: round(v, 4) for k, v in sorted(weights.items())},
+        "jam": {k: jam_w[k] for k in sorted(jam_w)},
+        "bb": bb, "bucket": bucket,
         "source": (source or "").strip() or "가져온 차트",
         "ts": time.strftime("%Y-%m-%d %H:%M"),
     }
     pct, mix_pct = _summary(weights)
-    return {"ok": True, "pos": pos, "stack": bucket, "n": len(weights),
+    return {"ok": True, "pos": pos, "stack": slot, "bb": bb, "bucket": bucket,
+            "label": slot_label(bb, bucket), "n": len(weights),
             "pct": pct, "mix_pct": mix_pct, "warnings": warnings}
 
 
-def delete_chart(db, pos, bucket):
+def delete_chart(db, pos, stack):
     """가져온 차트를 지우고 내장 차트로 되돌린다."""
-    got = _state_mut(db)["charts"].pop(f"{_norm_pos(pos)}|{bucket}", None)
+    slot, _, _ = parse_stack(stack)
+    got = _state_mut(db)["charts"].pop(f"{_norm_pos(pos)}|{slot}", None)
     return {"ok": got is not None}
 
 
 def custom_slots(db):
-    """가져온 차트 목록 (UI의 슬롯 표시·삭제용)."""
+    """가져온 차트 목록 (UI의 슬롯 표시·삭제용). 포지션 순 → 스택 큰 순."""
     out = []
-    for key, c in sorted(_charts(db).items()):
-        pos, _, bucket = key.partition("|")
-        pct, mix_pct = _summary({k: float(v) for k, v in (c.get("weights") or {}).items()})
-        out.append({"pos": pos, "stack": bucket,
-                    "stack_label": STACK_LABEL.get(bucket, bucket),
-                    "n": len(c.get("weights") or {}), "pct": pct, "mix_pct": mix_pct,
+    for key, c in _charts(db).items():
+        pos, _, slot = key.partition("|")
+        bb, bucket = _slot_meta(key, c)
+        w = {k: float(v) for k, v in (c.get("weights") or {}).items()}
+        jam = {k: float(v) for k, v in (c.get("jam") or {}).items()}
+        pct, mix_pct = _summary(w)
+        jam_pct = sum(min(v, w.get(k, 0.0)) * combo_weight(k)
+                      for k, v in jam.items()) / 1326 * 100
+        out.append({"pos": pos, "stack": slot, "bb": bb, "bucket": bucket,
+                    "stack_label": slot_label(bb, bucket),
+                    "n": len(w), "pct": pct, "mix_pct": mix_pct,
+                    "jam_pct": round(jam_pct, 1), "has_jam": bool(jam),
                     "source": c.get("source"), "ts": c.get("ts")})
+    order = {p: i for i, p in enumerate(POS_ORDER)}
+    out.sort(key=lambda s: (order.get(s["pos"], 99),
+                            -(s["bb"] if s["bb"] is not None else -1)))
     return out
 
 
@@ -595,9 +693,11 @@ def grade(db, pos, bucket, combo, choice, record=True):
 # 차트 보기 (13×13 그리드)
 # ---------------------------------------------------------------------------
 
-def chart_view(db, pos, bucket):
-    """그리드용 셀 맵. 내 실전 오픈 비율을 같이 실어 차트와 겹쳐 볼 수 있게 한다."""
-    c = chart(pos, bucket, db)
+def chart_view(db, pos, stack):
+    """그리드용 셀 맵. 내 실전 오픈 비율을 같이 실어 차트와 겹쳐 볼 수 있게 한다.
+
+    셀의 `w`는 액션 합계, `jam`은 그중 올인 몫이다 (레이즈 몫 = w - jam)."""
+    c = chart(pos, stack, db)
     if not c:
         return {"error": "해당 포지션·스택 차트가 없습니다."}
     hero = _hero_rfi(db) if personalized(db) else {}
@@ -605,14 +705,20 @@ def chart_view(db, pos, bucket):
     for combo in all_combos():
         w = c["weights"].get(combo, 0.0)
         cell = {"v": _class(w), "w": round(w, 3)}
-        e = hero.get((_norm_pos(pos), bucket, combo))
+        j = min(c["jam"].get(combo, 0.0), w)
+        if j > 0:
+            cell["jam"] = round(j, 3)
+        # 실전 기록은 버킷 단위로만 쌓인다 (핸드마다 스택이 제각각이라 bb로는 안 묶인다)
+        e = hero.get((_norm_pos(pos), c["bucket"], combo))
         if e and e[1]:
             cell.update({"opens": e[0], "opps": e[1],
                          "rate": round(e[0] / e[1] * 100)})
         cells[combo] = cell
-    return {"pos": c["pos"], "stack": bucket, "chart_stack": c["chart_stack"],
+    return {"pos": c["pos"], "stack": c["stack"], "chart_stack": c["chart_stack"],
+            "bucket": c["bucket"], "bb": c["bb"],
             "label": c["label"], "verb": c["verb"], "source": c.get("source"),
-            "pct": c["pct"], "mix_pct": c["mix_pct"], "cells": cells}
+            "pct": c["pct"], "mix_pct": c["mix_pct"], "jam_pct": c["jam_pct"],
+            "has_jam": bool(c["jam"]), "cells": cells}
 
 
 # ---------------------------------------------------------------------------

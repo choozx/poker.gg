@@ -96,6 +96,11 @@ graded `[좋음]`. The two axes' scores are in different units, so `leak_spots` 
 by rank rather than sorting on a shared score (otherwise 통계 이탈 takes every top slot), and
 `next_question` weights by that interleaved rank.
 
+(The 📐 drill's own 포지션·스택 filter is a **dropdown** pair, not toggles — `qzSelectRow`, "전체 또는
+하나". It still writes the same `RANGE.pos`/`RANGE.stack` arrays and the same `?pos=&stack=`
+querystring, so the server side is unchanged; only 🃏 핸드 리뷰 below keeps multi-select toggles,
+since there a spot list genuinely benefits from picking several.)
+
 Three multi-select toggle rows scope what gets asked: `?pos=BB,SB&stack=pf,deep&street=turn,river`
 (empty = all). 포지션/스택 filter **spots** — a spot is keyed by `(포지션, 스택버킷, 사유)` — and
 position matching goes through `_norm_pos` so the one `MP` toggle covers MP1/MP2/MP3.
@@ -161,8 +166,38 @@ working, same rule as `quiz.freq_available()`. The scan is cached on hand count 
 The 13×13 chart grid is fetched **only after grading** (`/api/range/chart`) — showing it earlier
 leaks the answer, the same invariant as `quiz.reveal()`.
 
+**📊 레인지 차트 (`QUIZ.mode = 'chart'`)** — a third, view-only mode of the same tab: no question, no
+grading, just the chart drawn GTO-tool style (each cell filled horizontally in proportion to its
+frequency, `rgvGridHtml`). It picks a chart with a **포지션 + 스택 dropdown** pair built from the imported slots — the stack
+list is rebuilt per position, so an empty combination cannot be selected. It lists **only imported
+slots** (`state_view().custom`) — the built-in
+`RFI` approximations are deliberately not browsable here, since the point is to read back what was
+imported. A button swaps the cell numbers between chart frequency and **hero's own open rate**, which
+outlines the cells where the two disagree (same rule as the drill's `rg-dev`). The leak invariant
+above still binds across modes: `qzSetMode('chart')` **clears a pending drill question**, because
+otherwise switching tabs with a question on screen would show its answer.
+
 `db["ranges"]["attempts"]` (capped 500) is separate from `db["quiz"]["attempts"]` on purpose: the
 two modes grade on different scales and the scoreboards must not be averaged together.
+
+**Chart slots are keyed by exact bb, not just by bucket.** `db["ranges"]["charts"]` keys are
+`"POS|<slot>"` where `<slot>` is the bb number the user imported (`"UTG|13"`), so 10bb and 13bb live
+side by side — `ranges.parse_stack` turns `"13"` into `("13", 13, "pf")` and is the single source of
+truth for that (`grab_chart.py` calls it rather than re-deriving). Records carry `bb` + `bucket`;
+legacy records keyed by a bucket (`"UTG|pf"`) are still read via `_slot_meta`, which infers both.
+Grading still works in **4 buckets**, so when a bucket holds several bb charts `_pick_custom` takes
+the one nearest `_BUCKET_MID` (the hero's median stack per bucket: 11/20/31/60) and prefers any bb
+chart over a legacy bucket-keyed one. `chart(pos, stack)` accepts either form and an exact bb hit
+wins outright; `label` shows what was imported (`UTG · 13bb`), never the bucket, so the chart the
+user captured is the chart they see.
+
+**Raise vs all-in.** A captured chart can carry `jam` (combo → all-in frequency) alongside `weights`
+(combo → total action frequency); the raise share is `weights - jam`. GTO tools encode the two as
+**two shades of the same red**, so `grab_chart.split_reds` 2-means the red pixels' luminance and
+calls the darker cluster all-in, falling back to a single tone when the clusters are closer than
+`MIN_TONE_GAP` — never hardcoding the palette. **Grading stays on the total** (`weights`): the drill
+asks open-or-fold, and `jam` exists only so the chart view can draw both tones. If the drill ever
+asks raise-vs-jam, that is a new question type, not a change to `_class`.
 
 **Importing real GTO-tool ranges.** `ranges.parse_range` reads pasted range text leniently — plain
 combo lists, `combo:freq` (0–1 or 0–100, scale inferred from the max value seen), or the same
@@ -173,6 +208,18 @@ disclaimer above gets superseded per slot: paste a solver-accurate range in and 
 grades against it instead. The 📐 오픈 레인지 탭 has a collapsible "레인지 가져오기" panel
 (`rgImportHtml`/`rgImport`) for this — paste, pick pos/stack, import; imported slots list there with
 a delete-back-to-builtin button. `delete_chart` removes a custom slot.
+
+**`grab_chart.py` — 화면에서 차트 읽기 (선택 도구, 맥 전용).** GTO 위자드 무료 플랜처럼 레인지를
+텍스트로 복사할 수 없을 때 쓰는 보조 CLI. `screencapture`로 화면을 찍고, 13×13 격자를 **자동으로
+찾아** 셀마다 색이 가로로 차지한 비율을 세서 빈도를 계측한 뒤 `POST /api/range/import`로 보낸다
+(앱이 떠 있어야 한다 — 저장·클라우드 푸시를 앱이 하게 해서 DB를 직접 건드리지 않는다. 직접 쓰면
+다음 실행 때 클라우드 pull에 덮어쓰인다). 표준 라이브러리만 쓴다: 이미지는 맥 기본 `sips`로 BMP로
+바꿔 직접 디코드. 색은 팔레트를 고정하지 않고 **파랑=폴드 / 빨강=액션**으로만 보므로 테마가 바뀌어도,
+빨강이 두 톤(레이즈/올인)이어도 동작한다 — 단 **두 톤은 합쳐져 '오픈 빈도' 하나가 된다**
+(차트 모델이 조합당 빈도 하나뿐이라 그렇다). 셀 경계는 구분선을 검출해서 잡는다. 등분으로 떨어지면
+9%짜리 얇은 띠가 날아가므로 경고를 띄운다. 스택 인자는 GTO 툴에 적힌 **bb 숫자를 그대로** 받아
+`store._stack_bucket`으로 버킷을 정한다(기준을 두 벌 만들지 않는다). 버킷은 4개뿐이라 40bb와 100bb가
+같은 `deep` 슬롯을 공유한다 — 덮어쓰게 되면 기존 차트의 출처·오픈%를 경고로 먼저 보여준다.
 
 API: `GET /api/range/state` · `/api/range/next?pos=&stack=` · `/api/range/chart?pos=&stack=` ·
 `POST /api/range/grade` (plain JSON, no streaming) · `/api/range/import`

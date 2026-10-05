@@ -487,6 +487,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
            font-variant-numeric: tabular-nums; }
   .qz-tg:hover { border-color: #ffa657; color: var(--text); }
   .qz-tg.on { border-color: #ffa657; background: rgba(255,166,87,.14); color: #ffa657; font-weight: 600; }
+  .qz-sel { background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
+            padding: 4px 8px; font-size: 12.5px; color: var(--text); margin-right: 14px;
+            min-width: 108px; }
+  .qz-sel:hover { border-color: #ffa657; }
   .qz-tg.empty { opacity: .38; }          /* 해당 스팟이 없는 선택지 — 눌러도 되지만 비어 있음 */
   .qz-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
              padding: 18px 22px; margin-bottom: 12px; }
@@ -637,6 +641,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .hgrid .hc .val { font-size: 10px; color: var(--text); opacity: .92; }
   .hgrid .hc.empty { opacity: .25; }
   .hgrid .hc.dim { opacity: .4; }
+
+  /* 📊 레인지 차트 뷰어 — GTO 툴과 같은 모양: 셀을 빈도 비율만큼 가로로 채운다 */
+  .rgv-grid { display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); gap: 2px;
+              max-width: 720px; }
+  .rgv-c { position: relative; aspect-ratio: 1 / 1; border-radius: 3px; overflow: hidden;
+           display: flex; align-items: center; justify-content: center;
+           font-size: 12px; font-weight: 700; color: #fff; cursor: default;
+           text-shadow: 0 1px 2px rgba(0,0,0,.55); background: #4d7bb3; }
+  .rgv-c .fill { position: absolute; inset: 0 auto 0 0; background: #dd4c45; }
+  /* 올인은 레이즈보다 진한 빨강 — GTO 툴의 두 톤을 그대로 따른다 */
+  .rgv-c .jamfill { position: absolute; inset: 0 auto 0 0; background: #72271f; }
+  .rgv-c .t { position: relative; }
+  .rgv-c .pc { position: absolute; right: 2px; bottom: 1px; font-size: 9px; font-weight: 600;
+               opacity: .9; z-index: 1; }
+  .rgv-c.pair { box-shadow: inset 0 0 0 1px rgba(255,255,255,.35); }
+  .rgv-c.dev { box-shadow: inset 0 0 0 2px #ffdd57; }
+  .rgv-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .rgv-head h3 { font-size: 16px; }
+  .rgv-head .pct { color: var(--red); font-weight: 700; }
 
   .tourney.search { border-color: rgba(86,211,100,.4); }
   .tourney.search.sel { border-color: var(--green); background: rgba(86,211,100,.08); }
@@ -2871,11 +2894,16 @@ function selectQuiz() {
   SEL = -7; renderSidebar();
   renderQuiz();
   $('#main').scrollTop = 0;
-  if (QUIZ.mode === 'range') { if (!RANGE.state) rgLoadState(); }
+  if (QUIZ.mode === 'range' || QUIZ.mode === 'chart') { if (!RANGE.state) rgLoadState(); }
   else if (!QUIZ.spots) qzLoadSpots();
 }
 
 function qzSetMode(m) {
+  // 드릴에 문제가 떠 있는 채로 차트 모드로 넘어가면 그 문제의 답이 그대로 보인다 — 비우고 간다
+  if (m === 'chart' && RANGE.status === 'ready') {
+    RANGE.status = 'idle'; RANGE.q = null; RANGE.picked = null;
+    RANGE.res = null; RANGE.chart = null; RANGE.showChart = false;
+  }
   QUIZ.mode = m;
   selectQuiz();
 }
@@ -3001,6 +3029,18 @@ function qzToggleRow(label, opts, sel, fn) {
           onclick="${fn}('${o.key}')"${o.n === null ? '' : ` title="${o.n}개 스팟"`}
       >${esc(o.label)}</span>`).join('');
   return `<div class="qz-tgrow"><span class="qz-tglabel">${label}</span>${all}${btns}</div>`;
+}
+
+// 토글 행과 같은 자리에 쓰는 드롭다운 버전. 복수 선택이 아니라 '전체 또는 하나'다.
+function qzSelectRow(rows) {
+  const one = ([label, opts, sel, fn, allLabel]) => `
+    <span class="qz-tglabel">${label}</span>
+    <select class="qz-sel" onchange="${fn}(this.value)">
+      <option value="" ${sel ? '' : 'selected'}>${allLabel || '전체'}</option>
+      ${opts.map(o => `<option value="${esc(o.key)}" ${o.key === sel ? 'selected' : ''}
+        ${o.n === 0 ? 'disabled' : ''}>${esc(o.label)}${o.n ? ` (${o.n})` : ''}</option>`).join('')}
+    </select>`;
+  return `<div class="qz-tgrow">${rows.map(one).join('')}</div>`;
 }
 
 function qzSpotsHtml() {
@@ -3139,6 +3179,8 @@ let RANGE = {
   err: '',
   showImport: false,
   imp: {pos: '', stack: '', text: '', source: '', busy: false, err: '', msg: ''},
+  // 📊 레인지 차트 뷰어 (문제를 내지 않는 보기 전용 모드)
+  view: {pos: '', stack: '', chart: null, loading: false, err: '', rate: false},
 };
 
 function rgFilterQS() {
@@ -3155,8 +3197,9 @@ async function rgLoadState() {
   if (SEL === -7) renderQuiz();
 }
 
-function rgTogglePos(k)   { RANGE.pos   = qzToggleIn(RANGE.pos.slice(), k);   renderQuiz(); }
-function rgToggleStack(k) { RANGE.stack = qzToggleIn(RANGE.stack.slice(), k); renderQuiz(); }
+// 드롭다운은 '전체(빈 값) 또는 하나' — 쿼리스트링 형식은 그대로라 서버는 손댈 게 없다
+function rgTogglePos(k)   { RANGE.pos   = k ? [k] : []; renderQuiz(); }
+function rgToggleStack(k) { RANGE.stack = k ? [k] : []; renderQuiz(); }
 
 // GTOWizard 등에서 복사한 레인지 텍스트를 (포지션, 스택버킷) 슬롯으로 가져온다 — 내장 차트를 덮어쓴다
 function rgToggleImport() { RANGE.showImport = !RANGE.showImport; renderQuiz(); }
@@ -3396,11 +3439,130 @@ function rgScoreHtml() {
     ${bp ? `<div class="qz-score" style="margin-top:10px">${bp}</div>` : ''}`;
 }
 
+// ─────────────────────────────────────────────────────────────
+// 📊 레인지 차트 — 문제를 내지 않고 차트만 본다 (가져온 슬롯 전용).
+// 드릴에서 차트를 채점 전에 보면 정답이 새지만, 여기는 출제 자체가 없으므로 그 제약이 없다.
+// 대신 드릴에 풀던 문제가 떠 있는 채로 넘어오면 그 문제의 답이 보이므로 qzSetMode에서 비운다.
+// ─────────────────────────────────────────────────────────────
+async function rgvOpen(pos, stack) {
+  const slots = (RANGE.state && RANGE.state.custom) || [];
+  if (stack === undefined) {                       // 포지션만 고른 경우
+    const first = slots.find(s => s.pos === pos);
+    if (!first) return;
+    stack = first.stack;
+  }
+  RANGE.view.pos = pos; RANGE.view.stack = stack;
+  RANGE.view.chart = null; RANGE.view.err = ''; RANGE.view.loading = true;
+  renderQuiz();
+  try {
+    RANGE.view.chart = await (await fetch(
+      `/api/range/chart?pos=${encodeURIComponent(pos)}&stack=${stack}`)).json();
+  } catch (e) { RANGE.view.err = String(e); }
+  RANGE.view.loading = false;
+  renderQuiz();
+}
+
+function rgvToggleRate() { RANGE.view.rate = !RANGE.view.rate; renderQuiz(); }
+
+function rgvGridHtml(c) {
+  const showRate = RANGE.view.rate;
+  let cells = '';
+  for (let i = 0; i < 13; i++) {
+    for (let j = 0; j < 13; j++) {
+      const combo = comboLabel(i, j);
+      const d = c.cells[combo] || {v: 'fold', w: 0};
+      const w = Math.round((d.w || 0) * 100);
+      const jm = Math.round((d.jam || 0) * 100);      // 올인 몫 (레이즈 몫 = w - jm)
+      // 내 실전 오픈 비율이 차트와 어긋난 칸 — 겹쳐 보기를 켰을 때만 표시
+      const dev = showRate && d.rate !== undefined &&
+        ((d.v === 'open' && d.rate < 50) || (d.v === 'fold' && d.rate > 25));
+      const num = showRate
+        ? (d.rate === undefined ? '' : d.rate + '%')
+        : (w > 0 && w < 100 ? w + '%' : '');
+      const act = jm > 0 ? `레이즈 ${w - jm}% · 올인 ${jm}%` : `${w}% ${c.verb}`;
+      const t = `${combo} · 차트 ${act}` +
+        (d.rate === undefined ? ' · 실전 기회 없음'
+          : ` · 실전 ${d.opps}회 중 ${d.opens}회 (${d.rate}%)`);
+      cells += `<div class="rgv-c${i === j ? ' pair' : ''}${dev ? ' dev' : ''}" title="${esc(t)}">
+        ${w > 0 ? `<div class="fill" style="width:${w}%"></div>` : ''}
+        ${jm > 0 ? `<div class="jamfill" style="width:${jm}%"></div>` : ''}
+        <span class="t">${combo}</span>${num ? `<span class="pc">${num}</span>` : ''}</div>`;
+    }
+  }
+  return `<div class="rgv-grid">${cells}</div>`;
+}
+
+function renderRangeView() {
+  const st = RANGE.state;
+  const slots = (st && st.custom) || [];
+  if (!st) { $('#hands').innerHTML = '<div class="qz-wrap"><div class="ai-loading">불러오는 중</div></div>'; return; }
+  if (!slots.length) {
+    $('#hands').innerHTML = `<div class="qz-wrap">
+      <div class="qz-card" style="text-align:center;padding:34px 22px">
+        <div style="font-size:15px;margin-bottom:6px">아직 가져온 레인지가 없습니다</div>
+        <div style="color:var(--dim);font-size:13px;line-height:1.6">
+          이 화면은 <b>내가 가져온 차트</b>만 보여줍니다.<br>
+          📐 오픈 레인지 탭의 <b>레인지 가져오기</b>로 붙여넣거나,
+          화면 캡처로 넣으려면 <code>python3 grab_chart.py UTG 20</code></div>
+      </div></div>`;
+    return;
+  }
+  const v = RANGE.view;
+  // 가져온 슬롯이 없는 포지션은 아예 목록에 넣지 않는다 (빈 차트를 고를 수 없게)
+  const positions = [...new Set(slots.map(s => s.pos))];
+  if (!v.pos || !positions.includes(v.pos)) { rgvOpen(slots[0].pos, slots[0].stack); return; }
+  const mine = slots.filter(s => s.pos === v.pos);
+  if (!mine.some(s => String(s.stack) === String(v.stack))) { rgvOpen(v.pos, mine[0].stack); return; }
+  const cur = mine.find(s => String(s.stack) === String(v.stack));
+  const picker = `<div class="qz-tgrow">
+    <span class="qz-tglabel">포지션</span>
+    <select class="qz-sel" onchange="rgvOpen(this.value)">
+      ${positions.map(p => `<option value="${esc(p)}" ${p === v.pos ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+    </select>
+    <span class="qz-tglabel">스택</span>
+    <select class="qz-sel" onchange="rgvOpen('${esc(v.pos)}', this.value)">
+      ${mine.map(s => `<option value="${esc(s.stack)}" ${String(s.stack) === String(v.stack) ? 'selected' : ''}
+        >${esc(s.stack_label)}</option>`).join('')}
+    </select>
+    <span style="color:var(--dim);font-size:12px">${slots.length}장 가져옴${
+      cur && cur.ts ? ' · 이 차트 ' + esc(cur.ts) : ''}</span>
+  </div>`;
+  const c = v.chart;
+  let body;
+  if (v.loading) body = '<div class="ai-loading">차트 여는 중</div>';
+  else if (v.err || (c && c.error)) body = `<div class="qz-note">${esc(v.err || c.error)}</div>`;
+  else if (!c) body = '';
+  else body = `
+    <div class="rgv-head">
+      <h3>${esc(c.label)}</h3>
+      <span class="pct">${c.has_jam ? '액션' : esc(c.verb)} ${c.pct}%</span>
+      ${c.has_jam ? `<span style="font-size:12px">레이즈 ${Math.round((c.pct - c.jam_pct) * 10) / 10}%
+        · <b style="color:#b8463a">올인 ${c.jam_pct}%</b></span>` : ''}
+      <span style="color:var(--dim);font-size:12px">경계 ${c.mix_pct}%${
+        c.source ? ' · 출처 ' + esc(c.source) : ''}</span>
+      <span style="flex:1"></span>
+      <button onclick="rgvToggleRate()">${v.rate ? '차트 빈도 보기' : '내 실전 기록 겹쳐 보기'}</button>
+    </div>
+    ${rgvGridHtml(c)}
+    <div class="rg-legend" style="margin-top:10px">
+      ${c.has_jam ? '<span><i style="background:#72271f"></i>올인</span>' : ''}
+      <span><i style="background:#dd4c45"></i>${c.has_jam ? '레이즈' : esc(c.verb)}</span>
+      <span><i style="background:#4d7bb3"></i>폴드</span>
+      <span>칸이 가로로 채워진 비율 = 그 조합의 액션 빈도</span>
+      ${v.rate ? '<span><i style="box-shadow:inset 0 0 0 2px #ffdd57"></i>내 실전 기록이 차트와 어긋난 칸</span>' : ''}
+    </div>
+    <div class="qz-note" style="margin-top:8px">${v.rate
+      ? '숫자는 이 스팟에서 내가 실제로 오픈한 비율입니다 (폴드 투 히어로 상황 기준).'
+      : '숫자는 혼합 빈도입니다 (100%·0%인 칸은 생략).'}</div>`;
+  $('#hands').innerHTML = `<div class="qz-wrap">${picker}${body}</div>`;
+}
+
 function renderRangeQuiz() {
   const st = RANGE.state;
-  const filters = st && st.positions ? `
-    ${qzToggleRow('포지션', st.positions, RANGE.pos, 'rgTogglePos')}
-    ${qzToggleRow('스택', st.stacks, RANGE.stack, 'rgToggleStack')}` : '';
+  const filters = st && st.positions ? qzSelectRow([
+    ['포지션', st.positions, RANGE.pos[0] || '', 'rgTogglePos'],
+    ['스택', st.stacks, RANGE.stack[0] || '', 'rgToggleStack'],
+  ]) : '';
   const note = st && st.personalized === false ? `
     <div class="qz-note">📊 <code>python3 gui.py --rebuild</code> 를 돌리면 내가 실제로 차트와
       어긋나게 친 조합이 우선 출제됩니다 — 지금은 균등 무작위로 냅니다.</div>` : `
@@ -3437,7 +3599,8 @@ function renderQuiz() {
   if (SEL !== -7) return;
   const mb = (k, l) => `<button class="${QUIZ.mode === k ? 'primary' : ''}" onclick="qzSetMode('${k}')">${l}</button>`;
   $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">🎯 문제 풀기</h2>
-    ${mb('hand', '🃏 핸드 리뷰')}${mb('range', '📐 오픈 레인지')}`;
+    ${mb('hand', '🃏 핸드 리뷰')}${mb('range', '📐 오픈 레인지')}${mb('chart', '📊 레인지 차트')}`;
+  if (QUIZ.mode === 'chart') return renderRangeView();
   if (QUIZ.mode === 'range') return renderRangeQuiz();
   $('#hands').innerHTML = `<div class="qz-wrap">
     ${qzSpotsHtml()}
@@ -3727,7 +3890,8 @@ class Handler(BaseHTTPRequestHandler):
                            "application/json; charset=utf-8", code=400)
                 return
             resp = ranges.import_chart(DB, body.get("pos"), body.get("stack"),
-                                       body.get("text"), source=body.get("source"))
+                                       body.get("text"), source=body.get("source"),
+                                       jam=body.get("jam"))
             if resp.get("ok"):
                 persist(DB)
             self._send(json.dumps(resp, ensure_ascii=False),
