@@ -469,12 +469,18 @@ def slot_name(slot):
 
 
 def slot_hint(slot):
+    """GTO 툴에서 클릭할 길. 폴드하는 건 **사이에 낀 자리들**이라 그 범위를 그대로 쓴다
+    ('UTG1~HJ 폴드'). 사이에 아무도 없으면 폴드 단계를 빼고 바로 차례로 넘어간다."""
     import ranges
+    order = ranges.POS_8MAX
     pos, st, vs = slot
     op, allin = ranges.vs_parts(vs)
+    folds = order[order.index(op) + 1 if op else 0:order.index(pos)]
+    fold = (f"{folds[0]} 폴드 → " if len(folds) == 1 else
+            f"{folds[0]}~{folds[-1]} 폴드 → " if folds else "")
     if op:
-        return f"GTO 툴: {op} {'올인' if allin else '레이즈'} → {pos}까지 폴드 → {pos} 차례"
-    return f"GTO 툴: {pos}까지 폴드 → {pos} 차례"
+        return f"GTO 툴: {op} {'올인' if allin else '레이즈'} → {fold}{pos} 차례"
+    return f"GTO 툴: {fold}{pos} 차례" + (" (첫 액션)" if not folds else "")
 
 
 def read_line(timeout):
