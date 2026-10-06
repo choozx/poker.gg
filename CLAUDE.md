@@ -29,7 +29,7 @@ There are no tests, linters, or CI. Verify changes by running `gui.py` against `
 
 ## Architecture
 
-Modules, strict dependency direction `convert ← store ← {bankroll, quiz, ranges} ← gui`:
+Modules, strict dependency direction `convert ← store ← {bankroll, quiz, ranges} ← coach ← gui`:
 
 - **`convert.py`** — the parser. Regex-based, line-by-line. `parse_hand(text)` → `Hand` dataclass;
   `split_hands(text)` splits a file on `CoinPoker Hand #`. Also renders markdown (`render_markdown`,
@@ -42,6 +42,8 @@ Modules, strict dependency direction `convert ← store ← {bankroll, quiz, ran
 - **`quiz.py`** — the 🎯 문제 풀기 domain: leak-spot detection + question picking (see below).
 - **`ranges.py`** — the 📐 오픈 레인지 drill: preflop RFI charts + **local** grading (see below).
   A sibling of `quiz.py`; the two never import each other.
+- **`coach.py`** — the 💬 AI 코치 chat: builds the per-message context + stores chats (see below).
+  The only module that imports both `quiz` and `ranges` (it reads from them, never the reverse).
 
 ### Bankroll (real money) — a parallel domain to the hands
 
@@ -274,6 +276,34 @@ SB(BTN))를 그대로 쓰고, 8맥스 이름엔 내장 차트가 없다(가져�
 API: `GET /api/range/state` · `/api/range/next?pos=&stack=` · `/api/range/chart?pos=&stack=&vs=` ·
 `POST /api/range/grade` (plain JSON, no streaming; `vs` from the question) · `/api/range/import`
 (`{pos, stack, text, source, vs}`) · `/api/range/delete-chart` (`{pos, stack, vs}`). `vs` empty = 오픈 차트.
+
+### 💬 AI 코치 (`coach.py`) — 내 기록을 근거로 대화
+
+Sidebar `SEL = -9`. The other AI features are one-shot; this one is a conversation. Both backends
+are single-call (`stream(system, user)`), so continuity is faked: `build_prompt` re-sends the last
+`HISTORY_TURNS` turns every time (past replies quoted with `>` so their `##` headings can't blur the
+prompt's own sections). Each message also carries:
+
+- **`profile_text(db)`** — "내 플레이 요약", recomputed per message from **frozen meta fields only**
+  (~0.3s on 100k hands, ~3K chars): VPIP/PFR, 최근 `RECENT_HANDS` vs 전체, 포지션별 칩 EV, 오픈율 vs
+  차트 and BB 방어율 vs 가져온 방어 차트 (both **weighted by the combos hero was actually dealt**, so a
+  small sample's card luck isn't read as a leak), `quiz.leak_spots`, `store.leak_report`, drill scores.
+  This is what stops the AI from inventing numbers — `COACH_SYSTEM_PROMPT` tells it to quote only these.
+  On un-rebuilt DBs the chart sections say *why* they're empty, so "no data" isn't read as "no leak".
+- **`#핸드번호` refs** — the hand's `render_markdown` + its stored `analysis`. The UI only shows the
+  last 6 digits, so `find_hand` accepts a **unique** suffix. Refs anywhere in the history window are
+  re-attached (max `MAX_REF_HANDS`), so a follow-up like "그럼 턴은?" still sees the hand.
+
+`db["coach"]["chats"]` is capped (`MAX_CHATS` 20 by last use, `MAX_MESSAGES` 60 each) — cloud-synced
+DB, same reason as the quiz caps. A question+answer pair is saved **only on a clean finish**; the client
+re-reads the chat afterwards to tell whether it was saved and offers 다시 보내기 if not. The chat id is
+minted server-side and returned in `X-Chat-Id` before the body (via `_stream_ai(headers=…)`), along
+with `X-Coach-Refs` / `X-Coach-Missing`. The view re-renders only the message list while streaming —
+re-rendering the textarea would eat what the user is typing. The hand viewer's "💬 이 핸드로 대화"
+opens a new chat with `#id` prefilled.
+
+API: `GET /api/coach/chats` · `/api/coach/chat?id=` · `POST /api/coach/send` (`{chat_id, text}`,
+streams) · `/api/coach/delete` (`{id}`).
 
 ### ⏱ 토너먼트 타이머 — frontend-only, no server state
 

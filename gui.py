@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bankroll
 import cloud_sync
+import coach
 import convert
 import quiz
 import ranges
@@ -70,6 +71,24 @@ REPORT_SYSTEM_PROMPT = """\
 - 반드시 핸드 번호를 인용해 근거를 제시하세요. 근거 없는 일반론 금지.
 - 분석 모음에 실수가 없으면 패턴을 억지로 만들지 말고 그렇다고 쓰세요.
 - 한국어, 간결하게.
+"""
+
+COACH_SYSTEM_PROMPT = """\
+당신은 NLH 토너먼트 전문 포커 코치입니다. 한 플레이어(Hero, 질문하는 사람)가 자기 플레이에 대해
+대화를 나눕니다. 함께 주어지는 것:
+- "내 플레이 요약": 앱이 그 사람의 핸드 DB에서 계산한 **실제 숫자** (VPIP/PFR, 포지션별 칩 EV,
+  차트 대비 오픈·BB 방어율, 약점 스팟, AI 분석 등급, 연습 성적).
+- "참조 핸드": 그 사람이 #번호로 짚은 핸드의 원문 (있을 때만).
+- "지난 대화": 이 대화의 앞부분.
+
+규칙:
+- 숫자는 요약에 있는 값만 인용하세요. 요약에 없는 통계를 지어내지 말고, 없으면 없다고 말하세요.
+- 특정 핸드 이야기는 참조 핸드 원문으로만 하세요. 원문이 없는 핸드는 추측하지 말고
+  "#핸드번호로 짚어 달라"고 요청하세요.
+- 표본이 작으면(기회 수십 회 이하) 그렇다고 밝히고 단정하지 마세요.
+- 차트는 가져온 GTO 차트 또는 내장 근사이고, 약점 스팟의 기준선은 대략적인 참고값입니다.
+- 토너먼트 칩은 상금이 아닙니다. 칩 EV를 돈으로 환산하지 마세요. 결과론 금지.
+- 한국어, 마크다운, 간결하게. 질문에 먼저 직접 답하고, 필요하면 구체적인 교정 1~2개를 제시하세요.
 """
 
 
@@ -577,6 +596,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .ai-error { color: var(--red); padding: 6px 2px; font-size: 13px; }
   .ai-cursor { color: var(--accent); animation: blink 1s steps(2,start) infinite; }
   @keyframes blink { to { visibility: hidden; } }
+
+  /* 💬 AI 코치 */
+  .co-wrap { max-width: 860px; display: flex; flex-direction: column; gap: 12px; }
+  .co-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .co-bar select { max-width: 360px; }
+  .co-msgs { display: flex; flex-direction: column; gap: 12px; min-height: 120px; }
+  .co-msg { border-radius: 10px; padding: 10px 14px; line-height: 1.6; font-size: 14px; }
+  .co-msg.user { align-self: flex-end; max-width: 80%; white-space: pre-wrap;
+                 background: rgba(77,163,255,.14); border: 1px solid rgba(77,163,255,.35); }
+  .co-msg.coach { background: var(--panel); border: 1px solid var(--border); }
+  .co-msg.coach h2, .co-msg.coach h3 { font-size: 14px; margin: 8px 0 4px; }
+  .co-refs { font-size: 11px; color: var(--dim); margin-top: 4px; white-space: normal; }
+  .co-fail { color: var(--red); font-size: 12px; margin-top: 8px; }
+  .co-input { position: sticky; bottom: -18px; background: var(--bg); padding: 10px 0 14px;
+              display: flex; gap: 8px; align-items: stretch; }
+  .co-input textarea { flex: 1; resize: vertical; min-height: 58px; background: var(--panel2);
+                       color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+                       padding: 8px 10px; font: inherit; font-size: 14px; }
+  .co-hint { color: var(--dim); font-size: 12px; margin-top: -6px; }
+  .co-ex { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
   .ai-spinner { display: inline-block; width: 11px; height: 11px; vertical-align: -1px;
     margin-left: 3px; border: 2px solid var(--green); border-top-color: transparent;
     border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -850,6 +889,11 @@ function renderSidebar() {
          onclick="selectRangeChart()">
       <div class="tname">📊 레인지 차트</div>
       <div class="tmeta">${rgvSidebarMeta()}</div>
+    </div>
+    <div class="tourney ${SEL===-9?'sel':''}" style="border-color:rgba(180,140,255,.4)"
+         onclick="selectCoach()">
+      <div class="tname">💬 AI 코치${COACH.busy ? ' <span class="ai-spinner"></span>' : ''}</div>
+      <div class="tmeta">${coSidebarMeta()}</div>
     </div>
     <div class="tourney timer ${SEL===-6?'sel':''}" onclick="selectTimer()">
       <div class="tname">⏱ 토너먼트 타이머${TIMER.run.running ? ' <span style="color:var(--green)">●</span>' : ''}</div>
@@ -1513,6 +1557,7 @@ function renderMain() {
       <div class="hand-body">
         ${mdToHtml(stripHeader(h.markdown))}
         <div class="ai-box" id="ai-${h.hand_id}">${aiBoxHtml(h.hand_id)}</div>
+        <div style="margin-top:8px"><button onclick="coachFromHand('${h.hand_id}')">💬 이 핸드로 대화</button></div>
       </div>
     </div>`;
   }).join('') + pager;
@@ -3670,21 +3715,26 @@ function renderRangeView() {
         ${scen.map(x => `<option value="${esc(x)}" ${x === v.vs ? 'selected' : ''}>${
           x ? 'vs ' + esc(x) + ' 오픈' : '오픈 (폴드 투 나)'}</option>`).join('')}
       </select>` : ''}
-    ${mine.length < 2 ? `<span class="qz-tglabel">스택</span><b class="rgv-bb">${esc(cur.stack_label)}</b>` : `
+    ${axis.length < 2 ? `<span class="qz-tglabel">스택</span><b class="rgv-bb">${esc(cur.stack_label)}</b>` : `
       <div class="rgv-stack">
         <div class="rgv-stack-top"><span class="qz-tglabel">스택</span>
           <b class="rgv-bb">${esc(cur.stack_label)}</b></div>
-        <input type="range" class="rgv-range" min="0" max="${mine.length - 1}" step="1"
+        <input type="range" class="rgv-range" min="0" max="${axis.length - 1}" step="1"
                value="${idx}" oninput="rgvSlide(this.value)"
                title="좌우 방향키로도 이동합니다">
         <div class="rgv-ticks">${ticks}</div>
       </div>`}
     <span style="color:var(--dim);font-size:12px;padding-bottom:2px">${esc(rgSpot(v.pos, v.vs))} ${mine.length}장${
-      cur && cur.ts ? ' · 이 차트 ' + esc(cur.ts) : ''}</span>
+      curSlot && curSlot.ts ? ' · 이 차트 ' + esc(curSlot.ts) : ''}</span>
   </div>`;
   const c = v.chart;
   let body;
-  if (v.loading) body = '<div class="ai-loading">차트 여는 중</div>';
+  if (!curSlot) body = `<div class="qz-card" style="text-align:center;padding:30px 20px">
+      <div style="font-size:15px;margin-bottom:6px">${esc(rgSpot(v.pos, v.vs))} · ${esc(cur.stack_label)} 차트가 아직 없습니다</div>
+      <div style="color:var(--dim);font-size:13px">화면 캡처로 넣으려면
+        <code>python3 grab_chart.py ${esc(v.pos)} ${cur.bb === null ? esc(String(cur.stack)) : cur.bb}${
+          v.vs ? ' --vs ' + esc(v.vs) : ''}</code></div></div>`;
+  else if (v.loading) body = '<div class="ai-loading">차트 여는 중</div>';
   else if (v.err || (c && c.error)) body = `<div class="qz-note">${esc(v.err || c.error)}</div>`;
   else if (!c) body = '';
   else body = `
@@ -3757,6 +3807,211 @@ document.addEventListener('keydown', e => {
   else if ((RANGE.status === 'graded' || RANGE.status === 'idle') &&
            (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); rgNext(); }
 });
+
+// ─────────────────────────────────────────────────────────────
+// 💬 AI 코치 (SEL = -9) — 내 플레이 기록을 근거로 AI와 대화한다.
+// 컨텍스트(내 플레이 요약 · #번호로 짚은 핸드 · 최근 대화)는 서버 coach.build_prompt가 매번
+// 조립한다 — 여기는 주고받기만 한다. 스트리밍 중엔 메시지 영역만 다시 그린다: 입력창까지
+// 통째로 다시 그리면 답을 기다리며 쓰던 다음 질문과 포커스가 날아간다.
+// ─────────────────────────────────────────────────────────────
+let COACH = {
+  chats: null,      // /api/coach/chats — 저장된 대화 목록 (본문 없음)
+  id: '',           // 지금 대화 id ('' = 새 대화 — 첫 답의 X-Chat-Id로 정해진다)
+  messages: [],     // [{role: 'user'|'coach', text, hands?, missing?, streaming?, failed?, error?}]
+  input: '',
+  busy: false,
+};
+const COACH_EXAMPLES = [
+  '최근 플레이가 전체와 비교해 어떻게 달라졌어?',
+  '오픈 레인지에서 차트와 가장 어긋나는 곳은 어디야?',
+  'BB 방어에서 가장 먼저 고쳐야 할 건?',
+  '내 약점 스팟들의 우선순위를 정해줘',
+];
+
+function coSidebarMeta() {
+  const n = COACH.chats ? COACH.chats.length : 0;
+  return n ? `저장된 대화 ${n}개 · 내 기록 근거로 질문` : '내 기록을 근거로 AI와 대화';
+}
+
+async function coLoadChats() {
+  try { COACH.chats = await (await fetch('/api/coach/chats')).json(); }
+  catch (e) { COACH.chats = COACH.chats || []; }
+  renderSidebar();
+  coRenderBar();
+}
+
+function selectCoach() {
+  SEL = -9; renderSidebar();
+  $('#mainhead').innerHTML = '<h2>💬 AI 코치</h2>';
+  renderCoach();
+  $('#main').scrollTop = $('#main').scrollHeight;
+  coLoadChats();
+}
+
+// 핸드 뷰어의 '이 핸드로 대화' — 새 대화를 열고 입력창에 #번호를 미리 넣어 둔다
+function coachFromHand(hid) {
+  if (COACH.busy) { toast('지금 답변을 받는 중입니다 — 끝난 뒤 다시 눌러 주세요'); return; }
+  COACH.id = ''; COACH.messages = [];
+  COACH.input = `#${hid} `;
+  selectCoach();
+}
+
+function renderCoach() {
+  if (SEL !== -9) return;
+  $('#hands').innerHTML = `<div class="co-wrap">
+    <div class="co-bar" id="co-bar"></div>
+    <div class="co-msgs" id="co-msgs"></div>
+    <div class="co-input">
+      <textarea id="co-text" placeholder="내 플레이에 대해 물어보세요 — 예: #300001 이 핸드 리버 콜 괜찮았어?"
+                oninput="COACH.input = this.value" onkeydown="coKey(event)">${esc(COACH.input)}</textarea>
+      <button class="primary" id="co-send" onclick="coSend()"></button>
+    </div>
+    <div class="co-hint">Enter 보내기 · Shift+Enter 줄바꿈 · <b>#핸드번호</b>로 핸드를 짚으면 원문을 같이 봅니다
+      (목록에 보이는 끝 6자리도 됨) · 매 질문마다 내 플레이 요약이 함께 전달됩니다</div>
+  </div>`;
+  coRenderBar(); coRenderMsgs(); coRenderBusy();
+  const ta = $('#co-text');
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+
+function coRenderBar() {
+  const el = document.getElementById('co-bar');
+  if (!el || SEL !== -9) return;
+  const chats = COACH.chats || [];
+  el.innerHTML = `
+    <button onclick="coNew()" ${COACH.busy ? 'disabled' : ''}>＋ 새 대화</button>
+    <select class="qz-sel" onchange="coOpen(this.value)" ${COACH.busy ? 'disabled' : ''}>
+      <option value="">${chats.length ? '저장된 대화 열기…' : '저장된 대화 없음'}</option>
+      ${chats.map(c => `<option value="${c.id}" ${c.id === COACH.id ? 'selected' : ''}>${
+        esc(c.title)} · ${esc(c.updated.slice(5, 16))}</option>`).join('')}
+    </select>
+    ${COACH.id && chats.some(c => c.id === COACH.id)
+      ? `<button onclick="coDelete()" ${COACH.busy ? 'disabled' : ''}>🗑 이 대화 삭제</button>` : ''}
+    <span style="color:var(--dim);font-size:12px">최근 대화 ${chats.length}/20개 저장</span>`;
+}
+
+function coMsgHtml(m, i) {
+  if (m.role === 'user') {
+    const refs = (m.hands || []).map(h => '#' + h.slice(-6)).join(' ');
+    const miss = (m.missing || []).map(h => '#' + h).join(' ');
+    return `<div class="co-msg user">${esc(m.text)}${refs || miss ? `<div class="co-refs">${
+      refs ? '📎 같이 보낸 핸드 ' + esc(refs) : ''}${miss ? ' · 못 찾은 번호 ' + esc(miss) : ''}</div>` : ''}</div>`;
+  }
+  if (m.streaming && !m.text) return '<div class="co-msg coach"><div class="ai-loading">내 기록을 읽고 답하는 중</div></div>';
+  return `<div class="co-msg coach">${mdToHtml(m.text || '')}${m.streaming ? '<span class="ai-cursor">▍</span>' : ''}${
+    m.failed ? `<div class="co-fail">⚠️ ${esc(m.error || '답이 끝까지 오지 않아 저장되지 않았습니다')}
+      <button onclick="coRetry(${i})" style="margin-left:6px">다시 보내기</button></div>` : ''}</div>`;
+}
+
+function coRenderMsgs() {
+  const el = document.getElementById('co-msgs');
+  if (!el || SEL !== -9) return;
+  const main = $('#main');
+  const atBottom = main.scrollHeight - main.scrollTop - main.clientHeight < 80;
+  el.innerHTML = COACH.messages.length
+    ? COACH.messages.map(coMsgHtml).join('')
+    : `<div class="qz-card" style="text-align:center;padding:28px 20px">
+        <div style="font-size:15px;margin-bottom:6px">내 플레이 기록을 근거로 AI 코치와 대화합니다</div>
+        <div style="color:var(--dim);font-size:13px;margin-bottom:16px">
+          VPIP/PFR · 포지션별 칩 EV · 차트 대비 오픈/BB 방어율 · 약점 스팟 · AI 분석 결과가
+          매 질문에 같이 전달됩니다.</div>
+        <div class="co-ex">${COACH_EXAMPLES.map((q, i) =>
+          `<button onclick="coSend(COACH_EXAMPLES[${i}])">${esc(q)}</button>`).join('')}</div>
+      </div>`;
+  if (atBottom) main.scrollTop = main.scrollHeight;    // 위로 올려 읽는 중이면 끌어내리지 않는다
+}
+
+function coRenderBusy() {
+  const b = document.getElementById('co-send');
+  if (b) { b.disabled = COACH.busy; b.textContent = COACH.busy ? '답변 중…' : '보내기'; }
+  coRenderBar();
+}
+
+function coKey(e) {
+  // 한글 조합 중 Enter는 글자 확정이지 전송이 아니다
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); coSend(); }
+}
+
+function coNew() {
+  if (COACH.busy) return;
+  COACH.id = ''; COACH.messages = [];
+  renderCoach();
+}
+
+async function coOpen(id) {
+  if (COACH.busy) return;
+  if (!id) { coNew(); return; }
+  try {
+    const d = await (await fetch('/api/coach/chat?id=' + encodeURIComponent(id))).json();
+    if (d.error) { toast(d.error); return; }
+    COACH.id = d.id; COACH.messages = d.messages;
+  } catch (e) { toast(String(e)); return; }
+  renderCoach();
+  $('#main').scrollTop = $('#main').scrollHeight;
+}
+
+async function coDelete() {
+  if (COACH.busy || !COACH.id || !confirm('이 대화를 삭제할까요?')) return;
+  await fetch('/api/coach/delete', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({id: COACH.id})}).catch(() => {});
+  COACH.id = ''; COACH.messages = [];
+  renderCoach();
+  coLoadChats();
+}
+
+// 저장되지 않은 질문을 다시 보낸다 — 실패한 질문·답 한 쌍을 화면에서 걷어내고 같은 글로 재전송
+function coRetry(i) {
+  const q = COACH.messages[i - 1];
+  if (COACH.busy || !q) return;
+  COACH.messages.splice(i - 1, 2);
+  coSend(q.text);
+}
+
+async function coSend(text) {
+  if (COACH.busy) return;
+  const fromInput = text === undefined;
+  text = (fromInput ? COACH.input : text).trim();
+  if (!text) return;
+  if (fromInput) { COACH.input = ''; const ta = $('#co-text'); if (ta) ta.value = ''; }
+  const um = {role: 'user', text, hands: []};
+  const cm = {role: 'coach', text: '', streaming: true};
+  COACH.messages.push(um, cm);
+  COACH.busy = true;
+  renderSidebar(); coRenderMsgs(); coRenderBusy();
+  const main = $('#main'); main.scrollTop = main.scrollHeight;
+  try {
+    const res = await fetch('/api/coach/send', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({chat_id: COACH.id, text}),
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.error || 'HTTP ' + res.status);
+    }
+    COACH.id = res.headers.get('X-Chat-Id') || COACH.id;
+    um.hands = (res.headers.get('X-Coach-Refs') || '').split(',').filter(Boolean);
+    um.missing = (res.headers.get('X-Coach-Missing') || '').split(',').filter(Boolean);
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      cm.text += dec.decode(value, {stream: true});
+      coRenderMsgs();
+    }
+    cm.text += dec.decode();
+    cm.streaming = false;
+    // 서버는 답이 끝까지 왔을 때만 저장한다 — 저장본의 마지막 답이 지금 받은 것과 같은지 확인
+    const saved = await (await fetch('/api/coach/chat?id=' + encodeURIComponent(COACH.id))).json()
+      .catch(() => null);
+    const last = saved && saved.messages && saved.messages[saved.messages.length - 1];
+    if (!last || last.role !== 'coach' || last.text !== cm.text.trim()) cm.failed = true;
+  } catch (e) {
+    cm.streaming = false; cm.failed = true; cm.error = String(e.message || e);
+  }
+  COACH.busy = false;
+  renderSidebar(); coRenderMsgs(); coRenderBusy();
+  coLoadChats();
+}
 
 function renderQuiz() {
   if (SEL !== -7) return;
@@ -3853,6 +4108,14 @@ class Handler(BaseHTTPRequestHandler):
                                       hero=HERO, positions=pos, stacks=stacks,
                                       streets=streets)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/coach/chats":
+            self._send(json.dumps(coach.chat_list(DB), ensure_ascii=False),
+                       "application/json; charset=utf-8")
+        elif path == "/api/coach/chat":
+            qs = parse_qs(urlparse(self.path).query)
+            chat = coach.get_chat(DB, qs.get("id", [""])[0])
+            self._send(json.dumps(chat or {"error": "대화를 찾지 못했습니다."}, ensure_ascii=False),
+                       "application/json; charset=utf-8", code=200 if chat else 404)
         elif path == "/api/range/state":
             self._send(json.dumps(ranges.state_view(DB), ensure_ascii=False),
                        "application/json; charset=utf-8")
@@ -3878,12 +4141,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
-    def _stream_ai(self, system, user):
-        """AI 스트리밍 응답 공통 처리. 성공 시 전체 텍스트, 실패 시 None 반환."""
+    def _stream_ai(self, system, user, headers=None):
+        """AI 스트리밍 응답 공통 처리. 성공 시 전체 텍스트, 실패 시 None 반환.
+        `headers`는 본문보다 먼저 보내야 하는 메타 (코치의 대화 id 등)."""
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-AI-Backend", AI_BACKEND.name)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         full = []
         ok = True
@@ -4026,6 +4292,45 @@ class Handler(BaseHTTPRequestHandler):
                 quiz.record_attempt(DB, body.get("spot"), hand_id, body.get("street"),
                                     choice_id, grade, generated=body.get("source") == "ai")
                 persist(DB)
+        elif self.path == "/api/coach/send":
+            # 💬 AI 코치 — 내 플레이 요약 + 짚은 핸드 + 최근 대화를 실어 한 번 호출 (스트리밍).
+            # 답이 끝까지 왔을 때만 질문·답을 함께 저장한다 (끊긴 답은 남기지 않는다)
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                text = (body.get("text") or "").strip()
+                if not text:
+                    raise ValueError("질문을 입력하세요.")
+                if AI_BACKEND is None:
+                    raise RuntimeError(
+                        "사용 가능한 AI 백엔드가 없습니다. claude CLI 설치 또는 "
+                        "ANTHROPIC_API_KEY 설정 후 다시 실행하세요.")
+                chat_id = body.get("chat_id") or coach.new_id()
+                prompt, refs, missing = coach.build_prompt(DB, chat_id, text, hero=HERO)
+            except Exception as e:
+                self._send(json.dumps({"error": str(e)}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=400)
+                return
+            reply = self._stream_ai(COACH_SYSTEM_PROMPT, prompt, headers={
+                "X-Chat-Id": chat_id,
+                "X-Coach-Refs": ",".join(refs),
+                "X-Coach-Missing": ",".join(missing),
+            })
+            if reply:
+                coach.save_exchange(DB, chat_id, text, reply, refs)
+                persist(DB)
+        elif self.path == "/api/coach/delete":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+            except ValueError:
+                self._send(json.dumps({"error": "잘못된 요청"}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=400)
+                return
+            resp = coach.delete_chat(DB, body.get("id"))
+            if resp["ok"]:
+                persist(DB)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif self.path == "/api/range/grade":
             # 오픈 레인지 채점은 **전부 로컬** — 정답이 차트에 있으므로 AI를 부르지 않는다
             length = int(self.headers.get("Content-Length", 0))
