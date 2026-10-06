@@ -185,7 +185,7 @@ falls off the table, the view resets to the first seat's open. At **5명 이하*
 an ICM warning (`.rgv-icm`): the charts are chipEV, and ICM makes calling ranges vs shoves and mid-stack opens
 much tighter — seat-dropping fixes the seat mapping, not that. Heads-up is deliberately not offered: the
 HU button is also the SB (in position postflop), which no 8max seat corresponds to. ICM charts, if ever
-added, belong to a separate chart dimension sourced from a solver (HRC), not this toggle. The choice is a per-browser view setting
+added, belong to a separate chart dimension sourced from a solver (HRC), not this toggle. Default is **7맥스** (the user's online tables are mostly 7-handed); the choice is a per-browser view setting
 (`localStorage` `ahh_rgv_max`, read with a literal key because `RANGE` is built before later `const`s exist).
 Navigation (`rgvGo`) **keeps the slider's stack exactly** — if that spot has no chart there it shows the
 missing-chart card with its capture command instead of jumping to another stack. The slider's

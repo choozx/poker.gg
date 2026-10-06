@@ -3707,10 +3707,11 @@ function rgvSlide(i) {
 // **앞자리부터 하나씩 빠질 뿐** 나머지 자리의 차트는 그대로 맞는다 (7맥스 UTG = 8맥스 UTG1,
 // 6맥스 UTG = 8맥스 LJ — ranges._pos_8max와 같은 규칙). 그래서 데이터는 손대지 않고 카드만 줄인다.
 // 고른 값은 이 브라우저에만 기억한다 (보기 설정일 뿐이라 DB·클라우드에 넣지 않는다).
-// 키는 상수로 빼지 않는다 — rgvLoadMax는 RANGE를 만들 때(이 줄보다 먼저) 불려서 const면 아직 없다
+// 키는 상수로 빼지 않는다 — rgvLoadMax는 RANGE를 만들 때(이 줄보다 먼저) 불려서 const면 아직 없다.
+// 고른 적이 없으면 7맥스 — 주로 치는 온라인 테이블이 7맥스라서다 (차트 데이터는 8맥스 이름 그대로)
 function rgvLoadMax() {
-  try { const n = +localStorage.getItem('ahh_rgv_max'); return [3, 4, 5, 6, 7, 8].includes(n) ? n : 8; }
-  catch (e) { return 8; }
+  try { const n = +localStorage.getItem('ahh_rgv_max'); return [3, 4, 5, 6, 7, 8].includes(n) ? n : 7; }
+  catch (e) { return 7; }
 }
 function rgvSeats() {
   const all = RANGE.state.import_positions.map(p => p.key);   // UTG UTG1 LJ HJ CO BTN SB BB
