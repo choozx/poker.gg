@@ -178,6 +178,11 @@ card → "everyone between folds"). It is **only a view of `(pos, vs)`** — no 
 empty = folded to `pos` (open chart), `vs` set = `vs` opened and the rest folded (defense chart). The
 current seat's card shows the chart's overall action split. Data stops at "one open + one response",
 so 3벳/콜/림프 continuations are rendered but disabled (`NA` tooltip), and folding to BB is a walk.
+A **8/7/6맥스** toggle (`rgvSeats`, `RANGE.view.max`) just drops seats from the front of the bar — data stays
+8max-keyed because an open range is set by how many players are behind (7max UTG = 8max UTG1, 6max UTG =
+8max LJ; same rule as `_pos_8max`), so no separate charts exist per format. If the current seat or opener
+falls off the table, the view resets to the first seat's open. The choice is a per-browser view setting
+(`localStorage` `ahh_rgv_max`, read with a literal key because `RANGE` is built before later `const`s exist).
 Navigation (`rgvGo`) **keeps the slider's stack exactly** — if that spot has no chart there it shows the
 missing-chart card with its capture command instead of jumping to another stack. The slider's
 axis is the **union of every imported slot's stack** (`rgvAxis`), not just the current spot's — so a

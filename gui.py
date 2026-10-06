@@ -720,6 +720,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .rgv-ticks span.miss { opacity: .35; }
   /* 📊 액션 카드 바 — 칩 색은 차트 칸 색과 같다 (레이즈 빨강 · 올인 진한 빨강 · 콜 초록 · 폴드 파랑) */
   .rgv-bar { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 8px; margin-bottom: 8px; }
+  .rgv-max { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .rgv-max button { padding: 4px 11px; font-size: 12px; }
+  .rgv-max span { color: var(--dim); font-size: 12px; margin-left: 6px; }
+  .rgv-card .pn .fmt { font-size: 10px; font-weight: 500; color: var(--dim); }
   .rgv-card { flex: 0 0 auto; min-width: 88px; background: var(--panel); border: 1px solid var(--border);
               border-radius: 9px; padding: 7px 8px; cursor: pointer; }
   .rgv-card:hover { border-color: var(--dim); }
@@ -3264,7 +3268,8 @@ let RANGE = {
   // vs: 방어 차트의 오프너 ('' = 오픈 차트). BB는 오픈이 없어 vs가 있어야 한다
   imp: {pos: '', vs: '', stack: '', text: '', source: '', busy: false, err: '', msg: ''},
   // 📊 레인지 차트 뷰어 (문제를 내지 않는 보기 전용 모드). vs '' = 오픈 차트
-  view: {pos: '', vs: '', stack: '', chart: null, loading: false, err: '', rate: false, cache: {}},
+  view: {pos: '', vs: '', stack: '', chart: null, loading: false, err: '', rate: false, cache: {},
+         max: rgvLoadMax()},   // 테이블 인원 (8/7/6맥스) — 화면에서 앞자리를 몇 개 빼고 보여줄지
 };
 
 function rgFilterQS() {
@@ -3695,6 +3700,26 @@ function rgvSlide(i) {
   renderRangeChart();
 }
 
+// ── 테이블 인원 (8/7/6맥스) ──
+// 차트는 전부 8맥스 이름으로 저장돼 있다. 오픈 레인지를 정하는 건 '뒤에 남은 인원 수'라 인원이 줄면
+// **앞자리부터 하나씩 빠질 뿐** 나머지 자리의 차트는 그대로 맞는다 (7맥스 UTG = 8맥스 UTG1,
+// 6맥스 UTG = 8맥스 LJ — ranges._pos_8max와 같은 규칙). 그래서 데이터는 손대지 않고 카드만 줄인다.
+// 고른 값은 이 브라우저에만 기억한다 (보기 설정일 뿐이라 DB·클라우드에 넣지 않는다).
+// 키는 상수로 빼지 않는다 — rgvLoadMax는 RANGE를 만들 때(이 줄보다 먼저) 불려서 const면 아직 없다
+function rgvLoadMax() {
+  try { const n = +localStorage.getItem('ahh_rgv_max'); return [6, 7, 8].includes(n) ? n : 8; }
+  catch (e) { return 8; }
+}
+function rgvSeats() {
+  const all = RANGE.state.import_positions.map(p => p.key);   // UTG UTG1 LJ HJ CO BTN SB BB
+  return all.slice(all.length - RANGE.view.max);
+}
+function rgvSetMax(n) {
+  RANGE.view.max = n;
+  try { localStorage.setItem('ahh_rgv_max', String(n)); } catch (e) {}
+  renderRangeChart();     // 지금 자리·오프너가 빠졌으면 renderRangeView가 첫 자리로 옮긴다
+}
+
 // ── 액션 카드 바 (GTO 툴처럼 위에서 액션을 눌러 트리를 따라간다) ──
 // 상태는 여전히 (pos, vs, stack) 하나다 — 카드 바는 그걸 '앞자리들이 무엇을 했나'로 펼쳐 보여줄 뿐.
 //   vs 없음 = pos 앞이 전부 폴드 → pos의 오픈 차트
@@ -3710,7 +3735,7 @@ function rgvGo(pos, vs) {
 
 function rgvBarHtml(c) {
   const v = RANGE.view, st = RANGE.state;
-  const order = st.import_positions.map(p => p.key);         // UTG UTG1 LJ HJ CO BTN SB BB
+  const order = rgvSeats();                                    // 인원에 맞춰 앞자리를 뺀 자리들
   const last = order.length - 1;
   const [opName, opKind] = rgVsParts(v.vs);
   const opAllin = opKind === 'allin', opLimp = opKind === 'limp';
@@ -3787,7 +3812,8 @@ function rgvBarHtml(c) {
     if (target && !has(target[0], target[1])) { cls += ' none'; if (cls.includes('later')) note = '<div class="rgv-cnote">차트 없음</div>'; }
     return `<div class="rgv-card ${cls}"${target ? ` onclick="${go(target[0], target[1])}"` : ''}
       title="${target ? esc(rgSpot(target[0], target[1])) + (has(target[0], target[1]) ? '' : ' (이 스택 차트 없음)') : ''}">
-      <div class="pn">${p}${i === op ? `<span class="op">${RG_KIND[opKind]}</span>` : ''}</div>${chips}${note}</div>`;
+      <div class="pn">${p}${i === op ? `<span class="op">${RG_KIND[opKind]}</span>` : ''}${
+        i === 0 && v.max < 8 ? `<span class="fmt">${v.max}맥스 UTG</span>` : ''}</div>${chips}${note}</div>`;
   }).join('')}</div>`;
 }
 
@@ -3845,9 +3871,14 @@ function renderRangeView() {
   const v = RANGE.view;
   const axis = rgvAxis();
   // 처음 열 때는 GTO 툴처럼 첫 액션(UTG 오픈)부터. 스택은 UTG 차트가 있는 가장 작은 것
+  const seats = rgvSeats();
   if (!v.pos) {
-    v.pos = 'UTG'; v.vs = '';
-    v.stack = ((rgvStacks('UTG', '')[0]) || axis[0]).stack;
+    v.pos = seats[0]; v.vs = '';
+    v.stack = ((rgvStacks(seats[0], '')[0]) || axis[0]).stack;
+  }
+  // 인원을 줄여서 지금 자리나 오프너가 테이블에서 빠졌으면 첫 자리의 오픈으로 돌아간다
+  if (!seats.includes(v.pos) || (v.vs && !seats.includes(rgVsParts(v.vs)[0]))) {
+    rgvGo(seats[0], ''); return;
   }
   if (!axis.some(a => String(a.stack) === String(v.stack))) v.stack = axis[0].stack;
   const mine = rgvStacks(v.pos, v.vs);
@@ -3868,7 +3899,10 @@ function renderRangeView() {
           class="${i === idx ? 'on' : ''}${slotOf(a.stack) ? '' : ' miss'}" onclick="rgvSlide(${i})"
           ${slotOf(a.stack) ? '' : 'title="이 상황엔 아직 없는 스택"'}
       >${a.bb === null ? esc(a.stack_label) : a.bb}</span>`).join('');
-  const picker = `${rgvBarHtml(curSlot && ch && !ch.error ? ch : null)}
+  const maxBtn = n => `<button class="${v.max === n ? 'primary' : ''}" onclick="rgvSetMax(${n})">${n}맥스</button>`;
+  const picker = `<div class="rgv-max">${maxBtn(8)}${maxBtn(7)}${maxBtn(6)}
+      <span>${v.max < 8 ? `앞자리 ${8 - v.max}개를 빼고 봅니다 — ${v.max}맥스 UTG = 8맥스 ${seats[0]} 차트` : ''}</span></div>
+    ${rgvBarHtml(curSlot && ch && !ch.error ? ch : null)}
   <div class="qz-tgrow" style="align-items:flex-end">
     ${axis.length < 2 ? `<span class="qz-tglabel">스택</span><b class="rgv-bb">${esc(cur.stack_label)}</b>` : `
       <div class="rgv-stack">
