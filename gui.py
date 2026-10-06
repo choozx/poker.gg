@@ -717,6 +717,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
                     color: var(--dim); cursor: pointer; font-variant-numeric: tabular-nums; }
   .rgv-ticks span:hover { color: var(--text); }
   .rgv-ticks span.on { color: #ffa657; font-weight: 700; }
+  .rgv-ticks span.miss { opacity: .35; }
 
   .tourney.search { border-color: rgba(86,211,100,.4); }
   .tourney.search.sel { border-color: var(--green); background: rgba(86,211,100,.08); }
@@ -3598,7 +3599,7 @@ async function rgvOpen(pos, stack, vs) {
                                String(x.stack) === String(stack));
   // 캐시 키에 그 슬롯의 저장 시각을 넣는다 — 같은 칸을 다시 가져오면 ts가 바뀌어 저절로 미스
   const key = [pos, vs, stack, (slot && slot.ts) || ''].join('|');
-  v.pos = pos; v.vs = vs; v.stack = stack; v.err = '';
+  v.pos = pos; v.vs = vs; v.stack = stack; v.err = ''; v.miss = false;
   if (v.cache[key]) { v.chart = v.cache[key]; v.loading = false; renderRangeChart(); return; }
   v.chart = null; v.loading = true;
   renderRangeChart();
@@ -3630,10 +3631,27 @@ function rgvScenarios(pos) {
   return out;
 }
 
+// 슬라이더 축 = 가져온 **모든** 차트의 스택을 합친 것 (작은 것부터). 지금 상황에 없는 스택도
+// 흐린 눈금으로 남겨 고를 수 있게 한다 — 한 장뿐인 BB 방어 차트에도 슬라이더가 생기고, 그 자리에
+// 무엇을 더 캡처해야 하는지가 축에서 바로 보인다. 축이 포지션마다 같아서 눈금 위치도 흔들리지 않는다.
+function rgvAxis() {
+  const seen = new Map();
+  for (const s of (RANGE.state && RANGE.state.custom) || [])
+    if (!seen.has(String(s.stack)))
+      seen.set(String(s.stack), {stack: s.stack, bb: s.bb, stack_label: s.stack_label});
+  return [...seen.values()].sort((a, b) => (a.bb === null ? -1 : a.bb) - (b.bb === null ? -1 : b.bb));
+}
+
 function rgvSlide(i) {
-  const v = RANGE.view, list = rgvStacks(v.pos, v.vs);
-  const s = list[Math.max(0, Math.min(list.length - 1, +i))];
-  if (s && String(s.stack) !== String(v.stack)) rgvOpen(v.pos, s.stack, v.vs);
+  const v = RANGE.view, axis = rgvAxis();
+  const a = axis[Math.max(0, Math.min(axis.length - 1, +i))];
+  if (!a || String(a.stack) === String(v.stack)) return;
+  if (rgvStacks(v.pos, v.vs).some(s => String(s.stack) === String(a.stack))) {
+    rgvOpen(v.pos, a.stack, v.vs); return;
+  }
+  // 이 상황엔 없는 스택 — 빈 칸으로 보여준다 (넣는 커맨드와 함께)
+  v.stack = a.stack; v.chart = null; v.loading = false; v.err = ''; v.miss = true;
+  renderRangeChart();
 }
 
 function rgvToggleRate() { RANGE.view.rate = !RANGE.view.rate; renderRangeChart(); }
@@ -3696,15 +3714,21 @@ function renderRangeView() {
   const scen = rgvScenarios(v.pos);
   if (!scen.includes(v.vs)) { rgvOpen(v.pos, undefined, scen[0]); return; }
   const mine = rgvStacks(v.pos, v.vs);
-  if (!mine.some(s => String(s.stack) === String(v.stack))) { rgvOpen(v.pos, mine[0].stack, v.vs); return; }
-  const idx = mine.findIndex(s => String(s.stack) === String(v.stack));
-  const cur = mine[idx];
+  const axis = rgvAxis();
+  const slotOf = stack => mine.find(m => String(m.stack) === String(stack));
+  // 슬라이더로 일부러 고른 빈 스택(v.miss)만 그대로 두고, 그 밖에 없는 스택이면 있는 차트로 옮긴다
+  if (!slotOf(v.stack) && !(v.miss && axis.some(a => String(a.stack) === String(v.stack)))) {
+    rgvOpen(v.pos, mine[0].stack, v.vs); return;
+  }
+  const idx = axis.findIndex(a => String(a.stack) === String(v.stack));
+  const cur = axis[idx], curSlot = slotOf(v.stack);
   // 스택은 순서가 있는 축이라 슬라이더로 — 끌면 레인지가 변하는 게 그대로 보인다.
   // 눈금 간격은 bb 값이 아니라 **인덱스** 기준이다 (13·15·20…35는 간격이 들쭉날쭉하다).
-  const ticks = mine.length < 2 ? '' : mine.map((s, i) => `
-    <span style="left:${i / (mine.length - 1) * 100}%"
-          class="${i === idx ? 'on' : ''}" onclick="rgvSlide(${i})"
-      >${s.bb === null ? esc(s.stack_label) : s.bb}</span>`).join('');
+  const ticks = axis.length < 2 ? '' : axis.map((a, i) => `
+    <span style="left:${i / (axis.length - 1) * 100}%"
+          class="${i === idx ? 'on' : ''}${slotOf(a.stack) ? '' : ' miss'}" onclick="rgvSlide(${i})"
+          ${slotOf(a.stack) ? '' : 'title="이 상황엔 아직 없는 스택"'}
+      >${a.bb === null ? esc(a.stack_label) : a.bb}</span>`).join('');
   const picker = `<div class="qz-tgrow" style="align-items:flex-end">
     <span class="qz-tglabel">포지션</span>
     <select class="qz-sel" onchange="rgvOpen(this.value)">

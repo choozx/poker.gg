@@ -171,7 +171,10 @@ leaks the answer, the same invariant as `quiz.reveal()`.
 **📊 레인지 차트 (sidebar `SEL = -8`)** — its own tab, view-only: no question, no grading, just the
 chart drawn GTO-tool style (each cell filled horizontally in proportion to its frequency,
 `rgvGridHtml`). It lives beside `ranges.py`'s drill rather than inside it — same data, different job:
-the drill asks, this one shows. It picks a chart with a **포지션 dropdown + 스택 slider** built from the imported slots. The slider
+the drill asks, this one shows. It picks a chart with a **포지션 dropdown + 스택 slider** built from the imported slots. The slider's
+axis is the **union of every imported slot's stack** (`rgvAxis`), not just the current spot's — so a
+spot with a single chart (e.g. one BB-defense stack) still gets a slider, ticks it lacks are dimmed,
+and picking one shows "차트가 아직 없습니다" with the exact `grab_chart.py` command (`v.miss`). The slider
 steps by **index, not bb value** (13·15·20…35 are unevenly spaced, so a value axis bunches up), and
 fetched charts are cached under `pos|stack|ts` — sliding is instant on a revisit, and re-importing a
 slot changes its `ts` so the stale chart cannot survive. A late response is dropped unless the view
