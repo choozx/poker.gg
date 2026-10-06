@@ -723,6 +723,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .rgv-max { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
   .rgv-max button { padding: 4px 11px; font-size: 12px; }
   .rgv-max span { color: var(--dim); font-size: 12px; margin-left: 6px; }
+  .rgv-icm { border: 1px solid rgba(255,166,87,.45); background: rgba(255,166,87,.08);
+             border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; line-height: 1.6; }
   .rgv-card .pn .fmt { font-size: 10px; font-weight: 500; color: var(--dim); }
   .rgv-card { flex: 0 0 auto; min-width: 88px; background: var(--panel); border: 1px solid var(--border);
               border-radius: 9px; padding: 7px 8px; cursor: pointer; }
@@ -3700,20 +3702,23 @@ function rgvSlide(i) {
   renderRangeChart();
 }
 
-// ── 테이블 인원 (8/7/6맥스) ──
+// ── 테이블 인원 (8/7/6맥스, 파이널 테이블용 5/4/3명) ──
 // 차트는 전부 8맥스 이름으로 저장돼 있다. 오픈 레인지를 정하는 건 '뒤에 남은 인원 수'라 인원이 줄면
 // **앞자리부터 하나씩 빠질 뿐** 나머지 자리의 차트는 그대로 맞는다 (7맥스 UTG = 8맥스 UTG1,
 // 6맥스 UTG = 8맥스 LJ — ranges._pos_8max와 같은 규칙). 그래서 데이터는 손대지 않고 카드만 줄인다.
 // 고른 값은 이 브라우저에만 기억한다 (보기 설정일 뿐이라 DB·클라우드에 넣지 않는다).
 // 키는 상수로 빼지 않는다 — rgvLoadMax는 RANGE를 만들 때(이 줄보다 먼저) 불려서 const면 아직 없다
 function rgvLoadMax() {
-  try { const n = +localStorage.getItem('ahh_rgv_max'); return [6, 7, 8].includes(n) ? n : 8; }
+  try { const n = +localStorage.getItem('ahh_rgv_max'); return [3, 4, 5, 6, 7, 8].includes(n) ? n : 8; }
   catch (e) { return 8; }
 }
 function rgvSeats() {
   const all = RANGE.state.import_positions.map(p => p.key);   // UTG UTG1 LJ HJ CO BTN SB BB
   return all.slice(all.length - RANGE.view.max);
 }
+// 6명 이상은 'N맥스'(테이블 포맷), 5명 이하는 'N명'(파이널 테이블 등에서 인원이 줄어든 상태)
+function rgvMaxName(n) { return n >= 6 ? `${n}맥스` : `${n}명`; }
+
 function rgvSetMax(n) {
   RANGE.view.max = n;
   try { localStorage.setItem('ahh_rgv_max', String(n)); } catch (e) {}
@@ -3813,7 +3818,7 @@ function rgvBarHtml(c) {
     return `<div class="rgv-card ${cls}"${target ? ` onclick="${go(target[0], target[1])}"` : ''}
       title="${target ? esc(rgSpot(target[0], target[1])) + (has(target[0], target[1]) ? '' : ' (이 스택 차트 없음)') : ''}">
       <div class="pn">${p}${i === op ? `<span class="op">${RG_KIND[opKind]}</span>` : ''}${
-        i === 0 && v.max < 8 ? `<span class="fmt">${v.max}맥스 UTG</span>` : ''}</div>${chips}${note}</div>`;
+        i === 0 && v.max < 8 && p !== 'BTN' ? `<span class="fmt">${rgvMaxName(v.max)} UTG</span>` : ''}</div>${chips}${note}</div>`;
   }).join('')}</div>`;
 }
 
@@ -3899,9 +3904,13 @@ function renderRangeView() {
           class="${i === idx ? 'on' : ''}${slotOf(a.stack) ? '' : ' miss'}" onclick="rgvSlide(${i})"
           ${slotOf(a.stack) ? '' : 'title="이 상황엔 아직 없는 스택"'}
       >${a.bb === null ? esc(a.stack_label) : a.bb}</span>`).join('');
-  const maxBtn = n => `<button class="${v.max === n ? 'primary' : ''}" onclick="rgvSetMax(${n})">${n}맥스</button>`;
-  const picker = `<div class="rgv-max">${maxBtn(8)}${maxBtn(7)}${maxBtn(6)}
-      <span>${v.max < 8 ? `앞자리 ${8 - v.max}개를 빼고 봅니다 — ${v.max}맥스 UTG = 8맥스 ${seats[0]} 차트` : ''}</span></div>
+  const maxBtn = n => `<button class="${v.max === n ? 'primary' : ''}" onclick="rgvSetMax(${n})">${rgvMaxName(n)}</button>`;
+  const picker = `<div class="rgv-max">${[8, 7, 6, 5, 4, 3].map(maxBtn).join('')}
+      <span>${v.max === 3 ? '앞자리 5개를 빼고 봅니다 — BTN부터'
+        : v.max < 8 ? `앞자리 ${8 - v.max}개를 빼고 봅니다 — ${rgvMaxName(v.max)} UTG = 8맥스 ${seats[0]} 차트` : ''}</span></div>
+    ${v.max <= 5 ? `<div class="qz-note rgv-icm">⚠️ 이 차트들은 <b>칩EV</b> 기준입니다. 이 인원은 주로 <b>파이널 테이블</b>인데,
+      거기선 ICM(상금 구조) 때문에 레인지가 훨씬 타이트해야 합니다 — 특히 <b>올인에 대한 콜</b>과 중간 스택의 오픈.
+      버블 근처도 마찬가지입니다. 이 화면대로 치면 너무 느슨합니다.</div>` : ''}
     ${rgvBarHtml(curSlot && ch && !ch.error ? ch : null)}
   <div class="qz-tgrow" style="align-items:flex-end">
     ${axis.length < 2 ? `<span class="qz-tglabel">스택</span><b class="rgv-bb">${esc(cur.stack_label)}</b>` : `
