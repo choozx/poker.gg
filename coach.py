@@ -94,7 +94,7 @@ def _freqs(hands):
 
 
 def _vs_chart_lines(db):
-    """가져온/내장 오픈 차트 대비 내 실제 오픈율, 가져온 BB 방어 차트 대비 내 방어율.
+    """가져온/내장 오픈 차트 대비 내 실제 오픈율, 가져온 방어 차트(vs 오픈) 대비 내 방어율.
 
     차트 기대치는 **내가 실제로 받은 조합**으로 가중한다 — 표본이 작으면 받은 패가 치우쳐
     있어서, 차트 전체 오픈%와 그냥 비교하면 차이가 패 운에서 나온다. 자리는 `_pos_8max`로
@@ -137,12 +137,11 @@ def _vs_chart_lines(db):
     if ranges.vs_personalized(db):
         agg = {}
         for (pos, sb, vs, combo), e in ranges._hero_vs(db).items():
-            if pos == "BB":
-                agg.setdefault((sb, vs), {})[combo] = e
-        for (sb, vs), combos in sorted(agg.items(), key=lambda kv: (
-                ranges.STACK_ORDER.index(kv[0][0]),
-                ranges.POS_8MAX.index(kv[0][1]) if kv[0][1] in ranges.POS_8MAX else 99)):
-            c = ranges.chart("BB", sb, db, vs)
+            agg.setdefault((pos, sb, vs), {})[combo] = e
+        p8 = lambda p: ranges.POS_8MAX.index(p) if p in ranges.POS_8MAX else 99
+        for (pos, sb, vs), combos in sorted(agg.items(), key=lambda kv: (
+                p8(kv[0][0]), ranges.STACK_ORDER.index(kv[0][1]), p8(kv[0][2]))):
+            c = ranges.chart(pos, sb, db, vs)
             n = sum(e[1] for e in combos.values())
             if not c or n < MIN_SPOT_N:
                 continue
@@ -151,7 +150,7 @@ def _vs_chart_lines(db):
             exp_d = sum(e[1] * c["weights"].get(k, 0.0) for k, e in combos.items())
             exp_r = sum(e[1] * (c["weights"].get(k, 0.0) - c["call"].get(k, 0.0))
                         for k, e in combos.items())
-            vs_lines.append(f"- BB vs {vs} {ranges.STACK_LABEL[sb]}: 방어 {_pct(d, n)} "
+            vs_lines.append(f"- {pos} vs {vs} {ranges.STACK_LABEL[sb]}: 방어 {_pct(d, n)} "
                             f"(차트 {_pct(exp_d, n)}) · 3벳 {_pct(r3, n)} (차트 {_pct(exp_r, n)}) "
                             f"· 기회 {n}회")
 
@@ -193,11 +192,11 @@ def profile_text(db):
                 *(lines or ["- (비교할 표본이 부족합니다)"])]
         if dev_lines:
             out += ["", "### 차트와 가장 어긋난 조합 (오픈)", *dev_lines]
-        out += ["", "### BB 방어(오픈 한 번만 받음) — 실제 vs 가져온 차트"]
+        out += ["", "### 방어(오픈 한 번만 받음) — 실제 방어율 vs 가져온 차트"]
         if not ranges.vs_personalized(db):
             out.append("- (DB에 오프너 기록이 없음 — `--rebuild` 전이라 집계 불가)")
         else:
-            out += vs_lines or ["- (가져온 BB 방어 차트가 없거나 표본이 부족합니다)"]
+            out += vs_lines or ["- (가져온 방어 차트가 없거나 표본이 부족합니다)"]
     else:
         out += ["", "### 차트 비교",
                 "- (DB가 `--rebuild` 전이라 오픈/방어 기회를 판정할 수 없어 집계 불가)"]

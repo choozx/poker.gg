@@ -77,7 +77,7 @@ COACH_SYSTEM_PROMPT = """\
 당신은 NLH 토너먼트 전문 포커 코치입니다. 한 플레이어(Hero, 질문하는 사람)가 자기 플레이에 대해
 대화를 나눕니다. 함께 주어지는 것:
 - "내 플레이 요약": 앱이 그 사람의 핸드 DB에서 계산한 **실제 숫자** (VPIP/PFR, 포지션별 칩 EV,
-  차트 대비 오픈·BB 방어율, 약점 스팟, AI 분석 등급, 연습 성적).
+  차트 대비 오픈율·방어율, 약점 스팟, AI 분석 등급, 연습 성적).
 - "참조 핸드": 그 사람이 #번호로 짚은 핸드의 원문 (있을 때만).
 - "지난 대화": 이 대화의 앞부분.
 
@@ -3273,8 +3273,12 @@ function rgToggleImport() { RANGE.showImport = !RANGE.showImport; renderQuiz(); 
 function rgImpSet(k, v) {
   const i = RANGE.imp;
   i[k] = v; i.err = ''; i.msg = '';
-  // 상대 선택칸은 BB일 때만 보인다 — 다른 포지션으로 바꾸면 숨은 채 남지 않게 비운다
-  if (k === 'pos' && v !== 'BB') i.vs = '';
+  // 포지션을 바꿔 상대가 더는 앞자리가 아니게 되면 비운다 (BTN 고른 채 UTG로 바꾸는 경우).
+  // 숨은 선택칸에 값이 남아 엉뚱한 슬롯으로 저장되지 않게 하려는 것
+  if (k === 'pos' && i.vs && RANGE.state) {
+    const order = RANGE.state.import_positions.map(p => p.key);
+    if (order.indexOf(i.vs) >= order.indexOf(v)) i.vs = '';
+  }
   renderQuiz();
 }
 
@@ -3321,9 +3325,11 @@ function rgImportHtml() {
   const i = RANGE.imp;
   const posOpts = st.import_positions.map(p =>
     `<option value="${p.key}" ${i.pos === p.key ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
-  // 방어 차트는 BB만 받는다 (오픈 레인지 + BB 방어 레인지 구성). 서버는 다른 자리 vs도
-  // 받을 수 있지만 UI에선 BB를 골랐을 때만 상대 선택칸을 띄운다
-  const vsOpts = (st.import_vs || [])
+  // 상대는 나보다 먼저 액션하는 자리만 (BB면 UTG~SB 전부) — 서버 parse_vs와 같은 규칙.
+  // 앞자리가 없는 UTG(와 포지션 미선택)에는 상대 선택칸 자체를 띄우지 않는다
+  const order = st.import_positions.map(p => p.key);
+  const vsList = (st.import_vs || []).filter(p => order.indexOf(p.key) < order.indexOf(i.pos));
+  const vsOpts = vsList
     .map(p => `<option value="${p.key}" ${i.vs === p.key ? 'selected' : ''}>vs ${esc(p.label)} 오픈</option>`).join('');
   const stackOpts = st.stacks.map(s =>
     `<option value="${s.key}" ${i.stack === s.key ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
@@ -3344,8 +3350,9 @@ function rgImportHtml() {
         <select onchange="rgImpSet('pos', this.value)">
           <option value="">포지션</option>${posOpts}
         </select>
-        ${i.pos === 'BB' ? `<select onchange="rgImpSet('vs', this.value)" title="누가 오픈했을 때의 BB 차트인지">
-          <option value="">상대 (오프너)</option>${vsOpts}
+        ${i.pos && vsList.length ? `<select onchange="rgImpSet('vs', this.value)"
+                 title="오픈을 받은 방어 차트면 오프너를 고르세요">
+          <option value="">${i.pos === 'BB' ? '상대 (BB는 필수)' : '오픈 차트 (상대 없음)'}</option>${vsOpts}
         </select>` : ''}
         <select onchange="rgImpSet('stack', this.value)">
           <option value="">스택</option>${stackOpts}
@@ -3937,7 +3944,7 @@ function coRenderMsgs() {
     : `<div class="qz-card" style="text-align:center;padding:28px 20px">
         <div style="font-size:15px;margin-bottom:6px">내 플레이 기록을 근거로 AI 코치와 대화합니다</div>
         <div style="color:var(--dim);font-size:13px;margin-bottom:16px">
-          VPIP/PFR · 포지션별 칩 EV · 차트 대비 오픈/BB 방어율 · 약점 스팟 · AI 분석 결과가
+          VPIP/PFR · 포지션별 칩 EV · 차트 대비 오픈/방어율 · 약점 스팟 · AI 분석 결과가
           매 질문에 같이 전달됩니다.</div>
         <div class="co-ex">${COACH_EXAMPLES.map((q, i) =>
           `<button onclick="coSend(COACH_EXAMPLES[${i}])">${esc(q)}</button>`).join('')}</div>

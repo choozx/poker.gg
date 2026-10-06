@@ -12,6 +12,8 @@ GTO 위자드 무료 플랜처럼 레인지를 **텍스트로 복사할 수 없�
     python3 grab_chart.py LJ 30 --image ~/a.png     # 캡처 대신 이미지 파일에서
     python3 grab_chart.py CO 50 --dry-run           # 읽기만 하고 보내지 않음
     python3 grab_chart.py BB 20 --vs BTN            # 방어 차트: BTN 오픈을 받은 BB
+    python3 grab_chart.py --watch                   # 감시 모드: 없는 차트를 순서대로 연달아 (아래 참고)
+    python3 grab_chart.py --watch --stacks 30 --only BB
 
 포지션: UTG UTG1 LJ HJ CO BTN SB BB (8맥스, `ranges.POS_8MAX`. 소문자·UTG+1도 받는다)
 스택:   GTO 툴에 적힌 bb 숫자를 그대로 준다 (13, 20, 100 …). 버킷 키(pf/short/mid/deep)도 받는다.
@@ -33,6 +35,7 @@ GTO 위자드 무료 플랜처럼 레인지를 **텍스트로 복사할 수 없�
 import argparse
 import json
 import os
+import select
 import struct
 import subprocess
 import sys
@@ -61,6 +64,11 @@ def parse_stack(arg):
     구간 기준이 두 벌 생기지 않게 **앱의 `ranges.parse_stack`을 그대로** 쓴다."""
     import ranges
     return ranges.parse_stack(arg)
+
+
+class GridNotFound(SystemExit):
+    """화면에 그리드가 없다. 한 장 모드에선 그대로 종료 메시지가 되고, 감시 모드는 잡아서
+    '아직 차트가 안 떴다'로 보고 다음 폴링을 기다린다."""
 
 
 # ── 이미지 읽기 ────────────────────────────────────────────────────────────────
@@ -198,7 +206,7 @@ def grid_box(im, step=4):
         안 그러면 셀 한 칸이 그리드 전체로 잡힌다."""
         peak = max(counts)
         if peak == 0:
-            raise SystemExit("화면에서 레인지 그리드를 찾지 못했습니다. "
+            raise GridNotFound("화면에서 레인지 그리드를 찾지 못했습니다. "
                              "차트가 보이는 상태인지 확인하거나 --region 으로 영역을 주세요.")
         lo, gap = peak * 0.5, 5                       # gap: 샘플 5칸(≈20px)까지는 같은 덩어리
         runs = []
@@ -209,7 +217,7 @@ def grid_box(im, step=4):
                 else:
                     runs.append([i, i])
         if not runs:
-            raise SystemExit("화면에서 레인지 그리드를 찾지 못했습니다.")
+            raise GridNotFound("화면에서 레인지 그리드를 찾지 못했습니다.")
         return max(runs, key=lambda r: r[1] - r[0])
 
     x0, x1 = densest(cols)
@@ -254,12 +262,13 @@ def cell_edges(im, box, horiz):
 
 # ── 그리드 읽기 ────────────────────────────────────────────────────────────────
 
-def read_grid(im):
+def read_grid(im, box=None):
     """이미지 → ({조합: 액션 빈도}, {조합: 올인 빈도}, {조합: 콜 빈도}, 메모 dict).
 
     액션 빈도는 폴드가 아닌 전부(레이즈+올인+콜)의 합계다. 콜 열도 분모에 들어가야
-    '레이즈 50 · 콜 50'인 칸이 레이즈 100%로 부풀지 않는다."""
-    box = grid_box(im)
+    '레이즈 50 · 콜 50'인 칸이 레이즈 100%로 부풀지 않는다. `box`를 주면 격자 찾기를
+    건너뛴다 (감시 모드가 첫 장에서 잡은 위치를 재사용)."""
+    box = box or grid_box(im)
     vx, vok = cell_edges(im, box, True)
     hy, hok = cell_edges(im, box, False)
     notes = {"box": box, "lines_ok": vok and hok}
@@ -359,10 +368,240 @@ def send(port, pos, stack, freq, jam, call, source, vs=None):
                          f"{to_text(freq)}")
 
 
+# ── 감시 모드 (--watch) ────────────────────────────────────────────────────────
+# 280장(스택 8 × 오픈 7 + 방어 28)을 한 장씩 커맨드로 넣으면 대부분의 시간이 '터미널로 가서
+# 인자 고쳐 치기'에 든다. 감시 모드는 순서표를 들고 화면을 폴링하다가 **새 차트가 뜨고 잠깐
+# 그대로면** 순서표의 다음 칸으로 저장한다. 사용자는 GTO 툴에서 클릭만 하면 된다.
+#
+# 이 도구는 화면 글자를 못 읽으므로 '지금 이 차트가 BB vs CO인지'는 스스로 모른다 — 순서를
+# 지키는 건 사용자 몫이다. 그래서 다음 칸을 크게 띄우고, 뻔히 이상한 차트(오픈 차트에 콜이 있다,
+# BB 방어에 콜이 없다)는 저장하지 않고 멈추고, 방금 저장한 걸 되돌리는 키(u)를 둔다.
+# 도구가 GTO 툴을 대신 클릭하지는 않는다 — 사이트를 자동으로 긁는 건 이용약관 문제가 될 수 있다.
+
+POLL_SEC = 0.8        # 화면 확인 간격
+STABLE_POLLS = 2      # 같은 차트가 이만큼 연달아 보여야 저장 (넘어가는 중간 화면을 피한다)
+
+
+def plan(stacks, only=None):
+    """캡처 순서표 [(포지션, 스택, 상대 또는 None)]. GTO 툴에서 클릭해 가는 순서를 따른다:
+    (스택마다) UTG 오픈 차트 → UTG 레이즈 후 UTG1·LJ…BB의 방어 차트 → UTG1 오픈 차트 → …"""
+    import ranges
+    order = ranges.POS_8MAX
+    out = []
+    for st in stacks:
+        for i, op in enumerate(order[:-1]):              # 오프너는 UTG~SB (BB는 오픈 기회가 없다)
+            out.append((op, st, None))
+            out.extend((resp, st, op) for resp in order[i + 1:])
+    return [t for t in out if not only or t[0] in only]
+
+
+def fetch_state(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/range/state", timeout=10) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.URLError as e:
+        raise SystemExit(f"앱에 연결하지 못했습니다 ({e}). python3 gui.py 를 먼저 띄우세요.")
+
+
+def delete_slot(port, pos, stack, vs):
+    body = json.dumps({"pos": pos, "stack": stack, "vs": vs or ""}).encode("utf-8")
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/range/delete-chart", data=body,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def capture_fast():
+    """감시용 캡처 — 메인 디스플레이를 BMP로 바로 찍는다 (sips 변환을 건너뛰어 빠르다)."""
+    with tempfile.NamedTemporaryFile(suffix=".bmp", delete=False) as f:
+        shot = f.name
+    try:
+        r = subprocess.run(["screencapture", "-x", "-t", "bmp", shot], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f"화면 캡처 실패: {r.stderr.strip()}\n"
+                             "터미널에 '화면 기록' 권한이 필요할 수 있습니다.")
+        with open(shot, "rb") as f:
+            return Img(f.read())
+    finally:
+        os.unlink(shot)
+
+
+def signature(freq, jam, call):
+    """차트 비교용 지문. 같은 화면을 두 번 읽어도 같게 나오도록 2자리로 반올림."""
+    r = lambda d: tuple(sorted((k, round(v, 2)) for k, v in d.items()))
+    return r(freq), r(jam), r(call)
+
+
+def suspicious(slot, freq, call):
+    """순서가 어긋났을 때 흔히 생기는 모양이면 경고 문구 (아니면 None)."""
+    pos, st, vs = slot
+    cw = lambda c: 6 if len(c) == 2 else 4 if c.endswith("s") else 12
+    cpct = sum(v * cw(c) for c, v in call.items()) / 1326 * 100
+    if not vs and pos != "SB" and cpct > 1:
+        return f"오픈 차트인데 콜(초록)이 {cpct:.0f}% 보입니다 — 방어 화면이 떠 있는 것 아닌가요?"
+    if vs and pos == "BB" and not call:
+        return "BB 방어 차트인데 콜(초록)이 없습니다 — 오픈 화면이나 다른 자리가 떠 있는 것 아닌가요?"
+    return None
+
+
+def slot_name(slot):
+    pos, st, vs = slot
+    return f"{pos} vs {vs} · {st}bb" if vs else f"{pos} 오픈 · {st}bb"
+
+
+def slot_hint(slot):
+    pos, st, vs = slot
+    if vs:
+        return f"GTO 툴: {vs} 레이즈 → {pos}까지 폴드 → {pos} 차례"
+    return f"GTO 툴: {pos}까지 폴드 → {pos} 차례"
+
+
+def read_line(timeout):
+    """폴링 사이에 키 입력 확인 (Enter 친 줄 하나, 없으면 None). 표준 라이브러리 select."""
+    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+    return sys.stdin.readline() if ready else None
+
+
+def watch(a):
+    import ranges
+    st = fetch_state(a.port)
+    have = {(c["pos"], c.get("vs") or None, str(c["stack"])) for c in st.get("custom") or []}
+    if a.stacks:
+        stacks = [s.strip() for s in a.stacks.split(",") if s.strip()]
+    else:                                   # 기본 = 이미 가져온 차트들의 bb 목록
+        stacks = sorted({str(c["bb"]) for c in st.get("custom") or [] if c.get("bb") is not None},
+                        key=float)
+    for s in stacks:
+        if parse_stack(s)[1] is None:
+            raise SystemExit(f"--stacks 에는 bb 숫자만 씁니다 (받은 값: {s})")
+    if not stacks:
+        raise SystemExit("스택 목록이 없습니다 — --stacks 13,15,20 처럼 주세요.")
+    only = {ranges._norm_pos(p) for p in a.only.split(",")} if a.only else None
+    full = plan(stacks, only)
+    todo = [t for t in full if (t[0], t[2], t[1]) not in have]
+    print(f"감시 모드 — 스택 {', '.join(stacks)}bb · 전체 {len(full)}장 중 이미 있는 "
+          f"{len(full) - len(todo)}장 건너뜀 → 남은 {len(todo)}장")
+    if not todo:
+        print("모두 들어 있습니다.")
+        return
+    print("GTO 툴에서 아래 안내대로 차트를 띄우면 자동으로 찍어 저장합니다 (마우스는 그리드 밖에).\n"
+          "  Enter = 지금 화면을 이 칸으로 저장 (첫 장, 또는 앞 칸과 똑같은 차트일 때)\n"
+          "  u = 방금 저장한 것 되돌리기 · s = 이 칸 건너뛰기 · q = 그만 (다음에 남은 것부터 이어서)")
+
+    box, last_sig, pending, held, n_same = None, None, None, None, 0
+    # 되돌리기·건너뛰기 직후엔 화면에 남아 있는 차트를 '이미 본 것'으로 다시 친다 — 안 그러면
+    # 그 차트가 방금 열린 칸으로 곧장 저장된다 (화면은 아무것도 안 바뀌었는데)
+    reseed = False
+    saved = []                               # 되돌리기용 [(todo 인덱스, 슬롯)]
+    # 시작 화면에 떠 있는 차트는 '이미 본 것'으로 친다 — 첫 칸으로 잘못 찍히지 않게
+    try:
+        im = capture_fast()
+        freq, jam, call, notes = read_grid(im)
+        if freq:
+            last_sig, box = signature(freq, jam, call), notes["box"]
+    except GridNotFound:
+        pass
+
+    i = 0
+
+    def announce():
+        print(f"\n──── [{i + 1}/{len(todo)}] 다음 ▶ {slot_name(todo[i])}\n     {slot_hint(todo[i])}")
+
+    announce()
+    while i < len(todo):
+        line = read_line(POLL_SEC)
+        force = False
+        if line is not None:
+            c = line.strip().lower()
+            if c == "q":
+                break
+            if c == "s":
+                print(f"   ⏭  {slot_name(todo[i])} 건너뜀")
+                i += 1
+                pending = held = None
+                reseed = True
+                if i < len(todo):
+                    announce()
+                continue
+            if c == "u":
+                if not saved:
+                    print("   되돌릴 게 없습니다")
+                    continue
+                j, slot = saved.pop()
+                delete_slot(a.port, slot[0], slot[1], slot[2])
+                print(f"   ↩️  {slot_name(slot)} 지웠습니다 — 그 칸부터 다시")
+                i, pending, held = j, None, None
+                reseed = True
+                announce()
+                continue
+            force = c == ""
+        try:
+            im = capture_fast()
+            freq, jam, call, notes = read_grid(im, box)
+            if box and not notes["lines_ok"]:          # 화면이 움직였다 — 격자를 새로 찾는다
+                freq, jam, call, notes = read_grid(im)
+        except GridNotFound:
+            box = None
+            if force:
+                print("   화면에서 그리드를 찾지 못했습니다")
+            continue
+        if not freq:
+            box = None
+            continue
+        box = notes["box"]
+        sig = signature(freq, jam, call)
+        slot = todo[i]
+        if reseed and not force:
+            last_sig, reseed = sig, False
+            continue
+        reseed = False
+        if not force:
+            if sig == last_sig or sig == held:          # 아직 앞 차트 그대로 / 경고 띄운 채 대기 중
+                continue
+            if sig != pending:                          # 새 차트를 처음 봤다 — 한 번 더 같아야 저장
+                pending, n_same = sig, 1
+                continue
+            n_same += 1
+            if n_same < STABLE_POLLS:
+                continue
+            warn = suspicious(slot, freq, call)
+            if warn:
+                held = sig
+                print(f"   ⚠️  {warn}\n      맞으면 Enter로 저장, 아니면 화면을 고치세요")
+                continue
+        res = send(a.port, slot[0], slot[1], freq, jam, call,
+                   f"GTOWizard {ranges.spot_name(slot[0], slot[2])} {slot[1]}bb", slot[2])
+        if res.get("error"):
+            print(f"   ❌ 저장 실패: {res['error']}")
+            held = sig
+            continue
+        extra = []
+        cw = lambda c: 6 if len(c) == 2 else 4 if c.endswith("s") else 12
+        if call:
+            extra.append(f"콜 {sum(v * cw(k) for k, v in call.items()) / 1326 * 100:.0f}%")
+        if jam:
+            extra.append(f"올인 {sum(v * cw(k) for k, v in jam.items()) / 1326 * 100:.0f}%")
+        print(f"   ✅ {slot_name(slot)} 저장 — 액션 {res['pct']}%"
+              + (f" ({' · '.join(extra)})" if extra else "")
+              + ("" if notes["lines_ok"] else "  ⚠️ 격자선을 못 찾아 등분으로 읽음"))
+        saved.append((i, slot))
+        last_sig, pending, held = sig, None, None
+        i += 1
+        if i < len(todo):
+            announce()
+    left = len(todo) - i
+    print(f"\n끝 — 이번에 {len(saved)}장 저장" + (f", 남은 {left}장은 다음에 --watch 로 이어서" if left else ""))
+
+
 def main():
     ap = argparse.ArgumentParser(description="GTO 툴 화면의 레인지 그리드를 캡처해서 차트로 가져온다")
-    ap.add_argument("pos", help="포지션: UTG UTG1 LJ HJ CO BTN SB BB")
-    ap.add_argument("stack", help="스택: GTO 툴의 bb 숫자 (20, 12.5, 100 …) 또는 pf/short/mid/deep")
+    ap.add_argument("pos", nargs="?", help="포지션: UTG UTG1 LJ HJ CO BTN SB BB")
+    ap.add_argument("stack", nargs="?",
+                    help="스택: GTO 툴의 bb 숫자 (20, 12.5, 100 …) 또는 pf/short/mid/deep")
+    ap.add_argument("--watch", action="store_true",
+                    help="감시 모드: 순서표대로 화면에 뜨는 차트를 자동으로 연달아 저장")
+    ap.add_argument("--stacks", help="감시 모드 스택 목록 (예: 13,15,20). 기본 = 이미 가져온 차트들의 bb")
+    ap.add_argument("--only", help="감시 모드에서 이 포지션 차트만 (예: BB 또는 SB,BB)")
     ap.add_argument("--vs", help="방어 차트의 오프너 (예: BTN). BB는 필수")
     ap.add_argument("--image", help="화면 캡처 대신 이 이미지 파일에서 읽기")
     ap.add_argument("--region", help="캡처 영역 x,y,w,h")
@@ -371,6 +610,10 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--dry-run", action="store_true", help="읽기만 하고 앱에 보내지 않음")
     a = ap.parse_args()
+    if a.watch:
+        return watch(a)
+    if not a.pos or not a.stack:
+        ap.error("포지션과 스택을 주세요 (예: grab_chart.py CO 30) — 또는 --watch")
 
     pos = parse_pos(a.pos)
     if not pos:
