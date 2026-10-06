@@ -445,8 +445,11 @@ def suspicious(slot, freq, call):
 
 
 def slot_name(slot):
+    """감시 모드 안내용 이름. 방어 차트는 **액션 순서대로 오프너를 먼저** 쓴다 ('UTG vs BTN' =
+    UTG가 열고 BTN이 받는다) — GTO 툴에서 클릭해 가는 순서와 같아 읽기 편하다. 앱의 다른 화면은
+    'BTN vs UTG'(받는 쪽 먼저)이니 섞어 쓰지 않게 이 함수만 쓴다."""
     pos, st, vs = slot
-    return f"{pos} vs {vs} · {st}bb" if vs else f"{pos} 오픈 · {st}bb"
+    return f"{vs} vs {pos} · {st}bb" if vs else f"{pos} 오픈 · {st}bb"
 
 
 def slot_hint(slot):
