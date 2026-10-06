@@ -216,6 +216,26 @@ _CHART_CACHE = {}
 # 오픈을 받은 방어 차트(vs 오픈)에서 빨강이 뜻하는 액션. 오픈 차트의 '오픈/올인' 자리에 들어간다.
 VS_VERB = "3벳"
 
+# 오픈 **올인**을 받은 방어 차트는 상대 이름 뒤에 이 꼬리를 단다 ('UTG-allin'). 오픈 레이즈를 받은
+# 것과는 레인지가 완전히 다르고(남은 액션이 콜/폴드뿐), GTO 툴에서도 다른 노드다. 꼬리 없는
+# 'UTG'는 예전 그대로 오픈 레이즈를 받은 차트라 기존 데이터는 손댈 게 없다.
+ALLIN = "-allin"
+
+
+def vs_parts(vs):
+    """'UTG-allin' → ('UTG', True) / 'UTG' → ('UTG', False) / None → (None, False)."""
+    if not vs:
+        return None, False
+    vs = str(vs)
+    return (vs[:-len(ALLIN)], True) if vs.lower().endswith(ALLIN) else (vs, False)
+
+
+def _norm_vs(vs):
+    """상대 표기 정규화 — 포지션 부분만 _norm_pos (꼬리까지 대문자가 되면 키가 갈린다)."""
+    op, allin = vs_parts(vs)
+    op = _norm_pos(op) if op else None
+    return (op + ALLIN if allin else op) if op else None
+
 
 def _ckey(pos, slot, vs=None):
     """차트 저장 키. 오픈 차트는 'UTG|20', 방어 차트는 'BB|20|vsBTN' (BTN 오픈에 대한 BB)."""
@@ -235,15 +255,16 @@ def parse_vs(pos, vs):
     방어 차트의 상대는 **나보다 먼저 액션하는 자리**여야 한다 (BB는 UTG~SB 전부).
     BB는 오픈 기회가 없으므로(폴드되면 워크) 상대 없는 BB 차트는 받지 않는다."""
     pos = _norm_pos(pos)
-    vs = _norm_pos(vs) if vs else None
+    vs = _norm_vs(vs)
     if not vs:
         if pos == "BB":
             return None, "BB는 오픈 상황이 없습니다 — 상대(오프너)를 지정하세요 (예: vs BTN)"
         return None, None
-    if vs not in POS_8MAX or pos not in POS_8MAX:
-        return None, f"알 수 없는 상대 포지션: {vs} ({' / '.join(POS_8MAX[:-1])} 중 하나)"
-    if POS_8MAX.index(vs) >= POS_8MAX.index(pos):
-        return None, f"오프너는 {pos}보다 먼저 액션하는 자리여야 합니다 (받은 값: {vs})"
+    op, _ = vs_parts(vs)
+    if op not in POS_8MAX or pos not in POS_8MAX:
+        return None, f"알 수 없는 상대 포지션: {op} ({' / '.join(POS_8MAX[:-1])} 중 하나)"
+    if POS_8MAX.index(op) >= POS_8MAX.index(pos):
+        return None, f"오프너는 {pos}보다 먼저 액션하는 자리여야 합니다 (받은 값: {op})"
     return vs, None
 
 
@@ -395,7 +416,8 @@ def chart(pos, stack, db=None, vs=None):
     버킷 대체는 가져온 차트와 내장 차트를 같은 사슬에서 훑는다: 예를 들어 헤즈업은
     내장 차트가 deep 한 장뿐이라, short를 가져오면 short가 그 자리를 차지한다."""
     pos = _norm_pos(pos)
-    vs = _norm_pos(vs) if vs else None
+    vs = _norm_vs(vs)
+    facing_allin = vs_parts(vs)[1]
     if pos not in RFI and pos not in POS_8MAX:
         return None
     # 8맥스 이름·방어 차트는 내장 차트가 없다 — 가져온 것만
@@ -441,7 +463,9 @@ def chart(pos, stack, db=None, vs=None):
         "call_pct": round(call_pct, 1),
         # 15bb 미만은 레이즈가 아니라 푸시폴드 구간이라 묻는 액션 자체가 다르다.
         # 방어 차트는 빨강이 3벳이다 (짧은 스택이면 그 3벳이 곧 올인 — jam으로 따로 그려진다)
-        "verb": VS_VERB if vs else ("올인" if bucket == "pf" else "오픈"),
+        # 오픈 올인을 받은 차트엔 레이즈가 없다 — 비폴드가 전부 콜이다
+        "verb": "콜" if facing_allin else VS_VERB if vs else ("올인" if bucket == "pf" else "오픈"),
+        "allin": facing_allin,
         # 콜(초록)의 뜻도 갈린다: 폴드 투 히어로에선 림프, 오픈을 받았으면 그냥 콜
         "call_name": "콜" if vs else "콜(림프)",
         "label": f"{spot_name(pos, vs)} · "
@@ -450,8 +474,9 @@ def chart(pos, stack, db=None, vs=None):
 
 
 def spot_name(pos, vs=None):
-    """'BB vs BTN' / 'UTG' — 차트·문제·채점 문구에서 그 스팟을 부르는 이름."""
-    return f"{pos} vs {vs}" if vs else pos
+    """'BB vs BTN' / 'BB vs BTN 올인' / 'UTG' — 차트·문제·채점 문구에서 그 스팟을 부르는 이름."""
+    op, allin = vs_parts(vs)
+    return f"{pos} vs {op}{' 올인' if allin else ''}" if op else pos
 
 
 def verdict(pos, bucket, combo, db=None, vs=None):
@@ -568,6 +593,11 @@ def import_chart(db, pos, stack, text, source=None, jam=None, call=None, vs=None
         jam_w = {k: round(min(v, weights.get(k, 0.0)), 4) for k, v in jw.items()
                  if weights.get(k, 0.0) > 0}
     call_w = {}
+    if vs and vs_parts(vs)[1]:
+        # 오픈 올인을 받으면 남은 액션은 콜뿐이다 — 캡처 색이 무엇이든 비폴드는 전부 콜로 본다
+        # (GTO 툴이 이 콜을 빨강으로 그려도 '3벳'으로 잘못 읽히지 않게)
+        jam_w, call = {}, None
+        call_w = {k: round(v, 4) for k, v in weights.items()}
     if call:
         cw, cwarn = parse_range(call)
         warnings = warnings + cwarn
@@ -591,8 +621,7 @@ def import_chart(db, pos, stack, text, source=None, jam=None, call=None, vs=None
 def delete_chart(db, pos, stack, vs=None):
     """가져온 차트를 지우고 내장 차트로 되돌린다 (방어 차트는 내장이 없어 그냥 사라진다)."""
     slot, _, _ = parse_stack(stack)
-    vs = _norm_pos(vs) if vs else None
-    got = _state_mut(db)["charts"].pop(_ckey(_norm_pos(pos), slot, vs), None)
+    got = _state_mut(db)["charts"].pop(_ckey(_norm_pos(pos), slot, _norm_vs(vs)), None)
     return {"ok": got is not None}
 
 
@@ -618,7 +647,8 @@ def custom_slots(db):
                     "source": c.get("source"), "ts": c.get("ts")})
     order = {p: i for i, p in enumerate(POS_ORDER)}
     out.sort(key=lambda s: (order.get(s["pos"], 99),
-                            order.get(s["vs"], -1) if s["vs"] else -1,
+                            (order.get(vs_parts(s["vs"])[0], 99), vs_parts(s["vs"])[1])
+                            if s["vs"] else (-1, False),
                             -(s["bb"] if s["bb"] is not None else -1)))
     return out
 
@@ -694,6 +724,9 @@ def _hero_vs(db):
         # _pos_8max는 MP1/MP2 같은 원래 이름을 받아야 몇 번째 자리인지 센다 (_norm_pos 전에)
         pos = _pos_8max(r.get("hero_pos"), n)
         vs = _pos_8max(r.get("pf_opener"), n)
+        # 오픈 올인을 받은 핸드는 따로 센다 (rebuild 전 DB엔 이 필드가 없어 전부 레이즈 쪽에 섞인다)
+        if vs and r.get("pf_opener_allin"):
+            vs += ALLIN
         sb = store._stack_bucket(r.get("stack_bb"))
         combo = store._combo(r.get("hero_cards") or [])
         if not pos or not vs or not sb or not combo:
@@ -716,7 +749,7 @@ def hero_cells(db, pos, bucket, vs=None):
     if vs:
         if not vs_personalized(db):
             return {}
-        vs = _norm_pos(vs)
+        vs = _norm_vs(vs)
         return {k[3]: e for k, e in _hero_vs(db).items()
                 if k[0] == pos and k[1] == bucket and k[2] == vs}
     if not personalized(db):
@@ -742,7 +775,9 @@ def hero_record(db, pos, bucket, combo, vs=None):
 def _vs_list(db, pos):
     """그 포지션에 가져온 방어 차트의 상대(오프너) 목록 — 행동 순서대로."""
     got = {vs for k in _charts(db) for p, _, vs in [_split_key(k)] if p == pos and vs}
-    return sorted(got, key=lambda v: POS_8MAX.index(v) if v in POS_8MAX else 99)
+    key = lambda v: (POS_8MAX.index(vs_parts(v)[0]) if vs_parts(v)[0] in POS_8MAX else 99,
+                     vs_parts(v)[1])
+    return sorted(got, key=key)
 
 
 def _contexts(db, positions=None, stacks=None):
@@ -827,8 +862,9 @@ def next_question(db, positions=None, stacks=None):
     pos, bucket, vs, combo = random.choices(pool, weights=weights)[0]
     c = chart(pos, bucket, db, vs)
     verb = c["verb"]
+    op, facing_allin = vs_parts(vs)
     if vs:
-        prompt = f"{vs} 오픈 — 나머지는 폴드하고 나에게 왔습니다. "
+        prompt = f"{op} {'올인' if facing_allin else '오픈'} — 나머지는 폴드하고 나에게 왔습니다. "
         raise_label = verb + ("(올인)" if bucket == "pf" else "")
     else:
         prompt = ("헤즈업, 상대 BB. " if pos == "SB(BTN)"
@@ -838,14 +874,15 @@ def next_question(db, positions=None, stacks=None):
         "pos": pos, "vs": vs, "stack": bucket, "combo": combo,
         "cards": _deal(combo),
         "pos_label": POS_KO.get(pos, pos),
-        "vs_label": f"vs {vs} 오픈" if vs else None,
+        "vs_label": f"vs {op} {'올인' if facing_allin else '오픈'}" if vs else None,
         "stack_label": STACK_LABEL.get(bucket, "?"),
         "verb": verb,
         "chart_source": c.get("source"),
         "prompt": prompt,
         # 콜(초록)이 있는 차트만 3지선다 — 없는 차트에 콜 버튼을 띄우면 정답이 없는 선택지가 된다
+        # 오픈 올인을 받으면 콜/폴드 둘뿐이다 (레이즈 선택지가 없다)
         "choices": [
-            {"id": "open", "label": raise_label},
+            *([] if facing_allin else [{"id": "open", "label": raise_label}]),
             *([{"id": "call", "label": c["call_name"]}] if c["call"] else []),
             {"id": "fold", "label": "폴드"},
         ],
@@ -925,7 +962,10 @@ def _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record):
                         else f" ({STACK_LABEL.get(c['chart_stack'])} 차트로 대체)"))
     vs = c["vs"]
     rec = hero_record(db, pos, bucket, combo, vs)
-    if rec and vs:
+    if rec and vs and c["allin"]:
+        lines.append(f"실전 기록: 이 스팟에서 {combo} {rec['opps']}회 중 "
+                     f"{rec['opens']}회 콜 (**{rec['rate']}%**).")
+    elif rec and vs:
         lines.append(f"실전 기록: 이 스팟에서 {combo} {rec['opps']}회 중 "
                      f"{rec['opens']}회 방어 (**{rec['rate']}%** · 그중 {verb} {rec['raises']}회).")
     elif rec:
@@ -975,7 +1015,7 @@ def chart_view(db, pos, stack, vs=None):
             if c["vs"]:
                 cell["raises"] = e[2]
         cells[combo] = cell
-    return {"pos": c["pos"], "vs": c["vs"], "call_name": c["call_name"],
+    return {"pos": c["pos"], "vs": c["vs"], "allin": c["allin"], "call_name": c["call_name"],
             "stack": c["stack"], "chart_stack": c["chart_stack"],
             "bucket": c["bucket"], "bb": c["bb"],
             "label": c["label"], "verb": c["verb"], "source": c.get("source"),
@@ -1047,8 +1087,10 @@ def state_view(db):
         "positions": [{"key": p, "label": p, "n": None} for p in POS_ORDER if p in have],
         # 가져오기 패널의 포지션 선택지 (grab_chart와 같은 8맥스 이름)
         "import_positions": [{"key": p, "label": POS_KO[p], "n": None} for p in POS_8MAX],
-        # 방어 차트의 상대(오프너) 선택지 — BB는 오프너가 될 수 없다
-        "import_vs": [{"key": p, "label": p, "n": None} for p in POS_8MAX[:-1]],
+        # 방어 차트의 상대(오프너) 선택지 — BB는 오프너가 될 수 없다. 오픈 레이즈/오픈 올인을 따로
+        "import_vs": [{"key": p + tail, "label": f"vs {p} {name}", "n": None}
+                      for p in POS_8MAX[:-1]
+                      for tail, name in (("", "오픈"), (ALLIN, "올인"))],
         "stacks": [{"key": s, "label": STACK_LABEL[s], "n": None} for s in STACK_ORDER],
         "personalized": personalized(db),
         # 방어 차트가 있는데 이게 False면 '--rebuild 하면 방어 기록도 겹쳐진다' 안내를 띄운다

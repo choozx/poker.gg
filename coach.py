@@ -139,8 +139,9 @@ def _vs_chart_lines(db):
         for (pos, sb, vs, combo), e in ranges._hero_vs(db).items():
             agg.setdefault((pos, sb, vs), {})[combo] = e
         p8 = lambda p: ranges.POS_8MAX.index(p) if p in ranges.POS_8MAX else 99
+        vk = lambda v: (p8(ranges.vs_parts(v)[0]), ranges.vs_parts(v)[1])
         for (pos, sb, vs), combos in sorted(agg.items(), key=lambda kv: (
-                p8(kv[0][0]), ranges.STACK_ORDER.index(kv[0][1]), p8(kv[0][2]))):
+                p8(kv[0][0]), ranges.STACK_ORDER.index(kv[0][1]), vk(kv[0][2]))):
             c = ranges.chart(pos, sb, db, vs)
             n = sum(e[1] for e in combos.values())
             if not c or n < MIN_SPOT_N:
@@ -150,9 +151,14 @@ def _vs_chart_lines(db):
             exp_d = sum(e[1] * c["weights"].get(k, 0.0) for k, e in combos.items())
             exp_r = sum(e[1] * (c["weights"].get(k, 0.0) - c["call"].get(k, 0.0))
                         for k, e in combos.items())
-            vs_lines.append(f"- {pos} vs {vs} {ranges.STACK_LABEL[sb]}: 방어 {_pct(d, n)} "
-                            f"(차트 {_pct(exp_d, n)}) · 3벳 {_pct(r3, n)} (차트 {_pct(exp_r, n)}) "
-                            f"· 기회 {n}회")
+            name = ranges.spot_name(pos, vs)
+            if c["allin"]:                       # 오픈 올인을 받으면 방어 = 콜뿐
+                vs_lines.append(f"- {name} {ranges.STACK_LABEL[sb]}: 콜 {_pct(d, n)} "
+                                f"(차트 {_pct(exp_d, n)}) · 기회 {n}회")
+            else:
+                vs_lines.append(f"- {name} {ranges.STACK_LABEL[sb]}: 방어 {_pct(d, n)} "
+                                f"(차트 {_pct(exp_d, n)}) · 3벳 {_pct(r3, n)} (차트 {_pct(exp_r, n)}) "
+                                f"· 기회 {n}회")
 
     dev.sort(reverse=True)
     dev_lines = [f"- {pos} {ranges.STACK_LABEL[sb]} {k}: {t}회 중 {o}회 오픈 "

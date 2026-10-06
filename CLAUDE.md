@@ -171,16 +171,23 @@ leaks the answer, the same invariant as `quiz.reveal()`.
 **📊 레인지 차트 (sidebar `SEL = -8`)** — its own tab, view-only: no question, no grading, just the
 chart drawn GTO-tool style (each cell filled horizontally in proportion to its frequency,
 `rgvGridHtml`). It lives beside `ranges.py`'s drill rather than inside it — same data, different job:
-the drill asks, this one shows. It picks a chart with a **포지션 dropdown + 스택 slider** built from the imported slots. The slider's
+the drill asks, this one shows. It picks a chart with a **GTO-tool-style action card bar + 스택 slider**.
+The bar (`rgvBarHtml`) is one card per seat in action order; you walk the preflop tree by clicking
+actions (UTG 레이즈 → the next seat's card shows its defense chart, a card's 폴드 → the next seat, a later
+card → "everyone between folds"). It is **only a view of `(pos, vs)`** — no separate tree state: `vs`
+empty = folded to `pos` (open chart), `vs` set = `vs` opened and the rest folded (defense chart). The
+current seat's card shows the chart's overall action split. Data stops at "one open + one response",
+so 3벳/콜/림프 continuations are rendered but disabled (`NA` tooltip), and folding to BB is a walk.
+Navigation (`rgvGo`) **keeps the slider's stack exactly** — if that spot has no chart there it shows the
+missing-chart card with its capture command instead of jumping to another stack. The slider's
 axis is the **union of every imported slot's stack** (`rgvAxis`), not just the current spot's — so a
 spot with a single chart (e.g. one BB-defense stack) still gets a slider, ticks it lacks are dimmed,
 and picking one shows "차트가 아직 없습니다" with the exact `grab_chart.py` command (`v.miss`). The slider
 steps by **index, not bb value** (13·15·20…35 are unevenly spaced, so a value axis bunches up), and
 fetched charts are cached under `pos|stack|ts` — sliding is instant on a revisit, and re-importing a
 slot changes its `ts` so the stale chart cannot survive. A late response is dropped unless the view
-is still on that slot. Changing position **keeps the current stack** (comparing one stack across
-positions is the point of the screen), falling back to the nearest bb when that position lacks it. It lists **only imported
-slots** (`state_view().custom`) — the built-in
+is still on that slot, and a failed fetch is remembered (`failKey`) so the "load if not loaded" check in
+`renderRangeView` can't refetch in a loop. It shows **only imported slots** (`state_view().custom`) — the built-in
 `RFI` approximations are deliberately not browsable here, since the point is to read back what was
 imported. A button swaps the cell numbers between chart frequency and **hero's own open rate**, which
 outlines the cells where the two disagree (same rule as the drill's `rg-dev`). The leak invariant
@@ -244,6 +251,18 @@ a delete-back-to-builtin button. `delete_chart` removes a custom slot.
 `pf_opener`는 새 필드라 `vs_personalized()`가 꺼지면 방어 쪽 겹쳐 보기·가중치만 꺼진다(오픈 쪽은 그대로).
 "차트와 어긋난 칸" 판정은 `chart_view`가 셀마다 `dev`로 내려준다 — 방어 차트는 콜 칸도 '액션 칸'이라
 규칙이 달라서, 프론트 두 곳에 규칙을 복사해 두지 않는다.
+
+**오픈 올인을 받은 방어 차트 — `vs`에 `-allin` 꼬리.** 오픈 레이즈를 받은 것과 오픈 올인을 받은 것은
+GTO 툴에서도 다른 노드이고 레인지가 완전히 다르다(남은 액션이 콜/폴드뿐). 그래서 `vs`를 `"UTG"`(레이즈) /
+`"UTG-allin"`(올인)으로 가른다(`ranges.ALLIN`, `vs_parts`, `_norm_vs` — **`vs`에 `_norm_pos`를 직접 쓰지
+말 것**, 꼬리까지 대문자가 되어 키가 갈린다). 꼬리 없는 기존 키는 그대로 레이즈 차트라 옮길 데이터가 없다.
+올인을 받은 차트는 `import_chart`가 **비폴드 전부를 `call`로** 저장한다 — GTO 툴이 이 콜을 무슨 색으로
+그리든 '3벳'으로 읽히지 않게. `chart()`가 `allin: True`와 `verb: "콜"`을 실어 보내고, 드릴은 콜/폴드
+2지선다(레이즈 선택지 없음 — 프론트도 `choices`대로만 버튼을 그린다), 차트·카드 바는 레이즈 칸을 숨긴다.
+실전 기록은 `convert.hand_meta`의 **`pf_opener_allin`**(그 단독 오픈이 올인이었나)으로 가른다 — 이 필드가
+없는 DB(이 기능 전에 rebuild)에선 올인 오픈을 받은 핸드가 레이즈 쪽에 섞여 세지고, 올인 쪽은 비어 있다.
+카드 바의 '올인' 칩은 그 자리의 오픈 차트(그 스택)에 올인이 있을 때만 뜨고, `grab_chart --watch`의 순서표도
+같은 기준(`plan(jams=…)`)으로 올인을 받는 칸을 넣는다 — 올인 오픈이 없는 스택에 빈 칸을 만들지 않게.
 
 **`grab_chart.py` — 화면에서 차트 읽기 (선택 도구, 맥 전용).** GTO 위자드 무료 플랜처럼 레인지를
 텍스트로 복사할 수 없을 때 쓰는 보조 CLI. `screencapture`로 화면을 찍고, 13×13 격자를 **자동으로
@@ -347,7 +366,7 @@ No payout ladder is modeled — don't invent one.
 ### The key invariant: metadata is frozen at import time
 
 When a hand is imported, `convert.hand_meta()` computes derived fields (`vpip`, `pfr`, `rfi`,
-`rfi_opp`, `pf_action`, `pf_faced`, `pf_opener`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
+`rfi_opp`, `pf_action`, `pf_faced`, `pf_opener`, `pf_opener_allin`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
 the DB record alongside the original `raw` text and rendered `markdown`. The aggregate queries in
 `store.py` (`stats`, `hand_grid`) read these frozen fields directly — they never re-parse `raw`.
 

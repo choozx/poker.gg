@@ -487,9 +487,11 @@ def hand_meta(h, hero="Hero"):
     #  pf_opener = 히어로가 **오픈 하나만** 받았을 때(앞에 레이즈 1번, 콜·림프 없음) 그 오프너의
     #   포지션. 림프·3벳·콜러가 낀 팟은 방어 차트가 전제하는 상황이 아니라 None이다.
     #   BB 방어 같은 vs 오픈 차트(ranges)에 내 실전 기록을 겹쳐 보는 데 쓴다.
+    #  pf_opener_allin = 그 오픈이 올인이었나. 오픈 레이즈를 받은 것과 오픈 올인을 받은 것은
+    #   레인지가 완전히 다른 상황이라(올인엔 콜/폴드뿐) 방어 차트도 따로다. pf_opener가 None이면 None.
     rfi_opp = rfi = False
     pf_action = "fold"
-    pf_faced = pf_opener = None
+    pf_faced = pf_opener = pf_opener_allin = None
     prior_raise = prior_vol = False
     raisers, n_vol = [], 0
     for a in h.actions:
@@ -501,7 +503,8 @@ def hand_meta(h, hero="Hero"):
             rfi_opp = not prior_vol                   # 폴드 투 히어로면 오픈 기회
             pf_faced = "raise" if prior_raise else ("limp" if prior_vol else "none")
             if len(raisers) == 1 and n_vol == 1:
-                pf_opener = next((p.position for p in h.players if p.name == raisers[0]), None)
+                pf_opener = next((p.position for p in h.players if p.name == raisers[0][0]), None)
+                pf_opener_allin = raisers[0][1] == "allin" if pf_opener else None
             if a.verb in ("raises", "bets"):
                 pf_action = "3bet" if prior_raise else "open"
             elif a.verb == "allin":
@@ -512,7 +515,7 @@ def hand_meta(h, hero="Hero"):
             break
         if a.verb in ("raises", "allin"):
             prior_raise = True
-            raisers.append(a.player)
+            raisers.append((a.player, a.verb))
         if a.verb in ("calls", "bets", "raises", "allin"):
             prior_vol = True                          # 앞에 자발적 참여(콜/레이즈)가 있었음
             n_vol += 1
@@ -543,6 +546,7 @@ def hand_meta(h, hero="Hero"):
         "pf_action": pf_action,
         "pf_faced": pf_faced,
         "pf_opener": pf_opener,
+        "pf_opener_allin": pf_opener_allin,
         "stack_bb": stack_bb,
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,

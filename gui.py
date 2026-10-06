@@ -718,6 +718,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .rgv-ticks span:hover { color: var(--text); }
   .rgv-ticks span.on { color: #ffa657; font-weight: 700; }
   .rgv-ticks span.miss { opacity: .35; }
+  /* 📊 액션 카드 바 — 칩 색은 차트 칸 색과 같다 (레이즈 빨강 · 올인 진한 빨강 · 콜 초록 · 폴드 파랑) */
+  .rgv-bar { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 8px; margin-bottom: 8px; }
+  .rgv-card { flex: 0 0 auto; min-width: 88px; background: var(--panel); border: 1px solid var(--border);
+              border-radius: 9px; padding: 7px 8px; cursor: pointer; }
+  .rgv-card:hover { border-color: var(--dim); }
+  .rgv-card.cur { border-color: #ffa657; box-shadow: 0 0 0 1px #ffa657 inset; cursor: default; }
+  .rgv-card.later { opacity: .55; }
+  .rgv-card.none .pn { color: var(--dim); }
+  .rgv-card .pn { font-weight: 700; font-size: 13px; margin-bottom: 4px; display: flex; gap: 5px; align-items: center; }
+  .rgv-card .pn .op { font-size: 10px; font-weight: 600; color: #dd4c45; }
+  .rgv-chip { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 2px 6px;
+              border-radius: 5px; margin-top: 3px; border-left: 3px solid transparent; background: var(--panel2); }
+  .rgv-chip b { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .rgv-chip.raise { border-left-color: #dd4c45; } .rgv-chip.jam { border-left-color: #72271f; }
+  .rgv-chip.call { border-left-color: #4f9a5c; } .rgv-chip.fold { border-left-color: #4d7bb3; }
+  .rgv-chip.sel { background: rgba(255,166,87,.16); color: #ffa657; font-weight: 700; }
+  .rgv-chip[onclick]:hover { filter: brightness(1.3); cursor: pointer; }
+  .rgv-chip.off { opacity: .4; cursor: not-allowed; }
+  .rgv-cnote { font-size: 11px; color: var(--dim); margin-top: 4px; }
 
   .tourney.search { border-color: rgba(86,211,100,.4); }
   .tourney.search.sel { border-color: var(--green); background: rgba(86,211,100,.08); }
@@ -3277,7 +3296,7 @@ function rgImpSet(k, v) {
   // 숨은 선택칸에 값이 남아 엉뚱한 슬롯으로 저장되지 않게 하려는 것
   if (k === 'pos' && i.vs && RANGE.state) {
     const order = RANGE.state.import_positions.map(p => p.key);
-    if (order.indexOf(i.vs) >= order.indexOf(v)) i.vs = '';
+    if (order.indexOf(rgVsParts(i.vs)[0]) >= order.indexOf(v)) i.vs = '';
   }
   renderQuiz();
 }
@@ -3307,7 +3326,14 @@ async function rgImport() {
 }
 
 // 'BB vs BTN' / 'UTG' — 서버 ranges.spot_name과 같은 이름
-function rgSpot(pos, vs) { return vs ? `${pos} vs ${vs}` : pos; }
+function rgSpot(pos, vs) {
+  const [op, allin] = rgVsParts(vs);
+  return op ? `${pos} vs ${op}${allin ? ' 올인' : ''}` : pos;
+}
+// 'UTG-allin' → ['UTG', true] — 오픈 올인을 받은 방어 차트 (ranges.vs_parts와 같은 규칙)
+function rgVsParts(vs) {
+  return vs && vs.endsWith('-allin') ? [vs.slice(0, -6), true] : [vs || '', false];
+}
 
 async function rgDeleteChart(pos, stack, vs) {
   try {
@@ -3328,9 +3354,9 @@ function rgImportHtml() {
   // 상대는 나보다 먼저 액션하는 자리만 (BB면 UTG~SB 전부) — 서버 parse_vs와 같은 규칙.
   // 앞자리가 없는 UTG(와 포지션 미선택)에는 상대 선택칸 자체를 띄우지 않는다
   const order = st.import_positions.map(p => p.key);
-  const vsList = (st.import_vs || []).filter(p => order.indexOf(p.key) < order.indexOf(i.pos));
+  const vsList = (st.import_vs || []).filter(p => order.indexOf(rgVsParts(p.key)[0]) < order.indexOf(i.pos));
   const vsOpts = vsList
-    .map(p => `<option value="${p.key}" ${i.vs === p.key ? 'selected' : ''}>vs ${esc(p.label)} 오픈</option>`).join('');
+    .map(p => `<option value="${p.key}" ${i.vs === p.key ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
   const stackOpts = st.stacks.map(s =>
     `<option value="${s.key}" ${i.stack === s.key ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
   const customRows = (st.custom || []).map(c => `
@@ -3455,9 +3481,7 @@ function rgQuestionHtml() {
     <div class="rg-hero">${q.cards.map(rgCardHtml).join('')}</div>
     <div class="rg-combo">${esc(q.combo)}</div>
     <div class="rg-acts">
-      ${btn('open', q.choices[0].label, 'O')}
-      ${hasCall ? btn('call', callChoice.label, 'C') : ''}
-      ${btn('fold', '폴드', 'F')}
+      ${q.choices.map(c => btn(c.id, c.label, {open: 'O', call: 'C', fold: 'F'}[c.id])).join('')}
     </div>
     ${graded ? rgResultHtml() : ''}
   </div>`;
@@ -3508,8 +3532,8 @@ function rgChartHtml() {
   }
   return `<div style="margin-top:14px">
     <div class="rg-legend">
-      <span><i style="background:${BG.open}"></i>${esc(c.verb)} ${c.has_call
-        ? Math.round((c.pct - c.call_pct) * 10) / 10 : c.pct}%</span>
+      ${c.allin ? '' : `<span><i style="background:${BG.open}"></i>${esc(c.verb)} ${c.has_call
+        ? Math.round((c.pct - c.call_pct) * 10) / 10 : c.pct}%</span>`}
       ${c.has_call ? `<span><i style="background:${BG.call}"></i>${esc(c.call_name)} ${c.call_pct}%</span>` : ''}
       <span><i style="background:${BG.mix}"></i>경계(혼합) ${c.mix_pct}%</span>
       <span><i style="background:var(--panel2)"></i>폴드</span>
@@ -3522,13 +3546,16 @@ function rgChartHtml() {
 
 // 실전 기록 문구 — 오픈 차트는 '오픈 비율', 방어 차트는 '방어(콜+3벳) 비율'이다
 function rgHeroTip(c, d) {
+  if (c.allin) return `실전 ${d.opps}회 중 ${d.opens}회 콜 (${d.rate}%)`;
   return c.vs
     ? `실전 ${d.opps}회 중 ${d.opens}회 방어 (${d.rate}% · ${c.verb} ${d.raises}회)`
     : `실전 ${d.opps}회 중 ${d.opens}회 오픈 (${d.rate}%)`;
 }
 function rgHeroNote(c) {
+  const op = esc(rgVsParts(c.vs)[0]);
+  if (c.allin) return `숫자는 ${op}의 오픈 올인만 받았을 때(콜러 없음) 내가 실제로 콜한 비율입니다.`;
   return c.vs
-    ? `숫자는 ${esc(c.vs)}의 오픈 한 번만 받았을 때(림프·콜러 없음) 내가 실제로 방어(콜+${esc(c.verb)})한 비율입니다.`
+    ? `숫자는 ${op}의 오픈 한 번만 받았을 때(림프·콜러 없음) 내가 실제로 방어(콜+${esc(c.verb)})한 비율입니다.`
     : '숫자는 이 스팟에서 내가 실제로 오픈한 비율입니다 (폴드 투 히어로 상황 기준).';
 }
 
@@ -3618,6 +3645,8 @@ async function rgvOpen(pos, stack, vs) {
   } catch (e) { err = String(e); }
   // 끄는 동안 응답이 뒤섞일 수 있다 — 그 사이 다른 칸으로 옮겼으면 버린다
   if (v.pos !== pos || v.vs !== vs || String(v.stack) !== String(stack)) return;
+  // 실패한 칸은 기억해 둔다 — renderRangeView의 '안 받았으면 받아 온다'가 무한 재요청하지 않게
+  v.failKey = (!got || got.error || err) ? [pos, vs, stack].join('|') : '';
   if (got && !got.error) v.cache[key] = got;
   v.chart = got; v.err = err; v.loading = false;
   renderRangeChart();
@@ -3659,6 +3688,94 @@ function rgvSlide(i) {
   // 이 상황엔 없는 스택 — 빈 칸으로 보여준다 (넣는 커맨드와 함께)
   v.stack = a.stack; v.chart = null; v.loading = false; v.err = ''; v.miss = true;
   renderRangeChart();
+}
+
+// ── 액션 카드 바 (GTO 툴처럼 위에서 액션을 눌러 트리를 따라간다) ──
+// 상태는 여전히 (pos, vs, stack) 하나다 — 카드 바는 그걸 '앞자리들이 무엇을 했나'로 펼쳐 보여줄 뿐.
+//   vs 없음 = pos 앞이 전부 폴드 → pos의 오픈 차트
+//   vs 있음 = vs가 레이즈, 그 사이는 폴드 → pos의 방어 차트
+// 데이터는 오픈과 '오픈 한 번에 대한 방어'까지라, 3벳·콜 이후(멀티웨이)로 가는 버튼은 막아 둔다.
+// 스택은 슬라이더 값을 그대로 유지한다 — 그 스택에 차트가 없으면 빈 칸과 캡처 커맨드를 보여준다.
+function rgvGo(pos, vs) {
+  const v = RANGE.view;
+  if (rgvStacks(pos, vs).some(s => String(s.stack) === String(v.stack))) { rgvOpen(pos, v.stack, vs); return; }
+  v.pos = pos; v.vs = vs; v.chart = null; v.loading = false; v.err = ''; v.miss = true;
+  renderRangeChart();
+}
+
+function rgvBarHtml(c) {
+  const v = RANGE.view, st = RANGE.state;
+  const order = st.import_positions.map(p => p.key);         // UTG UTG1 LJ HJ CO BTN SB BB
+  const last = order.length - 1;
+  const [opName, opAllin] = rgVsParts(v.vs);
+  const cur = order.indexOf(v.pos), op = opName ? order.indexOf(opName) : -1;
+  const has = (p, vs) => rgvStacks(p, vs).some(s => String(s.stack) === String(v.stack));
+  // 그 자리의 오픈 차트(이 스택)에 올인이 있나 — 있어야 '올인'으로 여는 갈래가 존재한다
+  const jams = p => rgvStacks(p, '').some(s => String(s.stack) === String(v.stack) && s.has_jam && s.jam_pct > 0.05);
+  const go = (p, vs) => `rgvGo('${p}','${vs}')`;
+  const NA = '아직 지원하지 않는 상황 (3벳·콜 이후 / 멀티웨이)';
+  const WALK = 'BB 워크 — 결정할 게 없습니다';
+  const chip = (label, cls, {sel = false, click = '', off = '', pct = null} = {}) =>
+    `<span class="rgv-chip ${cls}${sel ? ' sel' : ''}${off ? ' off' : ''}"${off ? ` title="${off}"` : ''}${
+      click && !off ? ` onclick="event.stopPropagation();${click}"` : ''}>${label}${
+      pct === null ? '' : `<b>${pct}%</b>`}</span>`;
+  const r1 = x => Math.round(x);
+  return `<div class="rgv-bar">${order.map((p, i) => {
+    let cls = '', chips = '', target = null, note = '';
+    const next = i < last ? order[i + 1] : null;
+    // 이 자리가 '여는' 칩들 (레이즈 / 올인). 고르면 다음 자리가 그 오픈을 받는다
+    const openChips = (sel, pcts = {}) =>
+      chip('레이즈', 'raise', {sel: sel === 'raise', pct: pcts.raise ?? null,
+                               click: sel === 'raise' ? '' : go(next, p)})
+      + (sel === 'allin' || pcts.jam !== undefined || jams(p)
+          ? chip('올인', 'jam', {sel: sel === 'allin', pct: pcts.jam ?? null,
+                                click: sel === 'allin' ? '' : go(next, p + '-allin')}) : '');
+    if (i < cur) {                                          // 이미 액션한 자리
+      cls = 'done';
+      const afterOpen = op >= 0 && i > op;                   // 오픈을 받고 폴드한 자리
+      target = afterOpen ? [p, v.vs] : [p, ''];              // 누르면 '이 자리의 결정'으로 돌아간다
+      if (i === op) {
+        chips = openChips(opAllin ? 'allin' : 'raise')
+              + chip('폴드', 'fold', {click: next && next !== 'BB' ? go(next, '') : '',
+                                     off: next === 'BB' ? WALK : ''});
+      } else if (afterOpen) {                                // 오픈 뒤의 레이즈·콜 = 3벳·콜드콜 — 데이터 없음
+        chips = (opAllin ? chip('콜', 'call', {off: NA}) : chip('3벳', 'raise', {off: NA}))
+              + chip('폴드', 'fold', {sel: true});
+      } else {
+        chips = openChips(null) + chip('폴드', 'fold', {sel: true});
+      }
+    } else if (i === cur) {                                 // 지금 차례 — 차트 전체의 액션 비율
+      cls = 'cur';
+      const pct = c ? c.pct : null, jam = c ? c.jam_pct : 0, call = c ? c.call_pct : 0;
+      const raise = c ? pct - jam - call : null;
+      const foldChip = (click, off) => chip('폴드', 'fold', {pct: c ? r1(100 - pct) : null, click, off});
+      if (!v.vs) {
+        chips = (next ? openChips(null, {raise: c ? r1(raise) : null,
+                                          ...(jam > 0.05 ? {jam: r1(jam)} : {})})
+                      : chip('레이즈', 'raise', {off: '마지막 자리'}))
+              + (call > 0.05 ? chip('림프', 'call', {pct: r1(call), off: NA}) : '')
+              + foldChip(next && next !== 'BB' ? go(next, '') : '', next === 'BB' ? WALK : '');
+      } else if (opAllin) {                                  // 올인을 받았다 — 콜/폴드뿐
+        chips = chip('콜', 'call', {pct: c ? r1(call) : null, off: NA})
+              + foldChip(next ? go(next, v.vs) : '', next ? '' : '마지막 자리');
+      } else {
+        chips = chip(c ? c.verb : '3벳', 'raise', {pct: c ? r1(raise) : null, off: NA})
+              + (jam > 0.05 ? chip('올인', 'jam', {pct: r1(jam), off: NA}) : '')
+              + chip('콜', 'call', {pct: c ? r1(call) : null, off: NA})
+              + foldChip(next ? go(next, v.vs) : '', next ? '' : '마지막 자리');
+      }
+      if (!c) note = '<div class="rgv-cnote">차트 없음</div>';
+    } else {                                                // 아직 차례가 안 온 자리 — 누르면 그 사이는 폴드로
+      cls = 'later';
+      if (v.vs) target = [p, v.vs];
+      else if (p !== 'BB') target = [p, ''];
+      chips = target ? '' : '<div class="rgv-cnote">워크</div>';
+    }
+    if (target && !has(target[0], target[1])) { cls += ' none'; if (cls.includes('later')) note = '<div class="rgv-cnote">차트 없음</div>'; }
+    return `<div class="rgv-card ${cls}"${target ? ` onclick="${go(target[0], target[1])}"` : ''}
+      title="${target ? esc(rgSpot(target[0], target[1])) + (has(target[0], target[1]) ? '' : ' (이 스택 차트 없음)') : ''}">
+      <div class="pn">${p}${i === op ? `<span class="op">${opAllin ? '올인' : '오픈'}</span>` : ''}</div>${chips}${note}</div>`;
+  }).join('')}</div>`;
 }
 
 function rgvToggleRate() { RANGE.view.rate = !RANGE.view.rate; renderRangeChart(); }
@@ -3713,22 +3830,24 @@ function renderRangeView() {
     return;
   }
   const v = RANGE.view;
-  // 가져온 슬롯이 없는 포지션은 아예 목록에 넣지 않는다 (빈 차트를 고를 수 없게)
-  const positions = [...new Set(slots.map(s => s.pos))];
-  if (!v.pos || !positions.includes(v.pos)) {
-    rgvOpen(slots[0].pos, slots[0].stack, slots[0].vs || ''); return;
-  }
-  const scen = rgvScenarios(v.pos);
-  if (!scen.includes(v.vs)) { rgvOpen(v.pos, undefined, scen[0]); return; }
-  const mine = rgvStacks(v.pos, v.vs);
   const axis = rgvAxis();
-  const slotOf = stack => mine.find(m => String(m.stack) === String(stack));
-  // 슬라이더로 일부러 고른 빈 스택(v.miss)만 그대로 두고, 그 밖에 없는 스택이면 있는 차트로 옮긴다
-  if (!slotOf(v.stack) && !(v.miss && axis.some(a => String(a.stack) === String(v.stack)))) {
-    rgvOpen(v.pos, mine[0].stack, v.vs); return;
+  // 처음 열 때는 GTO 툴처럼 첫 액션(UTG 오픈)부터. 스택은 UTG 차트가 있는 가장 작은 것
+  if (!v.pos) {
+    v.pos = 'UTG'; v.vs = '';
+    v.stack = ((rgvStacks('UTG', '')[0]) || axis[0]).stack;
   }
+  if (!axis.some(a => String(a.stack) === String(v.stack))) v.stack = axis[0].stack;
+  const mine = rgvStacks(v.pos, v.vs);
+  const slotOf = stack => mine.find(m => String(m.stack) === String(stack));
   const idx = axis.findIndex(a => String(a.stack) === String(v.stack));
   const cur = axis[idx], curSlot = slotOf(v.stack);
+  // 고른 칸에 차트가 있는데 아직 안 받았으면 받아 온다 (카드·슬라이더 이동은 상태만 바꾸고 여기서 연다)
+  const ch = v.chart;
+  if (curSlot && !v.loading && v.failKey !== [v.pos, v.vs, v.stack].join('|')
+      && !(ch && !ch.error && ch.pos === v.pos && (ch.vs || '') === v.vs
+           && String(ch.stack) === String(v.stack))) {
+    rgvOpen(v.pos, v.stack, v.vs); return;
+  }
   // 스택은 순서가 있는 축이라 슬라이더로 — 끌면 레인지가 변하는 게 그대로 보인다.
   // 눈금 간격은 bb 값이 아니라 **인덱스** 기준이다 (13·15·20…35는 간격이 들쭉날쭉하다).
   const ticks = axis.length < 2 ? '' : axis.map((a, i) => `
@@ -3736,16 +3855,8 @@ function renderRangeView() {
           class="${i === idx ? 'on' : ''}${slotOf(a.stack) ? '' : ' miss'}" onclick="rgvSlide(${i})"
           ${slotOf(a.stack) ? '' : 'title="이 상황엔 아직 없는 스택"'}
       >${a.bb === null ? esc(a.stack_label) : a.bb}</span>`).join('');
-  const picker = `<div class="qz-tgrow" style="align-items:flex-end">
-    <span class="qz-tglabel">포지션</span>
-    <select class="qz-sel" onchange="rgvOpen(this.value)">
-      ${positions.map(p => `<option value="${esc(p)}" ${p === v.pos ? 'selected' : ''}>${esc(p)}</option>`).join('')}
-    </select>
-    ${scen.length > 1 || scen[0] ? `<span class="qz-tglabel">상황</span>
-      <select class="qz-sel" onchange="rgvOpen(RANGE.view.pos, undefined, this.value)">
-        ${scen.map(x => `<option value="${esc(x)}" ${x === v.vs ? 'selected' : ''}>${
-          x ? 'vs ' + esc(x) + ' 오픈' : '오픈 (폴드 투 나)'}</option>`).join('')}
-      </select>` : ''}
+  const picker = `${rgvBarHtml(curSlot && ch && !ch.error ? ch : null)}
+  <div class="qz-tgrow" style="align-items:flex-end">
     ${axis.length < 2 ? `<span class="qz-tglabel">스택</span><b class="rgv-bb">${esc(cur.stack_label)}</b>` : `
       <div class="rgv-stack">
         <div class="rgv-stack-top"><span class="qz-tglabel">스택</span>
@@ -3771,8 +3882,8 @@ function renderRangeView() {
   else body = `
     <div class="rgv-head">
       <h3>${esc(c.label)}</h3>
-      <span class="pct">${c.has_jam || c.has_call ? '액션' : esc(c.verb)} ${c.pct}%</span>
-      ${c.has_jam || c.has_call ? `<span style="font-size:12px">${rgvRaiseName(c)} ${
+      <span class="pct">${c.allin ? '콜' : c.has_jam || c.has_call ? '액션' : esc(c.verb)} ${c.pct}%</span>
+      ${(c.has_jam || c.has_call) && !c.allin ? `<span style="font-size:12px">${rgvRaiseName(c)} ${
         Math.round((c.pct - c.jam_pct - c.call_pct) * 10) / 10}%${
         c.has_jam ? ` · <b style="color:#b8463a">올인 ${c.jam_pct}%</b>` : ''}${
         c.has_call ? ` · <b style="color:#4f9a5c">콜 ${c.call_pct}%</b>` : ''}</span>` : ''}
@@ -3784,7 +3895,7 @@ function renderRangeView() {
     ${rgvGridHtml(c)}
     <div class="rg-legend" style="margin-top:10px">
       ${c.has_jam ? '<span><i style="background:#72271f"></i>올인</span>' : ''}
-      <span><i style="background:#dd4c45"></i>${c.has_jam || c.has_call ? rgvRaiseName(c) : esc(c.verb)}</span>
+      ${c.allin ? '' : `<span><i style="background:#dd4c45"></i>${c.has_jam || c.has_call ? rgvRaiseName(c) : esc(c.verb)}</span>`}
       ${c.has_call ? `<span><i style="background:#4f9a5c"></i>${esc(c.call_name)}</span>` : ''}
       <span><i style="background:#4d7bb3"></i>폴드</span>
       <span>칸이 가로로 채워진 비율 = 그 조합의 액션 빈도</span>
@@ -3831,7 +3942,9 @@ document.addEventListener('keydown', e => {
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
   const k = e.key.toLowerCase();
-  if (RANGE.status === 'ready' && (k === 'o' || k === 'r')) { e.preventDefault(); rgAnswer('open'); }
+  // 오픈 올인을 받은 문제엔 레이즈 선택지가 없다 — 없는 선택지는 키로도 못 고른다
+  if (RANGE.status === 'ready' && (k === 'o' || k === 'r') && RANGE.q &&
+      RANGE.q.choices.some(c => c.id === 'open')) { e.preventDefault(); rgAnswer('open'); }
   else if (RANGE.status === 'ready' && k === 'f') { e.preventDefault(); rgAnswer('fold'); }
   else if (RANGE.status === 'ready' && k === 'c' && RANGE.q &&
            RANGE.q.choices.some(c => c.id === 'call')) { e.preventDefault(); rgAnswer('call'); }
