@@ -252,6 +252,14 @@ a delete-back-to-builtin button. `delete_chart` removes a custom slot.
 "차트와 어긋난 칸" 판정은 `chart_view`가 셀마다 `dev`로 내려준다 — 방어 차트는 콜 칸도 '액션 칸'이라
 규칙이 달라서, 프론트 두 곳에 규칙을 복사해 두지 않는다.
 
+**상대가 어떻게 들어왔나 — `vs` 꼬리 (`ranges.vs_parts` → (오프너, `raise`|`allin`|`limp`)).** 꼬리 없음 =
+오픈 레이즈를 받음, `-allin` = 오픈 올인을 받음, `-limp` = **SB 림프를 받은 BB**(`parse_vs`가 SB→BB만 허용 —
+MTT 트리에서 오픈 림프는 SB뿐). 림프를 받은 BB엔 폴드가 없어 액션이 레이즈(아이솔)/체크다: `import_chart`가
+**비폴드에서 콜 몫(체크가 초록으로 읽힌 것)을 빼서** 레이즈만 남기고, `chart()`가 `fold_name: "체크"`를 실어
+보내 드릴 버튼·채점 문구·범례가 '폴드' 대신 '체크'를 쓴다. 실전 기록은 `convert.hand_meta`의 **`pf_limper`**
+(레이즈 없이 딱 한 명만 림프하고 히어로에게 왔을 때 그 자리)로 세고, 비율은 아이솔 레이즈 비율이다.
+`grab_chart --watch`는 SB 오픈 차트에 림프가 있는 스택에만 'SB 림프 vs BB' 칸을 넣는다(`plan(limps=…)`).
+
 **오픈 올인을 받은 방어 차트 — `vs`에 `-allin` 꼬리.** 오픈 레이즈를 받은 것과 오픈 올인을 받은 것은
 GTO 툴에서도 다른 노드이고 레인지가 완전히 다르다(남은 액션이 콜/폴드뿐). 그래서 `vs`를 `"UTG"`(레이즈) /
 `"UTG-allin"`(올인)으로 가른다(`ranges.ALLIN`, `vs_parts`, `_norm_vs` — **`vs`에 `_norm_pos`를 직접 쓰지
@@ -366,7 +374,7 @@ No payout ladder is modeled — don't invent one.
 ### The key invariant: metadata is frozen at import time
 
 When a hand is imported, `convert.hand_meta()` computes derived fields (`vpip`, `pfr`, `rfi`,
-`rfi_opp`, `pf_action`, `pf_faced`, `pf_opener`, `pf_opener_allin`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
+`rfi_opp`, `pf_action`, `pf_faced`, `pf_opener`, `pf_opener_allin`, `pf_limper`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
 the DB record alongside the original `raw` text and rendered `markdown`. The aggregate queries in
 `store.py` (`stats`, `hand_grid`) read these frozen fields directly — they never re-parse `raw`.
 

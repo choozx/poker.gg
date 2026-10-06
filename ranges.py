@@ -216,25 +216,36 @@ _CHART_CACHE = {}
 # 오픈을 받은 방어 차트(vs 오픈)에서 빨강이 뜻하는 액션. 오픈 차트의 '오픈/올인' 자리에 들어간다.
 VS_VERB = "3벳"
 
-# 오픈 **올인**을 받은 방어 차트는 상대 이름 뒤에 이 꼬리를 단다 ('UTG-allin'). 오픈 레이즈를 받은
-# 것과는 레인지가 완전히 다르고(남은 액션이 콜/폴드뿐), GTO 툴에서도 다른 노드다. 꼬리 없는
-# 'UTG'는 예전 그대로 오픈 레이즈를 받은 차트라 기존 데이터는 손댈 게 없다.
-ALLIN = "-allin"
+# 상대(오프너)가 **어떻게 들어왔나**를 이름 뒤 꼬리로 단다. 셋 다 GTO 툴에서 서로 다른 노드고
+# 레인지가 완전히 다르다:
+#   'UTG'       오픈 레이즈를 받음 → 3벳/콜/폴드   (꼬리 없음 — 예전 키 그대로라 기존 데이터는 그대로)
+#   'UTG-allin' 오픈 올인을 받음   → 콜/폴드
+#   'SB-limp'   SB 림프를 받은 BB  → 레이즈/체크   (폴드가 없다 — 공짜로 플랍을 볼 수 있으니)
+ALLIN, LIMP = "-allin", "-limp"
+_TAILS = {ALLIN: "allin", LIMP: "limp"}
+KIND_NAME = {"raise": "오픈", "allin": "올인", "limp": "림프"}
+_KIND_ORDER = {"raise": 0, "allin": 1, "limp": 2}
 
 
 def vs_parts(vs):
-    """'UTG-allin' → ('UTG', True) / 'UTG' → ('UTG', False) / None → (None, False)."""
+    """'UTG-allin' → ('UTG', 'allin') / 'SB-limp' → ('SB', 'limp') / 'UTG' → ('UTG', 'raise') /
+    None → (None, None)."""
     if not vs:
-        return None, False
+        return None, None
     vs = str(vs)
-    return (vs[:-len(ALLIN)], True) if vs.lower().endswith(ALLIN) else (vs, False)
+    for tail, kind in _TAILS.items():
+        if vs.lower().endswith(tail):
+            return vs[:-len(tail)], kind
+    return vs, "raise"
 
 
 def _norm_vs(vs):
     """상대 표기 정규화 — 포지션 부분만 _norm_pos (꼬리까지 대문자가 되면 키가 갈린다)."""
-    op, allin = vs_parts(vs)
+    op, kind = vs_parts(vs)
     op = _norm_pos(op) if op else None
-    return (op + ALLIN if allin else op) if op else None
+    if not op:
+        return None
+    return op + next((t for t, k in _TAILS.items() if k == kind), "")
 
 
 def _ckey(pos, slot, vs=None):
@@ -260,11 +271,14 @@ def parse_vs(pos, vs):
         if pos == "BB":
             return None, "BB는 오픈 상황이 없습니다 — 상대(오프너)를 지정하세요 (예: vs BTN)"
         return None, None
-    op, _ = vs_parts(vs)
+    op, kind = vs_parts(vs)
     if op not in POS_8MAX or pos not in POS_8MAX:
         return None, f"알 수 없는 상대 포지션: {op} ({' / '.join(POS_8MAX[:-1])} 중 하나)"
     if POS_8MAX.index(op) >= POS_8MAX.index(pos):
         return None, f"오프너는 {pos}보다 먼저 액션하는 자리여야 합니다 (받은 값: {op})"
+    if kind == "limp" and (op, pos) != ("SB", "BB"):
+        # 오픈 림프는 SB만 한다 (GTO 툴 MTT 트리) — 림프를 받는 건 BB뿐
+        return None, "림프를 받은 차트는 BB vs SB 림프뿐입니다"
     return vs, None
 
 
@@ -417,7 +431,7 @@ def chart(pos, stack, db=None, vs=None):
     내장 차트가 deep 한 장뿐이라, short를 가져오면 short가 그 자리를 차지한다."""
     pos = _norm_pos(pos)
     vs = _norm_vs(vs)
-    facing_allin = vs_parts(vs)[1]
+    kind = vs_parts(vs)[1]
     if pos not in RFI and pos not in POS_8MAX:
         return None
     # 8맥스 이름·방어 차트는 내장 차트가 없다 — 가져온 것만
@@ -463,20 +477,27 @@ def chart(pos, stack, db=None, vs=None):
         "call_pct": round(call_pct, 1),
         # 15bb 미만은 레이즈가 아니라 푸시폴드 구간이라 묻는 액션 자체가 다르다.
         # 방어 차트는 빨강이 3벳이다 (짧은 스택이면 그 3벳이 곧 올인 — jam으로 따로 그려진다)
-        # 오픈 올인을 받은 차트엔 레이즈가 없다 — 비폴드가 전부 콜이다
-        "verb": "콜" if facing_allin else VS_VERB if vs else ("올인" if bucket == "pf" else "오픈"),
-        "allin": facing_allin,
+        # 오픈 올인을 받은 차트엔 레이즈가 없다 — 비폴드가 전부 콜이다.
+        # 림프를 받은 BB의 빨강은 아이솔레이션 레이즈다
+        "verb": ("콜" if kind == "allin" else "레이즈" if kind == "limp" else VS_VERB) if vs
+                else ("올인" if bucket == "pf" else "오픈"),
+        "allin": kind == "allin",
+        "limp": kind == "limp",
         # 콜(초록)의 뜻도 갈린다: 폴드 투 히어로에선 림프, 오픈을 받았으면 그냥 콜
         "call_name": "콜" if vs else "콜(림프)",
+        # 림프를 받은 BB엔 폴드가 없다 — 액션 안 하는 쪽이 체크다
+        "fold_name": "체크" if kind == "limp" else "폴드",
         "label": f"{spot_name(pos, vs)} · "
                  f"{slot_label(bb_used if bb_req is None else bb_req, bucket)}",
     }
 
 
 def spot_name(pos, vs=None):
-    """'BB vs BTN' / 'BB vs BTN 올인' / 'UTG' — 차트·문제·채점 문구에서 그 스팟을 부르는 이름."""
-    op, allin = vs_parts(vs)
-    return f"{pos} vs {op}{' 올인' if allin else ''}" if op else pos
+    """'BB vs BTN' / 'BB vs BTN 올인' / 'BB vs SB 림프' / 'UTG' — 차트·문제·채점 문구에서 부르는 이름."""
+    op, kind = vs_parts(vs)
+    if not op:
+        return pos
+    return f"{pos} vs {op}" + ("" if kind == "raise" else " " + KIND_NAME[kind])
 
 
 def verdict(pos, bucket, combo, db=None, vs=None):
@@ -593,7 +614,8 @@ def import_chart(db, pos, stack, text, source=None, jam=None, call=None, vs=None
         jam_w = {k: round(min(v, weights.get(k, 0.0)), 4) for k, v in jw.items()
                  if weights.get(k, 0.0) > 0}
     call_w = {}
-    if vs and vs_parts(vs)[1]:
+    kind = vs_parts(vs)[1]
+    if kind == "allin":
         # 오픈 올인을 받으면 남은 액션은 콜뿐이다 — 캡처 색이 무엇이든 비폴드는 전부 콜로 본다
         # (GTO 툴이 이 콜을 빨강으로 그려도 '3벳'으로 잘못 읽히지 않게)
         jam_w, call = {}, None
@@ -604,6 +626,15 @@ def import_chart(db, pos, stack, text, source=None, jam=None, call=None, vs=None
         # 콜 몫도 합계를 넘을 수 없고, 올인 몫과는 겹치지 않는다
         call_w = {k: round(min(v, weights.get(k, 0.0) - jam_w.get(k, 0.0)), 4)
                   for k, v in cw.items() if weights.get(k, 0.0) > jam_w.get(k, 0.0)}
+    if kind == "limp":
+        # 림프를 받은 BB는 레이즈냐 체크냐다 — 체크가 초록(콜 색)으로 읽혔든 파랑으로 읽혔든
+        # '레이즈가 아닌 쪽'으로 접는다. 그러면 드릴은 레이즈/체크 2지선다가 된다
+        weights = {k: round(w - call_w.get(k, 0.0), 4) for k, w in weights.items()}
+        weights = {k: w for k, w in weights.items() if w > 0.005}
+        jam_w = {k: min(v, weights[k]) for k, v in jam_w.items() if k in weights}
+        call_w = {}
+        if not weights:
+            return {"error": "레이즈(빨강)를 하나도 읽지 못했습니다 — BB vs SB 림프 화면이 맞나요?"}
     _state_mut(db)["charts"][_ckey(pos, slot, vs)] = {
         "weights": {k: round(v, 4) for k, v in sorted(weights.items())},
         "jam": {k: jam_w[k] for k in sorted(jam_w)},
@@ -647,8 +678,8 @@ def custom_slots(db):
                     "source": c.get("source"), "ts": c.get("ts")})
     order = {p: i for i, p in enumerate(POS_ORDER)}
     out.sort(key=lambda s: (order.get(s["pos"], 99),
-                            (order.get(vs_parts(s["vs"])[0], 99), vs_parts(s["vs"])[1])
-                            if s["vs"] else (-1, False),
+                            (order.get(vs_parts(s["vs"])[0], 99), _KIND_ORDER[vs_parts(s["vs"])[1]])
+                            if s["vs"] else (-1, -1),
                             -(s["bb"] if s["bb"] is not None else -1)))
     return out
 
@@ -718,6 +749,19 @@ def _hero_vs(db):
         return _HERO_VS_CACHE["data"]
     data = {}
     for r in hands.values():
+        if r.get("pf_limper") and r.get("pf_faced") == "limp":
+            # SB 혼자 림프한 팟의 BB — '방어' 대신 아이솔레이션 레이즈를 센다 (체크가 나머지)
+            pos = _pos_8max(r.get("hero_pos"), r.get("players"))
+            sb = store._stack_bucket(r.get("stack_bb"))
+            combo = store._combo(r.get("hero_cards") or [])
+            if pos and sb and combo:
+                e = data.setdefault((pos, sb, _pos_8max(r.get("pf_limper"), r.get("players")) + LIMP,
+                                     combo), [0, 0, 0])
+                e[1] += 1
+                if r.get("pf_action") in ("open", "3bet", "allin"):
+                    e[0] += 1
+                    e[2] += 1
+            continue
         if not r.get("pf_opener") or r.get("pf_faced") != "raise":
             continue
         n = r.get("players")
@@ -776,7 +820,7 @@ def _vs_list(db, pos):
     """그 포지션에 가져온 방어 차트의 상대(오프너) 목록 — 행동 순서대로."""
     got = {vs for k in _charts(db) for p, _, vs in [_split_key(k)] if p == pos and vs}
     key = lambda v: (POS_8MAX.index(vs_parts(v)[0]) if vs_parts(v)[0] in POS_8MAX else 99,
-                     vs_parts(v)[1])
+                     _KIND_ORDER[vs_parts(v)[1]])
     return sorted(got, key=key)
 
 
@@ -862,9 +906,13 @@ def next_question(db, positions=None, stacks=None):
     pos, bucket, vs, combo = random.choices(pool, weights=weights)[0]
     c = chart(pos, bucket, db, vs)
     verb = c["verb"]
-    op, facing_allin = vs_parts(vs)
-    if vs:
-        prompt = f"{op} {'올인' if facing_allin else '오픈'} — 나머지는 폴드하고 나에게 왔습니다. "
+    op, kind = vs_parts(vs)
+    facing_allin = kind == "allin"
+    if kind == "limp":
+        prompt = f"{op} 림프 — 나에게 왔습니다. "
+        raise_label = "레이즈(아이솔)"
+    elif vs:
+        prompt = f"{op} {KIND_NAME[kind]} — 나머지는 폴드하고 나에게 왔습니다. "
         raise_label = verb + ("(올인)" if bucket == "pf" else "")
     else:
         prompt = ("헤즈업, 상대 BB. " if pos == "SB(BTN)"
@@ -874,7 +922,7 @@ def next_question(db, positions=None, stacks=None):
         "pos": pos, "vs": vs, "stack": bucket, "combo": combo,
         "cards": _deal(combo),
         "pos_label": POS_KO.get(pos, pos),
-        "vs_label": f"vs {op} {'올인' if facing_allin else '오픈'}" if vs else None,
+        "vs_label": f"vs {op} {KIND_NAME[kind]}" if vs else None,
         "stack_label": STACK_LABEL.get(bucket, "?"),
         "verb": verb,
         "chart_source": c.get("source"),
@@ -884,7 +932,7 @@ def next_question(db, positions=None, stacks=None):
         "choices": [
             *([] if facing_allin else [{"id": "open", "label": raise_label}]),
             *([{"id": "call", "label": c["call_name"]}] if c["call"] else []),
-            {"id": "fold", "label": "폴드"},
+            {"id": "fold", "label": c["fold_name"]},
         ],
     }}
 
@@ -905,22 +953,22 @@ def grade(db, pos, bucket, combo, choice, record=True, vs=None):
         return {"error": f"알 수 없는 조합: {combo}"}
     freq = c["weights"].get(combo, 0.0)
     call_f = min(c["call"].get(combo, 0.0), freq)
-    v, verb = _class(freq, call_f), c["verb"]
+    v, verb, fold = _class(freq, call_f), c["verb"], c["fold_name"]
     if c["call"]:
         return _grade3(db, c, pos, bucket, combo, choice, freq, call_f, v, record)
     # 0/1이 아닌 빈도는 그 자체가 정보다 — 가져온 차트에서만 나온다
     fs = f" (차트 빈도 {freq * 100:.0f}% {verb})" if 0.0 < freq < 1.0 else ""
     if v == "mix":
         g = GRADE_MIX
-        head = f"{combo}는 이 구간의 **경계 핸드**입니다{fs} — {verb}도 폴드도 됩니다."
+        head = f"{combo}는 이 구간의 **경계 핸드**입니다{fs} — {verb}도 {fold}도 됩니다."
     elif choice == v:
         g = GRADE_OK
         head = (f"{combo}는 차트상 **{verb}** 구간입니다{fs}." if v == "open"
-                else f"{combo}는 차트상 **폴드** 구간입니다{fs}.")
+                else f"{combo}는 차트상 **{fold}** 구간입니다{fs}.")
     else:
         g = GRADE_BAD
-        head = (f"{combo}는 차트상 **{verb}** 구간인데 폴드했습니다{fs}." if v == "open"
-                else f"{combo}는 차트상 **폴드** 구간인데 {verb}했습니다{fs}.")
+        head = (f"{combo}는 차트상 **{verb}** 구간인데 {fold}했습니다{fs}." if v == "open"
+                else f"{combo}는 차트상 **{fold}** 구간인데 {verb}했습니다{fs}.")
 
     lines = [head,
              f"{spot_name(c['pos'], c['vs'])} · {STACK_LABEL.get(bucket, '?')} {verb} 레인지는 상위 "
@@ -933,7 +981,7 @@ def _grade3(db, c, pos, bucket, combo, choice, freq, call_f, v, record):
     75% 이상 [좋음] / 25% 초과 [무난] / 그 이하 [실수] (2지선다 규칙을 셋으로 늘린 것)."""
     verb = c["verb"]
     d = _dist(freq, call_f)
-    name = {"open": verb, "call": c["call_name"], "fold": "폴드"}
+    name = {"open": verb, "call": c["call_name"], "fold": c["fold_name"]}
     p = d.get(choice, 0.0)
     g = GRADE_OK if p >= OPEN_HI else (GRADE_MIX if p > FOLD_LO else GRADE_BAD)
     mix = " · ".join(f"{name[k]} {d[k] * 100:.0f}%" for k in ("open", "call", "fold")
@@ -962,9 +1010,9 @@ def _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record):
                         else f" ({STACK_LABEL.get(c['chart_stack'])} 차트로 대체)"))
     vs = c["vs"]
     rec = hero_record(db, pos, bucket, combo, vs)
-    if rec and vs and c["allin"]:
+    if rec and vs and (c["allin"] or c["limp"]):
         lines.append(f"실전 기록: 이 스팟에서 {combo} {rec['opps']}회 중 "
-                     f"{rec['opens']}회 콜 (**{rec['rate']}%**).")
+                     f"{rec['opens']}회 {verb} (**{rec['rate']}%**).")
     elif rec and vs:
         lines.append(f"실전 기록: 이 스팟에서 {combo} {rec['opps']}회 중 "
                      f"{rec['opens']}회 방어 (**{rec['rate']}%** · 그중 {verb} {rec['raises']}회).")
@@ -974,6 +1022,7 @@ def _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record):
     if record:
         record_attempt(db, pos, bucket, combo, choice, g, vs)
     return {"grade": g, "correct": v, "verb": verb, "call_name": c["call_name"],
+            "fold_name": c["fold_name"],
             "vs": vs, "freq": round(freq, 3),
             "call": round(min(c["call"].get(combo, 0.0), freq), 3),
             "text": "\n".join(lines), "hero": rec, "source": c.get("source"),
@@ -995,7 +1044,7 @@ def chart_view(db, pos, stack, vs=None):
         return {"error": "해당 포지션·스택 차트가 없습니다."}
     # 실전 기록은 버킷 단위로만 쌓인다 (핸드마다 스택이 제각각이라 bb로는 안 묶인다)
     hero = hero_cells(db, pos, c["bucket"], c["vs"])
-    acts = ("open", "call") if c["vs"] else ("open",)
+    acts = ("open", "call") if c["vs"] and not c["limp"] else ("open",)
     cells = {}
     for combo in all_combos():
         w = c["weights"].get(combo, 0.0)
@@ -1015,7 +1064,8 @@ def chart_view(db, pos, stack, vs=None):
             if c["vs"]:
                 cell["raises"] = e[2]
         cells[combo] = cell
-    return {"pos": c["pos"], "vs": c["vs"], "allin": c["allin"], "call_name": c["call_name"],
+    return {"pos": c["pos"], "vs": c["vs"], "allin": c["allin"], "limp": c["limp"],
+            "fold_name": c["fold_name"], "call_name": c["call_name"],
             "stack": c["stack"], "chart_stack": c["chart_stack"],
             "bucket": c["bucket"], "bb": c["bb"],
             "label": c["label"], "verb": c["verb"], "source": c.get("source"),
@@ -1090,7 +1140,8 @@ def state_view(db):
         # 방어 차트의 상대(오프너) 선택지 — BB는 오프너가 될 수 없다. 오픈 레이즈/오픈 올인을 따로
         "import_vs": [{"key": p + tail, "label": f"vs {p} {name}", "n": None}
                       for p in POS_8MAX[:-1]
-                      for tail, name in (("", "오픈"), (ALLIN, "올인"))],
+                      for tail, name in (("", "오픈"), (ALLIN, "올인"))]
+                     + [{"key": "SB" + LIMP, "label": "vs SB 림프", "n": None}],
         "stacks": [{"key": s, "label": STACK_LABEL[s], "n": None} for s in STACK_ORDER],
         "personalized": personalized(db),
         # 방어 차트가 있는데 이게 False면 '--rebuild 하면 방어 기록도 겹쳐진다' 안내를 띄운다

@@ -487,13 +487,15 @@ def hand_meta(h, hero="Hero"):
     #  pf_opener = 히어로가 **오픈 하나만** 받았을 때(앞에 레이즈 1번, 콜·림프 없음) 그 오프너의
     #   포지션. 림프·3벳·콜러가 낀 팟은 방어 차트가 전제하는 상황이 아니라 None이다.
     #   BB 방어 같은 vs 오픈 차트(ranges)에 내 실전 기록을 겹쳐 보는 데 쓴다.
+    #  pf_limper = 레이즈 없이 **딱 한 명만 림프(콜)**하고 히어로에게 왔을 때 그 사람의 포지션
+    #   (MTT 트리에선 사실상 SB 림프 → BB). 'BB vs SB 림프' 차트에 내 기록을 겹쳐 보는 데 쓴다.
     #  pf_opener_allin = 그 오픈이 올인이었나. 오픈 레이즈를 받은 것과 오픈 올인을 받은 것은
     #   레인지가 완전히 다른 상황이라(올인엔 콜/폴드뿐) 방어 차트도 따로다. pf_opener가 None이면 None.
     rfi_opp = rfi = False
     pf_action = "fold"
-    pf_faced = pf_opener = pf_opener_allin = None
+    pf_faced = pf_opener = pf_opener_allin = pf_limper = None
     prior_raise = prior_vol = False
-    raisers, n_vol = [], 0
+    raisers, entrants, n_vol = [], [], 0
     for a in h.actions:
         if a.street != "preflop":
             break
@@ -505,6 +507,8 @@ def hand_meta(h, hero="Hero"):
             if len(raisers) == 1 and n_vol == 1:
                 pf_opener = next((p.position for p in h.players if p.name == raisers[0][0]), None)
                 pf_opener_allin = raisers[0][1] == "allin" if pf_opener else None
+            elif not raisers and n_vol == 1 and entrants[0][1] == "calls":
+                pf_limper = next((p.position for p in h.players if p.name == entrants[0][0]), None)
             if a.verb in ("raises", "bets"):
                 pf_action = "3bet" if prior_raise else "open"
             elif a.verb == "allin":
@@ -519,6 +523,7 @@ def hand_meta(h, hero="Hero"):
         if a.verb in ("calls", "bets", "raises", "allin"):
             prior_vol = True                          # 앞에 자발적 참여(콜/레이즈)가 있었음
             n_vol += 1
+            entrants.append((a.player, a.verb))
     # 핸드 시작 시 히어로 스택(bb) — 스택 깊이 필터용
     stack_bb = round(hero_p.chips / h.bb, 1) if hero_p and h.bb else None
     net_bb = round(net / h.bb, 1) if h.bb else None
@@ -547,6 +552,7 @@ def hand_meta(h, hero="Hero"):
         "pf_faced": pf_faced,
         "pf_opener": pf_opener,
         "pf_opener_allin": pf_opener_allin,
+        "pf_limper": pf_limper,
         "stack_bb": stack_bb,
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,

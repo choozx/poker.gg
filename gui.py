@@ -3327,12 +3327,16 @@ async function rgImport() {
 
 // 'BB vs BTN' / 'UTG' — 서버 ranges.spot_name과 같은 이름
 function rgSpot(pos, vs) {
-  const [op, allin] = rgVsParts(vs);
-  return op ? `${pos} vs ${op}${allin ? ' 올인' : ''}` : pos;
+  const [op, kind] = rgVsParts(vs);
+  return op ? `${pos} vs ${op}${kind === 'raise' ? '' : ' ' + RG_KIND[kind]}` : pos;
 }
-// 'UTG-allin' → ['UTG', true] — 오픈 올인을 받은 방어 차트 (ranges.vs_parts와 같은 규칙)
+// 상대가 어떻게 들어왔나 — 'UTG' 레이즈 / 'UTG-allin' 올인 / 'SB-limp' 림프 (ranges.vs_parts와 같은 규칙)
+const RG_KIND = {raise: '오픈', allin: '올인', limp: '림프'};
 function rgVsParts(vs) {
-  return vs && vs.endsWith('-allin') ? [vs.slice(0, -6), true] : [vs || '', false];
+  if (!vs) return ['', null];
+  if (vs.endsWith('-allin')) return [vs.slice(0, -6), 'allin'];
+  if (vs.endsWith('-limp')) return [vs.slice(0, -5), 'limp'];
+  return [vs, 'raise'];
 }
 
 async function rgDeleteChart(pos, stack, vs) {
@@ -3496,7 +3500,7 @@ function rgResultHtml() {
       <span class="g qz-g-${r.grade}">${r.grade}</span>
       <span style="font-size:13px;font-weight:500;color:var(--dim)">
         차트 정답: ${r.correct === 'open' ? r.verb : r.correct === 'call' ? r.call_name
-          : (r.correct === 'mix' ? '혼합(경계)' : '폴드')}</span>
+          : (r.correct === 'mix' ? '혼합(경계)' : esc(r.fold_name || '폴드'))}</span>
     </div>
     <div class="why">${mdToHtml(r.text)}</div>
     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
@@ -3536,7 +3540,7 @@ function rgChartHtml() {
         ? Math.round((c.pct - c.call_pct) * 10) / 10 : c.pct}%</span>`}
       ${c.has_call ? `<span><i style="background:${BG.call}"></i>${esc(c.call_name)} ${c.call_pct}%</span>` : ''}
       <span><i style="background:${BG.mix}"></i>경계(혼합) ${c.mix_pct}%</span>
-      <span><i style="background:var(--panel2)"></i>폴드</span>
+      <span><i style="background:var(--panel2)"></i>${esc(c.fold_name || '폴드')}</span>
       <span><i style="box-shadow:inset 0 0 0 1px #ff6b7d"></i>내 실전 기록이 차트와 어긋난 칸</span>
     </div>
     <div class="grid-wrap"><table class="hgrid">${rows}</table></div>
@@ -3546,7 +3550,7 @@ function rgChartHtml() {
 
 // 실전 기록 문구 — 오픈 차트는 '오픈 비율', 방어 차트는 '방어(콜+3벳) 비율'이다
 function rgHeroTip(c, d) {
-  if (c.allin) return `실전 ${d.opps}회 중 ${d.opens}회 콜 (${d.rate}%)`;
+  if (c.allin || c.limp) return `실전 ${d.opps}회 중 ${d.opens}회 ${c.verb} (${d.rate}%)`;
   return c.vs
     ? `실전 ${d.opps}회 중 ${d.opens}회 방어 (${d.rate}% · ${c.verb} ${d.raises}회)`
     : `실전 ${d.opps}회 중 ${d.opens}회 오픈 (${d.rate}%)`;
@@ -3554,6 +3558,7 @@ function rgHeroTip(c, d) {
 function rgHeroNote(c) {
   const op = esc(rgVsParts(c.vs)[0]);
   if (c.allin) return `숫자는 ${op}의 오픈 올인만 받았을 때(콜러 없음) 내가 실제로 콜한 비율입니다.`;
+  if (c.limp) return `숫자는 ${op} 혼자 림프했을 때 내가 실제로 레이즈(아이솔)한 비율입니다.`;
   return c.vs
     ? `숫자는 ${op}의 오픈 한 번만 받았을 때(림프·콜러 없음) 내가 실제로 방어(콜+${esc(c.verb)})한 비율입니다.`
     : '숫자는 이 스팟에서 내가 실제로 오픈한 비율입니다 (폴드 투 히어로 상황 기준).';
@@ -3707,7 +3712,8 @@ function rgvBarHtml(c) {
   const v = RANGE.view, st = RANGE.state;
   const order = st.import_positions.map(p => p.key);         // UTG UTG1 LJ HJ CO BTN SB BB
   const last = order.length - 1;
-  const [opName, opAllin] = rgVsParts(v.vs);
+  const [opName, opKind] = rgVsParts(v.vs);
+  const opAllin = opKind === 'allin', opLimp = opKind === 'limp';
   const cur = order.indexOf(v.pos), op = opName ? order.indexOf(opName) : -1;
   const has = (p, vs) => rgvStacks(p, vs).some(s => String(s.stack) === String(v.stack));
   // 그 자리의 오픈 차트(이 스택)에 올인이 있나 — 있어야 '올인'으로 여는 갈래가 존재한다
@@ -3735,7 +3741,8 @@ function rgvBarHtml(c) {
       const afterOpen = op >= 0 && i > op;                   // 오픈을 받고 폴드한 자리
       target = afterOpen ? [p, v.vs] : [p, ''];              // 누르면 '이 자리의 결정'으로 돌아간다
       if (i === op) {
-        chips = openChips(opAllin ? 'allin' : 'raise')
+        chips = openChips(opLimp ? null : opAllin ? 'allin' : 'raise')
+              + (opLimp ? chip('림프', 'call', {sel: true}) : '')
               + chip('폴드', 'fold', {click: next && next !== 'BB' ? go(next, '') : '',
                                      off: next === 'BB' ? WALK : ''});
       } else if (afterOpen) {                                // 오픈 뒤의 레이즈·콜 = 3벳·콜드콜 — 데이터 없음
@@ -3753,8 +3760,14 @@ function rgvBarHtml(c) {
         chips = (next ? openChips(null, {raise: c ? r1(raise) : null,
                                           ...(jam > 0.05 ? {jam: r1(jam)} : {})})
                       : chip('레이즈', 'raise', {off: '마지막 자리'}))
-              + (call > 0.05 ? chip('림프', 'call', {pct: r1(call), off: NA}) : '')
+              // SB 림프 → BB 차트로 간다 (다른 자리의 오픈 림프는 MTT 트리에 없다)
+              + (call > 0.05 ? chip('림프', 'call', {pct: r1(call),
+                  click: p === 'SB' ? go('BB', 'SB-limp') : '', off: p === 'SB' ? '' : NA}) : '')
               + foldChip(next && next !== 'BB' ? go(next, '') : '', next === 'BB' ? WALK : '');
+      } else if (opLimp) {                                   // SB 림프를 받은 BB — 레이즈/체크 (그 뒤는 없다)
+        chips = chip('레이즈', 'raise', {pct: c ? r1(pct - jam) : null, off: NA})
+              + (jam > 0.05 ? chip('올인', 'jam', {pct: r1(jam), off: NA}) : '')
+              + chip('체크', 'fold', {pct: c ? r1(100 - pct) : null, off: NA});
       } else if (opAllin) {                                  // 올인을 받았다 — 콜/폴드뿐
         chips = chip('콜', 'call', {pct: c ? r1(call) : null, off: NA})
               + foldChip(next ? go(next, v.vs) : '', next ? '' : '마지막 자리');
@@ -3774,7 +3787,7 @@ function rgvBarHtml(c) {
     if (target && !has(target[0], target[1])) { cls += ' none'; if (cls.includes('later')) note = '<div class="rgv-cnote">차트 없음</div>'; }
     return `<div class="rgv-card ${cls}"${target ? ` onclick="${go(target[0], target[1])}"` : ''}
       title="${target ? esc(rgSpot(target[0], target[1])) + (has(target[0], target[1]) ? '' : ' (이 스택 차트 없음)') : ''}">
-      <div class="pn">${p}${i === op ? `<span class="op">${opAllin ? '올인' : '오픈'}</span>` : ''}</div>${chips}${note}</div>`;
+      <div class="pn">${p}${i === op ? `<span class="op">${RG_KIND[opKind]}</span>` : ''}</div>${chips}${note}</div>`;
   }).join('')}</div>`;
 }
 
@@ -3897,7 +3910,7 @@ function renderRangeView() {
       ${c.has_jam ? '<span><i style="background:#72271f"></i>올인</span>' : ''}
       ${c.allin ? '' : `<span><i style="background:#dd4c45"></i>${c.has_jam || c.has_call ? rgvRaiseName(c) : esc(c.verb)}</span>`}
       ${c.has_call ? `<span><i style="background:#4f9a5c"></i>${esc(c.call_name)}</span>` : ''}
-      <span><i style="background:#4d7bb3"></i>폴드</span>
+      <span><i style="background:#4d7bb3"></i>${esc(c.fold_name || '폴드')}</span>
       <span>칸이 가로로 채워진 비율 = 그 조합의 액션 빈도</span>
       ${v.rate ? '<span><i style="box-shadow:inset 0 0 0 2px #ffdd57"></i>내 실전 기록이 차트와 어긋난 칸</span>' : ''}
     </div>

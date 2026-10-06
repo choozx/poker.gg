@@ -13,6 +13,7 @@ GTO 위자드 무료 플랜처럼 레인지를 **텍스트로 복사할 수 없�
     python3 grab_chart.py CO 50 --dry-run           # 읽기만 하고 보내지 않음
     python3 grab_chart.py BB 20 --vs BTN            # 방어 차트: BTN 오픈을 받은 BB
     python3 grab_chart.py BB 13 --vs UTG --allin    # 방어 차트: UTG 오픈 올인을 받은 BB
+    python3 grab_chart.py BB 13 --vs SB --limp      # SB 림프를 받은 BB (레이즈/체크)
     python3 grab_chart.py --watch                   # 감시 모드: 없는 차트를 순서대로 연달아 (아래 참고)
     python3 grab_chart.py --watch --stacks 30 --only BB
 
@@ -22,6 +23,8 @@ GTO 위자드 무료 플랜처럼 레인지를 **텍스트로 복사할 수 없�
         색 판정은 같고 뜻만 바뀐다: 빨강=3벳, 진한 빨강=올인, 초록=콜.
         오프너가 **올인**으로 열었으면 `--allin`을 더한다 (`--vs UTG --allin`). 남은 액션이 콜/폴드뿐인
         별개 상황이라 따로 저장되고, 폴드가 아닌 칸은 색과 상관없이 전부 콜로 저장된다.
+        **SB가 림프**한 BB 차트는 `BB <스택> --vs SB --limp`. 레이즈(아이솔)/체크뿐이라, 레이즈가
+        아닌 칸은 색과 상관없이 체크로 접힌다.
 
 **bb 숫자는 그대로 슬롯이 된다** — 10bb와 13bb 차트가 따로 산다. 드릴 채점은 여전히 4버킷
 단위라, 한 버킷에 여러 장이 있으면 그 구간에서 실제로 가장 흔한 스택에 가까운 차트가 쓰인다
@@ -385,13 +388,14 @@ POLL_SEC = 0.8        # 화면 확인 간격
 STABLE_POLLS = 2      # 같은 차트가 이만큼 연달아 보여야 저장 (넘어가는 중간 화면을 피한다)
 
 
-def plan(stacks, only=None, jams=()):
+def plan(stacks, only=None, jams=(), limps=()):
     """캡처 순서표 [(포지션, 스택, 상대 또는 None)]. GTO 툴에서 클릭해 가는 순서를 따른다:
     (스택마다) UTG 오픈 차트 → UTG 레이즈 후 UTG1·LJ…BB의 방어 차트 → (UTG가 그 스택에서
     올인으로도 연다면) UTG 올인 후 UTG1…BB의 방어 차트 → UTG1 오픈 차트 → …
 
     `jams` = 오픈 차트에 올인(진한 빨강)이 있는 (오프너, 스택) 집합. 올인을 받는 노드는 그때만
-    존재하므로, 이미 가져온 오픈 차트를 보고 정한다 — 올인 오픈이 없는 스택에 빈 칸을 만들지 않게."""
+    존재하므로, 이미 가져온 오픈 차트를 보고 정한다 — 올인 오픈이 없는 스택에 빈 칸을 만들지 않게.
+    `limps` = SB 오픈 차트에 림프(초록)가 있는 스택 — 그 스택엔 'SB 림프 → BB' 칸이 붙는다."""
     import ranges
     order = ranges.POS_8MAX
     out = []
@@ -401,6 +405,8 @@ def plan(stacks, only=None, jams=()):
             out.extend((resp, st, op) for resp in order[i + 1:])
             if (op, str(st)) in jams:
                 out.extend((resp, st, op + ranges.ALLIN) for resp in order[i + 1:])
+            if op == "SB" and str(st) in limps:
+                out.append(("BB", st, "SB" + ranges.LIMP))
     return [t for t in out if not only or t[0] in only]
 
 
@@ -445,8 +451,8 @@ def suspicious(slot, freq, call):
     """순서가 어긋났을 때 흔히 생기는 모양이면 경고 문구 (아니면 None)."""
     import ranges
     pos, st, vs = slot
-    if ranges.vs_parts(vs)[1]:
-        return None          # 올인을 받은 차트는 콜 색이 툴마다 달라 모양으로 판단하지 않는다
+    if ranges.vs_parts(vs)[1] in ("allin", "limp"):
+        return None          # 올인·림프를 받은 차트는 콜/체크 색이 툴마다 달라 모양으로 판단하지 않는다
     cw = lambda c: 6 if len(c) == 2 else 4 if c.endswith("s") else 12
     cpct = sum(v * cw(c) for c, v in call.items()) / 1326 * 100
     if not vs and pos != "SB" and cpct > 1:
@@ -462,9 +468,9 @@ def slot_name(slot):
     'BTN vs UTG'(받는 쪽 먼저)이니 섞어 쓰지 않게 이 함수만 쓴다."""
     import ranges
     pos, st, vs = slot
-    op, allin = ranges.vs_parts(vs)
+    op, kind = ranges.vs_parts(vs)
     if op:
-        return f"{op}{' 올인' if allin else ''} vs {pos} · {st}bb"
+        return f"{op}{'' if kind == 'raise' else ' ' + ranges.KIND_NAME[kind]} vs {pos} · {st}bb"
     return f"{pos} 오픈 · {st}bb"
 
 
@@ -474,12 +480,13 @@ def slot_hint(slot):
     import ranges
     order = ranges.POS_8MAX
     pos, st, vs = slot
-    op, allin = ranges.vs_parts(vs)
+    op, kind = ranges.vs_parts(vs)
     folds = order[order.index(op) + 1 if op else 0:order.index(pos)]
     fold = (f"{folds[0]} 폴드 → " if len(folds) == 1 else
             f"{folds[0]}~{folds[-1]} 폴드 → " if folds else "")
     if op:
-        return f"GTO 툴: {op} {'올인' if allin else '레이즈'} → {fold}{pos} 차례"
+        act = {"raise": "레이즈", "allin": "올인", "limp": "림프(콜)"}[kind]
+        return f"GTO 툴: {op} {act} → {fold}{pos} 차례"
     return f"GTO 툴: {fold}{pos} 차례" + (" (첫 액션)" if not folds else "")
 
 
@@ -506,7 +513,9 @@ def watch(a):
     only = {ranges._norm_pos(p) for p in a.only.split(",")} if a.only else None
     jams = {(c["pos"], str(c["stack"])) for c in st.get("custom") or []
             if not c.get("vs") and c.get("has_jam") and c.get("jam_pct", 0) > 0.05}
-    full = plan(stacks, only, jams)
+    limps = {str(c["stack"]) for c in st.get("custom") or []
+             if c["pos"] == "SB" and not c.get("vs") and c.get("has_call") and c.get("call_pct", 0) > 0.05}
+    full = plan(stacks, only, jams, limps)
     todo = [t for t in full if (t[0], t[2], t[1]) not in have]
     print(f"감시 모드 — 스택 {', '.join(stacks)}bb · 전체 {len(full)}장 중 이미 있는 "
           f"{len(full) - len(todo)}장 건너뜀 → 남은 {len(todo)}장")
@@ -633,6 +642,7 @@ def main():
     ap.add_argument("--only", help="감시 모드에서 이 포지션 차트만 (예: BB 또는 SB,BB)")
     ap.add_argument("--vs", help="방어 차트의 오프너 (예: BTN). BB는 필수")
     ap.add_argument("--allin", action="store_true", help="--vs의 오프너가 올인으로 열었을 때의 차트")
+    ap.add_argument("--limp", action="store_true", help="SB 림프를 받은 BB 차트 (--vs SB --limp)")
     ap.add_argument("--image", help="화면 캡처 대신 이 이미지 파일에서 읽기")
     ap.add_argument("--region", help="캡처 영역 x,y,w,h")
     ap.add_argument("--delay", type=float, default=0, help="캡처 전 대기 초")
@@ -651,9 +661,12 @@ def main():
         raise SystemExit(f"포지션은 {' / '.join(ranges.POS_8MAX)} 중 하나여야 합니다 "
                          f"(받은 값: {a.pos})")
     import ranges
-    if a.allin and not a.vs:
-        raise SystemExit("--allin 은 --vs 와 같이 씁니다 (예: --vs UTG --allin)")
-    vs, err = ranges.parse_vs(pos, (a.vs + ranges.ALLIN) if a.allin else a.vs)
+    if (a.allin or a.limp) and not a.vs:
+        raise SystemExit("--allin / --limp 는 --vs 와 같이 씁니다 (예: --vs UTG --allin, --vs SB --limp)")
+    if a.allin and a.limp:
+        raise SystemExit("--allin 과 --limp 는 함께 쓸 수 없습니다")
+    vs, err = ranges.parse_vs(pos, a.vs + (ranges.ALLIN if a.allin else ranges.LIMP if a.limp else "")
+                              if a.vs else None)
     if err:                                         # 캡처 전에 막는다 (찍고 나서 거절당하지 않게)
         raise SystemExit(err)
     slot, bb, bucket = parse_stack(a.stack)
