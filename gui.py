@@ -3227,11 +3227,8 @@ function rgToggleImport() { RANGE.showImport = !RANGE.showImport; renderQuiz(); 
 function rgImpSet(k, v) {
   const i = RANGE.imp;
   i[k] = v; i.err = ''; i.msg = '';
-  // 포지션을 바꿔 상대가 더는 앞자리가 아니게 되면 비운다 (BTN 고른 채 UTG로 바꾸는 경우)
-  if (k === 'pos' && i.vs && RANGE.state) {
-    const order = RANGE.state.import_positions.map(p => p.key);
-    if (order.indexOf(i.vs) >= order.indexOf(v)) i.vs = '';
-  }
+  // 상대 선택칸은 BB일 때만 보인다 — 다른 포지션으로 바꾸면 숨은 채 남지 않게 비운다
+  if (k === 'pos' && v !== 'BB') i.vs = '';
   renderQuiz();
 }
 
@@ -3278,9 +3275,9 @@ function rgImportHtml() {
   const i = RANGE.imp;
   const posOpts = st.import_positions.map(p =>
     `<option value="${p.key}" ${i.pos === p.key ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
-  // 상대는 나보다 먼저 액션하는 자리만 (BB면 UTG~SB 전부) — 서버 parse_vs와 같은 규칙
-  const order = st.import_positions.map(p => p.key);
-  const vsOpts = (st.import_vs || []).filter(p => !i.pos || order.indexOf(p.key) < order.indexOf(i.pos))
+  // 방어 차트는 BB만 받는다 (오픈 레인지 + BB 방어 레인지 구성). 서버는 다른 자리 vs도
+  // 받을 수 있지만 UI에선 BB를 골랐을 때만 상대 선택칸을 띄운다
+  const vsOpts = (st.import_vs || [])
     .map(p => `<option value="${p.key}" ${i.vs === p.key ? 'selected' : ''}>vs ${esc(p.label)} 오픈</option>`).join('');
   const stackOpts = st.stacks.map(s =>
     `<option value="${s.key}" ${i.stack === s.key ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
@@ -3301,9 +3298,9 @@ function rgImportHtml() {
         <select onchange="rgImpSet('pos', this.value)">
           <option value="">포지션</option>${posOpts}
         </select>
-        <select onchange="rgImpSet('vs', this.value)" title="BB 방어처럼 오픈을 받은 차트면 오프너를 고르세요">
-          <option value="">${i.pos === 'BB' ? '상대 (BB는 필수)' : '오픈 차트 (상대 없음)'}</option>${vsOpts}
-        </select>
+        ${i.pos === 'BB' ? `<select onchange="rgImpSet('vs', this.value)" title="누가 오픈했을 때의 BB 차트인지">
+          <option value="">상대 (오프너)</option>${vsOpts}
+        </select>` : ''}
         <select onchange="rgImpSet('stack', this.value)">
           <option value="">스택</option>${stackOpts}
         </select>
