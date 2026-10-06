@@ -223,6 +223,23 @@ grades against it instead. The 📐 오픈 레인지 탭 has a collapsible "레�
 (`rgImportHtml`/`rgImport`) for this — paste, pick pos/stack, import; imported slots list there with
 a delete-back-to-builtin button. `delete_chart` removes a custom slot.
 
+**방어 차트 (vs 오픈) — 슬롯 키에 오프너가 붙는다.** BB는 오픈 기회가 없어(폴드되면 워크) 레인지가
+"누가 오픈했을 때"로만 존재한다. 그래서 키가 `"BB|20|vsBTN"`처럼 세 칸이 되고(`_ckey`/`_split_key`
+— 키를 `partition("|")`로 직접 쪼개지 말 것, 세 번째 칸이 슬롯에 붙어 버린다), 레코드도 `vs`를 든다.
+상대 없는 키는 예전 그대로 오픈 차트라 기존 데이터는 손댈 게 없다. BB만이 아니라 아무 자리 vs 앞자리
+오프너가 같은 틀이다(`parse_vs`: 오프너는 나보다 먼저 액션하는 자리, BB는 상대 필수). 모양은 같다 —
+`weights` = 비폴드 합계(3벳+올인+콜), `jam`·`call`은 그 몫 — 바뀌는 건 뜻뿐이라 `chart()`가 `verb`
+(`"3벳"`)와 `call_name`(`"콜"`, 오픈 차트는 `"콜(림프)"`)을 실어 보내고 **UI 문구는 전부 그 필드를
+따른다**. 내장 방어 차트는 없다(가져온 것만). 드릴은 `_contexts`가 (포지션, 버킷)마다 오픈 1 + 상대별
+방어 문제를 만들되, 방어 쪽은 **몫을 나눠 합쳐서 오픈 하나만큼**만 나오게 한다(상대 7명분을 넣어도 BB가
+7배로 쏠리지 않게). 실전 기록은 `convert.hand_meta`의 **`pf_opener`**(오픈 한 번만 받았을 때 오프너
+자리, 림프·콜러·3벳 팟은 None) 기준 `_hero_vs`로 세고, 비율은 **방어(콜+3벳) 비율**이라 차트 합계와
+비교한다(오픈 차트는 rfi가 레이즈만 세서 `weights - call`과 비교). 두 자리 모두 `_pos_8max`로 옮기며
+**원래 이름(MP1…)을 넘겨야** 한다 — `_norm_pos`로 MP로 접은 뒤엔 몇 번째 자리인지 못 센다.
+`pf_opener`는 새 필드라 `vs_personalized()`가 꺼지면 방어 쪽 겹쳐 보기·가중치만 꺼진다(오픈 쪽은 그대로).
+"차트와 어긋난 칸" 판정은 `chart_view`가 셀마다 `dev`로 내려준다 — 방어 차트는 콜 칸도 '액션 칸'이라
+규칙이 달라서, 프론트 두 곳에 규칙을 복사해 두지 않는다.
+
 **`grab_chart.py` — 화면에서 차트 읽기 (선택 도구, 맥 전용).** GTO 위자드 무료 플랜처럼 레인지를
 텍스트로 복사할 수 없을 때 쓰는 보조 CLI. `screencapture`로 화면을 찍고, 13×13 격자를 **자동으로
 찾아** 셀마다 색이 가로로 차지한 비율을 세서 빈도를 계측한 뒤 `POST /api/range/import`로 보낸다
@@ -254,9 +271,9 @@ SB(BTN))를 그대로 쓰고, 8맥스 이름엔 내장 차트가 없다(가져�
 기록도 함께 넣는다. **기본 출력 경로는 레포 밖(`~/Desktop`)이고 결과물은 `.gitignore`에 있다** —
 이 repo는 공개라 GTO 툴에서 가져온 레인지가 담긴 파일을 커밋하면 인터넷에 그대로 공개된다.
 
-API: `GET /api/range/state` · `/api/range/next?pos=&stack=` · `/api/range/chart?pos=&stack=` ·
-`POST /api/range/grade` (plain JSON, no streaming) · `/api/range/import`
-(`{pos, stack, text, source}`) · `/api/range/delete-chart` (`{pos, stack}`).
+API: `GET /api/range/state` · `/api/range/next?pos=&stack=` · `/api/range/chart?pos=&stack=&vs=` ·
+`POST /api/range/grade` (plain JSON, no streaming; `vs` from the question) · `/api/range/import`
+(`{pos, stack, text, source, vs}`) · `/api/range/delete-chart` (`{pos, stack, vs}`). `vs` empty = 오픈 차트.
 
 ### ⏱ 토너먼트 타이머 — frontend-only, no server state
 
@@ -281,7 +298,7 @@ No payout ladder is modeled — don't invent one.
 ### The key invariant: metadata is frozen at import time
 
 When a hand is imported, `convert.hand_meta()` computes derived fields (`vpip`, `pfr`, `rfi`,
-`rfi_opp`, `pf_action`, `pf_faced`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
+`rfi_opp`, `pf_action`, `pf_faced`, `pf_opener`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
 the DB record alongside the original `raw` text and rendered `markdown`. The aggregate queries in
 `store.py` (`stats`, `hand_grid`) read these frozen fields directly — they never re-parse `raw`.
 

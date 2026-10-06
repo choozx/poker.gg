@@ -484,10 +484,14 @@ def hand_meta(h, hero="Hero"):
     #   limp=콜만 있었음 / raise=레이즈가 있었음 / None=프리플랍에 결정 자체가 없었음(BB 워크)).
     #   rfi_opp/pf_action만으로는 '레이즈에 직면'과 '림프에 직면'과 '워크'가 구분되지 않아
     #   포지션별 빈도 리크(quiz._freq_spots)를 계산할 수 없다.
+    #  pf_opener = 히어로가 **오픈 하나만** 받았을 때(앞에 레이즈 1번, 콜·림프 없음) 그 오프너의
+    #   포지션. 림프·3벳·콜러가 낀 팟은 방어 차트가 전제하는 상황이 아니라 None이다.
+    #   BB 방어 같은 vs 오픈 차트(ranges)에 내 실전 기록을 겹쳐 보는 데 쓴다.
     rfi_opp = rfi = False
     pf_action = "fold"
-    pf_faced = None
+    pf_faced = pf_opener = None
     prior_raise = prior_vol = False
+    raisers, n_vol = [], 0
     for a in h.actions:
         if a.street != "preflop":
             break
@@ -496,6 +500,8 @@ def hand_meta(h, hero="Hero"):
         if a.player == hero:
             rfi_opp = not prior_vol                   # 폴드 투 히어로면 오픈 기회
             pf_faced = "raise" if prior_raise else ("limp" if prior_vol else "none")
+            if len(raisers) == 1 and n_vol == 1:
+                pf_opener = next((p.position for p in h.players if p.name == raisers[0]), None)
             if a.verb in ("raises", "bets"):
                 pf_action = "3bet" if prior_raise else "open"
             elif a.verb == "allin":
@@ -506,8 +512,10 @@ def hand_meta(h, hero="Hero"):
             break
         if a.verb in ("raises", "allin"):
             prior_raise = True
+            raisers.append(a.player)
         if a.verb in ("calls", "bets", "raises", "allin"):
             prior_vol = True                          # 앞에 자발적 참여(콜/레이즈)가 있었음
+            n_vol += 1
     # 핸드 시작 시 히어로 스택(bb) — 스택 깊이 필터용
     stack_bb = round(hero_p.chips / h.bb, 1) if hero_p and h.bb else None
     net_bb = round(net / h.bb, 1) if h.bb else None
@@ -534,6 +542,7 @@ def hand_meta(h, hero="Hero"):
         "rfi_opp": rfi_opp,
         "pf_action": pf_action,
         "pf_faced": pf_faced,
+        "pf_opener": pf_opener,
         "stack_bb": stack_bb,
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,

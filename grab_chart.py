@@ -11,9 +11,12 @@ GTO 위자드 무료 플랜처럼 레인지를 **텍스트로 복사할 수 없�
     python3 grab_chart.py UTG 20 --delay 3          # 3초 뒤 캡처 (브라우저로 전환할 시간)
     python3 grab_chart.py LJ 30 --image ~/a.png     # 캡처 대신 이미지 파일에서
     python3 grab_chart.py CO 50 --dry-run           # 읽기만 하고 보내지 않음
+    python3 grab_chart.py BB 20 --vs BTN            # 방어 차트: BTN 오픈을 받은 BB
 
 포지션: UTG UTG1 LJ HJ CO BTN SB BB (8맥스, `ranges.POS_8MAX`. 소문자·UTG+1도 받는다)
 스택:   GTO 툴에 적힌 bb 숫자를 그대로 준다 (13, 20, 100 …). 버킷 키(pf/short/mid/deep)도 받는다.
+상대:   `--vs`를 주면 그 오프너의 오픈을 받았을 때의 **방어 차트**다 (BB는 필수 — 오픈 기회가 없다).
+        색 판정은 같고 뜻만 바뀐다: 빨강=3벳, 진한 빨강=올인, 초록=콜.
 
 **bb 숫자는 그대로 슬롯이 된다** — 10bb와 13bb 차트가 따로 산다. 드릴 채점은 여전히 4버킷
 단위라, 한 버킷에 여러 장이 있으면 그 구간에서 실제로 가장 흔한 스택에 가까운 차트가 쓰인다
@@ -324,7 +327,7 @@ def to_text(freq):
     return ", ".join(f"{k}:{v * 100:g}" for k, v in freq.items())
 
 
-def existing(port, pos, slot):
+def existing(port, pos, slot, vs=None):
     """이미 가져온 차트가 그 슬롯에 있으면 그 정보 (같은 bb에 다시 넣으면 덮어쓴다)."""
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/range/state", timeout=10) as r:
@@ -332,13 +335,14 @@ def existing(port, pos, slot):
     except urllib.error.URLError:
         return None
     for c in st.get("custom") or []:
-        if c.get("pos") == pos and str(c.get("stack")) == str(slot):
+        if (c.get("pos") == pos and (c.get("vs") or None) == vs
+                and str(c.get("stack")) == str(slot)):
             return c
     return None
 
 
-def send(port, pos, stack, freq, jam, call, source):
-    body = json.dumps({"pos": pos, "stack": stack, "text": to_text(freq),
+def send(port, pos, stack, freq, jam, call, source, vs=None):
+    body = json.dumps({"pos": pos, "vs": vs or "", "stack": stack, "text": to_text(freq),
                        "jam": to_text(jam) if jam else "",
                        "call": to_text(call) if call else "",
                        "source": source}, ensure_ascii=False).encode("utf-8")
@@ -359,6 +363,7 @@ def main():
     ap = argparse.ArgumentParser(description="GTO 툴 화면의 레인지 그리드를 캡처해서 차트로 가져온다")
     ap.add_argument("pos", help="포지션: UTG UTG1 LJ HJ CO BTN SB BB")
     ap.add_argument("stack", help="스택: GTO 툴의 bb 숫자 (20, 12.5, 100 …) 또는 pf/short/mid/deep")
+    ap.add_argument("--vs", help="방어 차트의 오프너 (예: BTN). BB는 필수")
     ap.add_argument("--image", help="화면 캡처 대신 이 이미지 파일에서 읽기")
     ap.add_argument("--region", help="캡처 영역 x,y,w,h")
     ap.add_argument("--delay", type=float, default=0, help="캡처 전 대기 초")
@@ -372,12 +377,17 @@ def main():
         import ranges
         raise SystemExit(f"포지션은 {' / '.join(ranges.POS_8MAX)} 중 하나여야 합니다 "
                          f"(받은 값: {a.pos})")
+    import ranges
+    vs, err = ranges.parse_vs(pos, a.vs)
+    if err:                                         # 캡처 전에 막는다 (찍고 나서 거절당하지 않게)
+        raise SystemExit(err)
     slot, bb, bucket = parse_stack(a.stack)
     if not slot:
         raise SystemExit(f"스택은 bb 숫자(예: 20) 또는 {' / '.join(BUCKETS)} 중 하나여야 합니다 "
                          f"(받은 값: {a.stack})")
     label = f"{bb}bb" if bb is not None else BUCKET_LABEL[bucket]
-    print(f"→ {pos} · {label} 슬롯"
+    spot = ranges.spot_name(pos, vs)
+    print(f"→ {spot} · {label} 슬롯"
           + (f" (채점 구간 {BUCKET_LABEL[bucket]})" if bb is not None else ""))
 
     im = load_image(os.path.expanduser(a.image)) if a.image else capture(a.region, a.delay)
@@ -393,9 +403,10 @@ def main():
     cpct = sum(v * cw(c) for c, v in call.items()) / 1326 * 100
     print(f"읽음: 비폴드 {len(freq)}조합 · 가중 액션 {pct:.1f}%  (영역 {notes['box']})")
     if call:
-        print(f"  초록(콜·림프) 감지 — 콜 {cpct:.1f}% ({len(call)}조합) · 드릴은 오픈/콜/폴드 3지선다가 됩니다")
+        print(f"  초록(콜·림프) 감지 — 콜 {cpct:.1f}% ({len(call)}조합) · 드릴은 "
+              f"{'3벳' if vs else '오픈'}/콜/폴드 3지선다가 됩니다")
     if notes["two_tone"]:
-        print(f"  빨강 두 톤 감지 — 레이즈 {pct - jpct - cpct:.1f}% · 올인 {jpct:.1f}% "
+        print(f"  빨강 두 톤 감지 — {'3벳' if vs else '레이즈'} {pct - jpct - cpct:.1f}% · 올인 {jpct:.1f}% "
               f"({len(jam)}조합에 올인 섞임)")
     else:
         print("  빨강이 한 톤이라 전부 같은 액션으로 읽었습니다 "
@@ -411,14 +422,14 @@ def main():
         if call:
             print("\n[콜] " + to_text(call))
         return
-    old = existing(a.port, pos, slot)
+    old = existing(a.port, pos, slot, vs)
     if old:
         print(f"⚠️  이 슬롯엔 이미 차트가 있습니다 — 덮어씁니다 "
               f"(기존: 오픈 {old['pct']}% · {old.get('source') or '출처 없음'} · {old.get('ts')})")
-    res = send(a.port, pos, slot, freq, jam, call, a.source or f"GTOWizard {pos} {label}")
+    res = send(a.port, pos, slot, freq, jam, call, a.source or f"GTOWizard {spot} {label}", vs)
     if res.get("error"):
         raise SystemExit(f"임포트 실패: {res['error']}")
-    print(f"✅ {res['pos']} · {res['label']} 슬롯에 저장 — "
+    print(f"✅ {spot} · {res['label']} 슬롯에 저장 — "
           f"액션 {res['pct']}% (경계 {res['mix_pct']}%) · {res['n']}조합")
     if res.get("warnings"):
         print("   읽지 못한 토큰:", ", ".join(res["warnings"]))

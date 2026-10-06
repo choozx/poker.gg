@@ -36,11 +36,11 @@ def db_path(explicit=None):
 
 
 def collect(db, with_hero=False):
-    """내보낼 데이터: {포지션: [{bb, label, source, cells}, …]} — 스택 오름차순."""
-    hero = ranges._hero_rfi(db) if (with_hero and ranges.personalized(db)) else {}
+    """내보낼 데이터: {스팟: [{bb, label, source, cells}, …]} — 스택 오름차순.
+    스팟은 오픈 차트면 포지션('UTG'), 방어 차트면 'BB vs BTN'이다 (버튼 하나씩)."""
     out = {}
     for slot in ranges.custom_slots(db):
-        c = ranges.chart(slot["pos"], slot["stack"], db)
+        c = ranges.chart(slot["pos"], slot["stack"], db, slot["vs"])
         if not c:
             continue
         cells = {}
@@ -53,18 +53,17 @@ def collect(db, with_hero=False):
             # [합계, 올인, 콜] 을 0~100 정수로 — 소수점은 폰 화면에서 의미가 없다
             cells[combo] = [round(w * 100), round(jam * 100), round(call * 100)]
         item = {"bb": slot["bb"], "label": slot["stack_label"],
+                "vs": bool(slot["vs"]), "verb": c["verb"],
                 "src": slot["source"] or "", "pct": slot["pct"],
                 "jam": slot["jam_pct"], "call": round(c["call_pct"], 1),
                 "cells": cells}
-        if hero:
-            rec = {}
-            for combo in ranges.all_combos():
-                e = hero.get((slot["pos"], slot["bucket"], combo))
-                if e and e[1]:
-                    rec[combo] = [e[0], e[1]]
+        if with_hero:
+            # 오픈 차트면 [오픈, 기회], 방어 차트면 [방어(콜+3벳), 기회]
+            rec = {k: [e[0], e[1]] for k, e in
+                   ranges.hero_cells(db, slot["pos"], slot["bucket"], slot["vs"]).items() if e[1]}
             if rec:
                 item["hero"] = rec
-        out.setdefault(slot["pos"], []).append(item)
+        out.setdefault(ranges.spot_name(slot["pos"], slot["vs"]), []).append(item)
     for v in out.values():
         v.sort(key=lambda x: (x["bb"] if x["bb"] is not None else -1))
     return out
@@ -185,7 +184,7 @@ function render() {
   document.getElementById('grid').innerHTML = g;
   document.getElementById('legend').innerHTML =
     (cur.jam ? '<span><i style="background:var(--jam)"></i>올인</span>' : '') +
-    '<span><i style="background:var(--raise)"></i>레이즈</span>' +
+    `<span><i style="background:var(--raise)"></i>${cur.vs ? cur.verb : '레이즈'}</span>` +
     (cur.call ? '<span><i style="background:var(--call)"></i>콜</span>' : '') +
     '<span><i style="background:var(--fold)"></i>폴드</span>';
   document.getElementById('src').textContent = cur.src ? '출처: ' + cur.src : '';
@@ -195,13 +194,13 @@ function tap(c, keep) {
   const cur = DATA[pos][si], d = cur.cells[c] || [0, 0, 0];
   sel = c;
   const parts = [];
-  if (d[0] - d[1] - d[2] > 0) parts.push('레이즈 ' + (d[0] - d[1] - d[2]) + '%');
+  if (d[0] - d[1] - d[2] > 0) parts.push((cur.vs ? cur.verb : '레이즈') + ' ' + (d[0] - d[1] - d[2]) + '%');
   if (d[1] > 0) parts.push('올인 ' + d[1] + '%');
   if (d[2] > 0) parts.push('콜 ' + d[2] + '%');
   if (d[0] < 100) parts.push('폴드 ' + (100 - d[0]) + '%');
   let t = `<b>${c}</b> — ` + (parts.length ? parts.join(' · ') : '폴드 100%');
   const h = cur.hero && cur.hero[c];
-  if (h) t += `<br><span style="color:var(--dim)">실전: ${h[1]}회 중 ${h[0]}회 오픈 ` +
+  if (h) t += `<br><span style="color:var(--dim)">실전: ${h[1]}회 중 ${h[0]}회 ${cur.vs ? '방어' : '오픈'} ` +
               `(${Math.round(h[0] / h[1] * 100)}%)</span>`;
   document.getElementById('detail').innerHTML = t;
   if (!keep) render();

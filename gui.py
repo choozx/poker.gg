@@ -3196,9 +3196,10 @@ let RANGE = {
   showChart: false,
   err: '',
   showImport: false,
-  imp: {pos: '', stack: '', text: '', source: '', busy: false, err: '', msg: ''},
-  // 📊 레인지 차트 뷰어 (문제를 내지 않는 보기 전용 모드)
-  view: {pos: '', stack: '', chart: null, loading: false, err: '', rate: false, cache: {}},
+  // vs: 방어 차트의 오프너 ('' = 오픈 차트). BB는 오픈이 없어 vs가 있어야 한다
+  imp: {pos: '', vs: '', stack: '', text: '', source: '', busy: false, err: '', msg: ''},
+  // 📊 레인지 차트 뷰어 (문제를 내지 않는 보기 전용 모드). vs '' = 오픈 차트
+  view: {pos: '', vs: '', stack: '', chart: null, loading: false, err: '', rate: false, cache: {}},
 };
 
 function rgFilterQS() {
@@ -3223,7 +3224,16 @@ function rgToggleStack(k) { RANGE.stack = k ? [k] : []; renderQuiz(); }
 // GTOWizard 등에서 복사한 레인지 텍스트를 (포지션, 스택버킷) 슬롯으로 가져온다 — 내장 차트를 덮어쓴다
 function rgToggleImport() { RANGE.showImport = !RANGE.showImport; renderQuiz(); }
 
-function rgImpSet(k, v) { RANGE.imp[k] = v; RANGE.imp.err = ''; RANGE.imp.msg = ''; renderQuiz(); }
+function rgImpSet(k, v) {
+  const i = RANGE.imp;
+  i[k] = v; i.err = ''; i.msg = '';
+  // 포지션을 바꿔 상대가 더는 앞자리가 아니게 되면 비운다 (BTN 고른 채 UTG로 바꾸는 경우)
+  if (k === 'pos' && i.vs && RANGE.state) {
+    const order = RANGE.state.import_positions.map(p => p.key);
+    if (order.indexOf(i.vs) >= order.indexOf(v)) i.vs = '';
+  }
+  renderQuiz();
+}
 
 async function rgImport() {
   const i = RANGE.imp;
@@ -3233,14 +3243,14 @@ async function rgImport() {
   try {
     const res = await fetch('/api/range/import', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({pos: i.pos, stack: i.stack, text: i.text, source: i.source}),
+      body: JSON.stringify({pos: i.pos, vs: i.vs, stack: i.stack, text: i.text, source: i.source}),
     });
     const d = await res.json();
     i.busy = false;
     if (d.error) {
       i.err = d.error + (d.warnings && d.warnings.length ? ` (읽지 못한 토큰: ${d.warnings.join(', ')})` : '');
     } else {
-      i.msg = `${d.pos} · ${d.stack} 가져오기 완료 — ${d.n}콤보, 상위 ${d.pct}% (경계 ${d.mix_pct}%)` +
+      i.msg = `${rgSpot(d.pos, d.vs)} · ${d.stack} 가져오기 완료 — ${d.n}콤보, 상위 ${d.pct}% (경계 ${d.mix_pct}%)` +
               (d.warnings && d.warnings.length ? `. 못 읽은 토큰: ${d.warnings.join(', ')}` : '');
       i.text = '';
       await rgLoadState();
@@ -3249,11 +3259,14 @@ async function rgImport() {
   renderQuiz();
 }
 
-async function rgDeleteChart(pos, stack) {
+// 'BB vs BTN' / 'UTG' — 서버 ranges.spot_name과 같은 이름
+function rgSpot(pos, vs) { return vs ? `${pos} vs ${vs}` : pos; }
+
+async function rgDeleteChart(pos, stack, vs) {
   try {
     await fetch('/api/range/delete-chart', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({pos, stack}),
+      body: JSON.stringify({pos, stack, vs: vs || ''}),
     });
     await rgLoadState();
   } catch (e) {}
@@ -3265,13 +3278,17 @@ function rgImportHtml() {
   const i = RANGE.imp;
   const posOpts = st.import_positions.map(p =>
     `<option value="${p.key}" ${i.pos === p.key ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
+  // 상대는 나보다 먼저 액션하는 자리만 (BB면 UTG~SB 전부) — 서버 parse_vs와 같은 규칙
+  const order = st.import_positions.map(p => p.key);
+  const vsOpts = (st.import_vs || []).filter(p => !i.pos || order.indexOf(p.key) < order.indexOf(i.pos))
+    .map(p => `<option value="${p.key}" ${i.vs === p.key ? 'selected' : ''}>vs ${esc(p.label)} 오픈</option>`).join('');
   const stackOpts = st.stacks.map(s =>
     `<option value="${s.key}" ${i.stack === s.key ? 'selected' : ''}>${esc(s.label)}</option>`).join('');
   const customRows = (st.custom || []).map(c => `
     <div class="rg-imp-row">
-      <span>${esc(c.pos)} · ${esc(c.stack_label)}</span>
+      <span>${esc(rgSpot(c.pos, c.vs))} · ${esc(c.stack_label)}</span>
       <span>${c.pct}% (경계 ${c.mix_pct}%) · ${c.n}콤보${c.source ? ' · ' + esc(c.source) : ''}</span>
-      <button onclick="rgDeleteChart('${c.pos}','${c.stack}')">삭제 (내장 차트로)</button>
+      <button onclick="rgDeleteChart('${c.pos}','${c.stack}','${c.vs || ''}')">${c.vs ? '삭제' : '삭제 (내장 차트로)'}</button>
     </div>`).join('');
   return `<div class="qz-card rg-imp" style="margin-bottom:14px">
     <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer"
@@ -3283,6 +3300,9 @@ function rgImportHtml() {
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <select onchange="rgImpSet('pos', this.value)">
           <option value="">포지션</option>${posOpts}
+        </select>
+        <select onchange="rgImpSet('vs', this.value)" title="BB 방어처럼 오픈을 받은 차트면 오프너를 고르세요">
+          <option value="">${i.pos === 'BB' ? '상대 (BB는 필수)' : '오픈 차트 (상대 없음)'}</option>${vsOpts}
         </select>
         <select onchange="rgImpSet('stack', this.value)">
           <option value="">스택</option>${stackOpts}
@@ -3326,7 +3346,7 @@ async function rgAnswer(choice) {
   try {
     const res = await fetch('/api/range/grade', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({pos: q.pos, stack: q.stack, combo: q.combo, choice}),
+      body: JSON.stringify({pos: q.pos, vs: q.vs || '', stack: q.stack, combo: q.combo, choice}),
     });
     const d = await res.json();
     if (d.error) { RANGE.status = 'error'; RANGE.err = d.error; }
@@ -3347,7 +3367,8 @@ async function rgToggleChart() {
     renderQuiz();
     try {
       RANGE.chart = await (await fetch(
-        `/api/range/chart?pos=${encodeURIComponent(q.pos)}&stack=${q.stack}`)).json();
+        `/api/range/chart?pos=${encodeURIComponent(q.pos)}&stack=${q.stack}` +
+        (q.vs ? `&vs=${encodeURIComponent(q.vs)}` : ''))).json();
     } catch (e) { RANGE.chart = {error: String(e)}; }
   }
   renderQuiz();
@@ -3368,7 +3389,8 @@ function rgQuestionHtml() {
   if (!q) return '';
   const graded = RANGE.status === 'graded';
   // 콜(초록)이 있는 차트만 서버가 call 선택지를 넣어 보낸다 → 3지선다
-  const hasCall = q.choices.some(c => c.id === 'call');
+  const callChoice = q.choices.find(c => c.id === 'call');
+  const hasCall = !!callChoice;
   const btn = (id, label, key) => `
     <button class="${RANGE.picked === id ? 'picked ' : ''}${!graded && id === 'open' ? 'primary' : ''}"
             ${graded ? 'disabled' : ''} onclick="rgAnswer('${id}')">
@@ -3376,6 +3398,7 @@ function rgQuestionHtml() {
   return `<div class="qz-card">
     <div class="qz-head" style="justify-content:center">
       <span class="qz-tag">${esc(q.pos_label)}</span>
+      ${q.vs_label ? `<span class="qz-tag">${esc(q.vs_label)}</span>` : ''}
       <span class="qz-tag street">${esc(q.stack_label)}</span>
     </div>
     <div class="rg-ctx">${esc(q.prompt)}<b>${hasCall ? '어떻게 할까요?' : esc(q.verb) + '할까요?'}</b></div>
@@ -3383,7 +3406,7 @@ function rgQuestionHtml() {
     <div class="rg-combo">${esc(q.combo)}</div>
     <div class="rg-acts">
       ${btn('open', q.choices[0].label, 'O')}
-      ${hasCall ? btn('call', '콜(림프)', 'C') : ''}
+      ${hasCall ? btn('call', callChoice.label, 'C') : ''}
       ${btn('fold', '폴드', 'F')}
     </div>
     ${graded ? rgResultHtml() : ''}
@@ -3398,13 +3421,13 @@ function rgResultHtml() {
       <span>${VERDICT_EMOJI[r.grade] || ''}</span>
       <span class="g qz-g-${r.grade}">${r.grade}</span>
       <span style="font-size:13px;font-weight:500;color:var(--dim)">
-        차트 정답: ${r.correct === 'open' ? r.verb : r.correct === 'call' ? '콜(림프)'
+        차트 정답: ${r.correct === 'open' ? r.verb : r.correct === 'call' ? r.call_name
           : (r.correct === 'mix' ? '혼합(경계)' : '폴드')}</span>
     </div>
     <div class="why">${mdToHtml(r.text)}</div>
     <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
       <button class="primary" onclick="rgNext()">다음 문제 →<span class="rg-key">Enter</span></button>
-      <button onclick="rgToggleChart()">${RANGE.showChart ? '차트 접기' : `${esc(q.pos)} · ${esc(q.stack_label)} 차트 보기`}</button>
+      <button onclick="rgToggleChart()">${RANGE.showChart ? '차트 접기' : `${esc(rgSpot(q.pos, q.vs))} · ${esc(q.stack_label)} 차트 보기`}</button>
     </div>
     ${RANGE.showChart ? rgChartHtml() : ''}
   </div>`;
@@ -3423,12 +3446,11 @@ function rgChartHtml() {
       const combo = comboLabel(i, j);
       const d = c.cells[combo] || {v: 'fold'};
       const cur = RANGE.q && RANGE.q.combo === combo ? ' rg-cur' : '';
-      // 내 실전 오픈 비율이 차트와 크게 어긋나는 칸에 빨간 테두리 — 여기가 리크다
-      const dev = d.rate !== undefined &&
-        ((d.v === 'open' && d.rate < 50) || (d.v === 'fold' && d.rate > 25)) ? ' rg-dev' : '';
+      // 내 실전 비율이 차트와 크게 어긋나는 칸에 빨간 테두리 — 여기가 리크다 (판정은 서버 dev)
+      const dev = d.dev ? ' rg-dev' : '';
       const t = `${combo} · 차트 ${d.v === 'open' ? c.verb : d.v === 'call' ? '콜'
           : (d.v === 'mix' ? '혼합' : '폴드')}` + (d.call ? ` (콜 ${Math.round(d.call * 100)}%)` : '') +
-        (d.rate === undefined ? ' · 실전 기회 없음' : ` · 실전 ${d.opps}회 중 ${d.opens}회 오픈 (${d.rate}%)`);
+        (d.rate === undefined ? ' · 실전 기회 없음' : ` · ${rgHeroTip(c, d)}`);
       tds += `<td><div class="hc${i === j ? ' pair' : ''}${cur}${dev}" style="background:${BG[d.v]}" title="${esc(t)}">
         <div class="lab">${combo}</div>${d.rate === undefined ? '' : `<div class="val">${d.rate}%</div>`}</div></td>`;
     }
@@ -3438,15 +3460,26 @@ function rgChartHtml() {
     <div class="rg-legend">
       <span><i style="background:${BG.open}"></i>${esc(c.verb)} ${c.has_call
         ? Math.round((c.pct - c.call_pct) * 10) / 10 : c.pct}%</span>
-      ${c.has_call ? `<span><i style="background:${BG.call}"></i>콜(림프) ${c.call_pct}%</span>` : ''}
+      ${c.has_call ? `<span><i style="background:${BG.call}"></i>${esc(c.call_name)} ${c.call_pct}%</span>` : ''}
       <span><i style="background:${BG.mix}"></i>경계(혼합) ${c.mix_pct}%</span>
       <span><i style="background:var(--panel2)"></i>폴드</span>
       <span><i style="box-shadow:inset 0 0 0 1px #ff6b7d"></i>내 실전 기록이 차트와 어긋난 칸</span>
     </div>
     <div class="grid-wrap"><table class="hgrid">${rows}</table></div>
-    <div class="qz-note" style="margin-top:8px">숫자는 이 스팟에서 내가 실제로 오픈한 비율입니다
-      (폴드 투 히어로 상황 기준).</div>
+    <div class="qz-note" style="margin-top:8px">${rgHeroNote(c)}</div>
   </div>`;
+}
+
+// 실전 기록 문구 — 오픈 차트는 '오픈 비율', 방어 차트는 '방어(콜+3벳) 비율'이다
+function rgHeroTip(c, d) {
+  return c.vs
+    ? `실전 ${d.opps}회 중 ${d.opens}회 방어 (${d.rate}% · ${c.verb} ${d.raises}회)`
+    : `실전 ${d.opps}회 중 ${d.opens}회 오픈 (${d.rate}%)`;
+}
+function rgHeroNote(c) {
+  return c.vs
+    ? `숫자는 ${esc(c.vs)}의 오픈 한 번만 받았을 때(림프·콜러 없음) 내가 실제로 방어(콜+${esc(c.verb)})한 비율입니다.`
+    : '숫자는 이 스팟에서 내가 실제로 오픈한 비율입니다 (폴드 투 히어로 상황 기준).';
 }
 
 function rgScoreHtml() {
@@ -3496,54 +3529,75 @@ function renderRangeChart() {
   renderRangeView();
 }
 
-async function rgvOpen(pos, stack) {
+// 상황(vs)은 '' = 오픈 차트, 그 밖엔 오프너 이름. 슬롯은 (포지션, 상황, 스택)으로 갈린다.
+async function rgvOpen(pos, stack, vs) {
   const slots = (RANGE.state && RANGE.state.custom) || [];
-  if (stack === undefined) {                       // 포지션만 고른 경우
-    const list = rgvStacks(pos);
+  const v = RANGE.view;
+  if (vs === undefined) {                          // 상황을 안 골랐으면 보던 상황 유지
+    const scen = rgvScenarios(pos);
+    if (!scen.length) return;
+    vs = scen.includes(v.vs) ? v.vs : scen[0];
+  }
+  if (stack === undefined) {                       // 포지션·상황만 고른 경우
+    const list = rgvStacks(pos, vs);
     if (!list.length) return;
     // 보던 스택을 그대로 유지한다 — 포지션끼리 같은 스택을 비교하는 게 이 화면의 쓸모다.
     // 그 포지션에 그 스택이 없으면 가장 가까운 bb로 붙인다 (맨 처음으로 튀지 않게).
-    const cur = String(RANGE.view.stack);
+    const cur = String(v.stack);
     const same = list.find(s => String(s.stack) === cur);
     const bbOf = s => (s && s.bb !== null && s.bb !== undefined ? s.bb : -1);
-    const curBb = bbOf(slots.find(s => s.pos === RANGE.view.pos && String(s.stack) === cur));
+    const curBb = bbOf(slots.find(s => s.pos === v.pos && (s.vs || '') === v.vs &&
+                                       String(s.stack) === cur));
     stack = same ? same.stack
       : list.reduce((a, b) =>
           Math.abs(bbOf(b) - curBb) < Math.abs(bbOf(a) - curBb) ? b : a).stack;
   }
-  const slot = slots.find(x => x.pos === pos && String(x.stack) === String(stack));
+  const slot = slots.find(x => x.pos === pos && (x.vs || '') === vs &&
+                               String(x.stack) === String(stack));
   // 캐시 키에 그 슬롯의 저장 시각을 넣는다 — 같은 칸을 다시 가져오면 ts가 바뀌어 저절로 미스
-  const v = RANGE.view, key = pos + '|' + stack + '|' + ((slot && slot.ts) || '');
-  v.pos = pos; v.stack = stack; v.err = '';
+  const key = [pos, vs, stack, (slot && slot.ts) || ''].join('|');
+  v.pos = pos; v.vs = vs; v.stack = stack; v.err = '';
   if (v.cache[key]) { v.chart = v.cache[key]; v.loading = false; renderRangeChart(); return; }
   v.chart = null; v.loading = true;
   renderRangeChart();
   let got, err = '';
   try {
     got = await (await fetch(
-      `/api/range/chart?pos=${encodeURIComponent(pos)}&stack=${stack}`)).json();
+      `/api/range/chart?pos=${encodeURIComponent(pos)}&stack=${stack}` +
+      (vs ? `&vs=${encodeURIComponent(vs)}` : ''))).json();
   } catch (e) { err = String(e); }
   // 끄는 동안 응답이 뒤섞일 수 있다 — 그 사이 다른 칸으로 옮겼으면 버린다
-  if (v.pos !== pos || String(v.stack) !== String(stack)) return;
+  if (v.pos !== pos || v.vs !== vs || String(v.stack) !== String(stack)) return;
   if (got && !got.error) v.cache[key] = got;
   v.chart = got; v.err = err; v.loading = false;
   renderRangeChart();
 }
 
-// 그 포지션의 스택 슬롯을 **작은 것부터** (슬라이더 축 순서). bb 없는 구형 슬롯은 맨 앞.
-function rgvStacks(pos) {
+// 그 포지션·상황의 스택 슬롯을 **작은 것부터** (슬라이더 축 순서). bb 없는 구형 슬롯은 맨 앞.
+function rgvStacks(pos, vs) {
   return ((RANGE.state && RANGE.state.custom) || [])
-    .filter(s => s.pos === pos)
+    .filter(s => s.pos === pos && (s.vs || '') === (vs || ''))
     .slice().sort((a, b) => (a.bb === null ? -1 : a.bb) - (b.bb === null ? -1 : b.bb));
 }
 
+// 그 포지션에 가져온 상황들 — 오픈('')이 먼저, 그다음 오프너 (서버 custom_slots가 이미 그 순서다)
+function rgvScenarios(pos) {
+  const out = [];
+  for (const s of (RANGE.state && RANGE.state.custom) || [])
+    if (s.pos === pos && !out.includes(s.vs || '')) out.push(s.vs || '');
+  return out;
+}
+
 function rgvSlide(i) {
-  const list = rgvStacks(RANGE.view.pos);
+  const v = RANGE.view, list = rgvStacks(v.pos, v.vs);
   const s = list[Math.max(0, Math.min(list.length - 1, +i))];
-  if (s && String(s.stack) !== String(RANGE.view.stack)) rgvOpen(RANGE.view.pos, s.stack);
+  if (s && String(s.stack) !== String(v.stack)) rgvOpen(v.pos, s.stack, v.vs);
 }
 
 function rgvToggleRate() { RANGE.view.rate = !RANGE.view.rate; renderRangeChart(); }
+
+// 빨강(밝은 톤)의 이름 — 오픈 차트는 레이즈, 방어 차트는 3벳
+function rgvRaiseName(c) { return c.vs ? c.verb : '레이즈'; }
 
 function rgvGridHtml(c) {
   const showRate = RANGE.view.rate;
@@ -3555,19 +3609,17 @@ function rgvGridHtml(c) {
       const w = Math.round((d.w || 0) * 100);
       const jm = Math.round((d.jam || 0) * 100);      // 올인 몫 (레이즈 몫 = w - jm - cl)
       const cl = Math.round((d.call || 0) * 100);     // 콜(림프) 몫 — 빨강 오른쪽에 초록으로
-      // 내 실전 오픈 비율이 차트와 어긋난 칸 — 겹쳐 보기를 켰을 때만 표시
-      const dev = showRate && d.rate !== undefined &&
-        ((d.v === 'open' && d.rate < 50) || (d.v === 'fold' && d.rate > 25));
+      // 내 실전 비율이 차트와 어긋난 칸 — 겹쳐 보기를 켰을 때만 표시 (판정은 서버 dev)
+      const dev = showRate && d.dev;
       const num = showRate
         ? (d.rate === undefined ? '' : d.rate + '%')
         : (w > 0 && w < 100 ? w + '%' : '');
       const act = (jm > 0 || cl > 0)
-        ? [`레이즈 ${w - jm - cl}%`, jm > 0 ? `올인 ${jm}%` : '', cl > 0 ? `콜 ${cl}%` : '']
+        ? [`${rgvRaiseName(c)} ${w - jm - cl}%`, jm > 0 ? `올인 ${jm}%` : '', cl > 0 ? `콜 ${cl}%` : '']
             .filter(Boolean).join(' · ')
         : `${w}% ${c.verb}`;
       const t = `${combo} · 차트 ${act}` +
-        (d.rate === undefined ? ' · 실전 기회 없음'
-          : ` · 실전 ${d.opps}회 중 ${d.opens}회 (${d.rate}%)`);
+        (d.rate === undefined ? ' · 실전 기회 없음' : ` · ${rgHeroTip(c, d)}`);
       cells += `<div class="rgv-c${i === j ? ' pair' : ''}${dev ? ' dev' : ''}" title="${esc(t)}">
         ${w - cl > 0 ? `<div class="fill" style="width:${w - cl}%"></div>` : ''}
         ${jm > 0 ? `<div class="jamfill" style="width:${jm}%"></div>` : ''}
@@ -3596,9 +3648,13 @@ function renderRangeView() {
   const v = RANGE.view;
   // 가져온 슬롯이 없는 포지션은 아예 목록에 넣지 않는다 (빈 차트를 고를 수 없게)
   const positions = [...new Set(slots.map(s => s.pos))];
-  if (!v.pos || !positions.includes(v.pos)) { rgvOpen(slots[0].pos, slots[0].stack); return; }
-  const mine = rgvStacks(v.pos);
-  if (!mine.some(s => String(s.stack) === String(v.stack))) { rgvOpen(v.pos, mine[0].stack); return; }
+  if (!v.pos || !positions.includes(v.pos)) {
+    rgvOpen(slots[0].pos, slots[0].stack, slots[0].vs || ''); return;
+  }
+  const scen = rgvScenarios(v.pos);
+  if (!scen.includes(v.vs)) { rgvOpen(v.pos, undefined, scen[0]); return; }
+  const mine = rgvStacks(v.pos, v.vs);
+  if (!mine.some(s => String(s.stack) === String(v.stack))) { rgvOpen(v.pos, mine[0].stack, v.vs); return; }
   const idx = mine.findIndex(s => String(s.stack) === String(v.stack));
   const cur = mine[idx];
   // 스택은 순서가 있는 축이라 슬라이더로 — 끌면 레인지가 변하는 게 그대로 보인다.
@@ -3612,6 +3668,11 @@ function renderRangeView() {
     <select class="qz-sel" onchange="rgvOpen(this.value)">
       ${positions.map(p => `<option value="${esc(p)}" ${p === v.pos ? 'selected' : ''}>${esc(p)}</option>`).join('')}
     </select>
+    ${scen.length > 1 || scen[0] ? `<span class="qz-tglabel">상황</span>
+      <select class="qz-sel" onchange="rgvOpen(RANGE.view.pos, undefined, this.value)">
+        ${scen.map(x => `<option value="${esc(x)}" ${x === v.vs ? 'selected' : ''}>${
+          x ? 'vs ' + esc(x) + ' 오픈' : '오픈 (폴드 투 나)'}</option>`).join('')}
+      </select>` : ''}
     ${mine.length < 2 ? `<span class="qz-tglabel">스택</span><b class="rgv-bb">${esc(cur.stack_label)}</b>` : `
       <div class="rgv-stack">
         <div class="rgv-stack-top"><span class="qz-tglabel">스택</span>
@@ -3621,7 +3682,7 @@ function renderRangeView() {
                title="좌우 방향키로도 이동합니다">
         <div class="rgv-ticks">${ticks}</div>
       </div>`}
-    <span style="color:var(--dim);font-size:12px;padding-bottom:2px">${v.pos} ${mine.length}장${
+    <span style="color:var(--dim);font-size:12px;padding-bottom:2px">${esc(rgSpot(v.pos, v.vs))} ${mine.length}장${
       cur && cur.ts ? ' · 이 차트 ' + esc(cur.ts) : ''}</span>
   </div>`;
   const c = v.chart;
@@ -3633,7 +3694,7 @@ function renderRangeView() {
     <div class="rgv-head">
       <h3>${esc(c.label)}</h3>
       <span class="pct">${c.has_jam || c.has_call ? '액션' : esc(c.verb)} ${c.pct}%</span>
-      ${c.has_jam || c.has_call ? `<span style="font-size:12px">레이즈 ${
+      ${c.has_jam || c.has_call ? `<span style="font-size:12px">${rgvRaiseName(c)} ${
         Math.round((c.pct - c.jam_pct - c.call_pct) * 10) / 10}%${
         c.has_jam ? ` · <b style="color:#b8463a">올인 ${c.jam_pct}%</b>` : ''}${
         c.has_call ? ` · <b style="color:#4f9a5c">콜 ${c.call_pct}%</b>` : ''}</span>` : ''}
@@ -3645,14 +3706,15 @@ function renderRangeView() {
     ${rgvGridHtml(c)}
     <div class="rg-legend" style="margin-top:10px">
       ${c.has_jam ? '<span><i style="background:#72271f"></i>올인</span>' : ''}
-      <span><i style="background:#dd4c45"></i>${c.has_jam || c.has_call ? '레이즈' : esc(c.verb)}</span>
-      ${c.has_call ? '<span><i style="background:#4f9a5c"></i>콜(림프)</span>' : ''}
+      <span><i style="background:#dd4c45"></i>${c.has_jam || c.has_call ? rgvRaiseName(c) : esc(c.verb)}</span>
+      ${c.has_call ? `<span><i style="background:#4f9a5c"></i>${esc(c.call_name)}</span>` : ''}
       <span><i style="background:#4d7bb3"></i>폴드</span>
       <span>칸이 가로로 채워진 비율 = 그 조합의 액션 빈도</span>
       ${v.rate ? '<span><i style="box-shadow:inset 0 0 0 2px #ffdd57"></i>내 실전 기록이 차트와 어긋난 칸</span>' : ''}
     </div>
     <div class="qz-note" style="margin-top:8px">${v.rate
-      ? '숫자는 이 스팟에서 내가 실제로 오픈한 비율입니다 (폴드 투 히어로 상황 기준).'
+      ? rgHeroNote(c) + (c.vs && st.vs_personalized === false
+          ? ' 지금 DB엔 오프너 기록이 없어 비어 보입니다 — <code>python3 gui.py --rebuild</code> 후 채워집니다.' : '')
       : '숫자는 혼합 빈도입니다 (100%·0%인 칸은 생략).'}</div>`;
   $('#hands').innerHTML = `<div class="qz-wrap">${picker}${body}</div>`;
 }
@@ -3667,7 +3729,9 @@ function renderRangeQuiz() {
     <div class="qz-note">📊 <code>python3 gui.py --rebuild</code> 를 돌리면 내가 실제로 차트와
       어긋나게 친 조합이 우선 출제됩니다 — 지금은 균등 무작위로 냅니다.</div>` : `
     <div class="qz-note">내가 실제로 차트와 어긋나게 친 조합이 더 자주 나옵니다.
-      경계 핸드는 어느 쪽을 골라도 <b>무난</b>입니다.</div>`;
+      경계 핸드는 어느 쪽을 골라도 <b>무난</b>입니다.${
+      st && st.vs_personalized === false && (st.custom || []).some(c => c.vs)
+        ? ' 방어 차트(vs 오픈)는 <code>--rebuild</code> 후부터 내 기록이 반영됩니다.' : ''}</div>`;
   $('#hands').innerHTML = `<div class="qz-wrap">
     ${rgImportHtml()}
     ${filters}${note}
@@ -3803,7 +3867,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/range/chart":
             qs = parse_qs(urlparse(self.path).query)
             resp = ranges.chart_view(DB, qs.get("pos", [""])[0],
-                                     qs.get("stack", [""])[0])
+                                     qs.get("stack", [""])[0],
+                                     vs=qs.get("vs", [""])[0] or None)
             self._send(json.dumps(resp, ensure_ascii=False),
                        "application/json; charset=utf-8",
                        code=400 if resp.get("error") else 200)
@@ -3974,7 +4039,8 @@ class Handler(BaseHTTPRequestHandler):
                            "application/json; charset=utf-8", code=400)
                 return
             resp = ranges.grade(DB, body.get("pos"), body.get("stack"),
-                                body.get("combo"), body.get("choice"))
+                                body.get("combo"), body.get("choice"),
+                                vs=body.get("vs") or None)
             if not resp.get("error"):
                 resp["scoreboard"] = ranges.scoreboard(DB)
                 persist(DB)
@@ -3982,7 +4048,7 @@ class Handler(BaseHTTPRequestHandler):
                        "application/json; charset=utf-8",
                        code=400 if resp.get("error") else 200)
         elif self.path == "/api/range/import":
-            # GTO 툴에서 복사한 레인지 텍스트를 (포지션, 스택버킷) 슬롯에 저장 — 내장 차트를 덮어쓴다
+            # GTO 툴에서 복사한 레인지 텍스트를 (포지션, 스택[, 상대]) 슬롯에 저장 — 내장 차트를 덮어쓴다
             length = int(self.headers.get("Content-Length", 0))
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -3992,7 +4058,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             resp = ranges.import_chart(DB, body.get("pos"), body.get("stack"),
                                        body.get("text"), source=body.get("source"),
-                                       jam=body.get("jam"), call=body.get("call"))
+                                       jam=body.get("jam"), call=body.get("call"),
+                                       vs=body.get("vs") or None)
             if resp.get("ok"):
                 persist(DB)
             self._send(json.dumps(resp, ensure_ascii=False),
@@ -4006,7 +4073,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({"error": "잘못된 요청"}, ensure_ascii=False),
                            "application/json; charset=utf-8", code=400)
                 return
-            resp = ranges.delete_chart(DB, body.get("pos"), body.get("stack"))
+            resp = ranges.delete_chart(DB, body.get("pos"), body.get("stack"),
+                                       vs=body.get("vs") or None)
             persist(DB)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif self.path == "/api/quiz/gen":
