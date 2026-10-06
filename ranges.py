@@ -701,10 +701,15 @@ def personalized(db):
 
 
 def _hero_rfi(db):
-    """(포지션, 스택버킷, 조합) → [오픈 횟수, 기회 횟수].
+    """(체계, 포지션, 스택버킷, 조합) → [오픈 횟수, 기회 횟수].
 
     '기회' = pf_faced가 "none"(폴드 투 히어로), '오픈' = rfi 플래그.
-    수만 핸드를 훑으므로 핸드 수를 키로 캐시한다 (임포트로만 늘어난다)."""
+    수만 핸드를 훑으므로 핸드 수를 키로 캐시한다 (임포트로만 늘어난다).
+
+    **체계를 나눠 센다** — "8"은 가져온 8맥스 차트용(뒤에 남은 인원으로 옮긴 이름), "raw"는
+    내장 차트용(핸드 기록의 원래 이름, MP1~3은 MP). 예전엔 한 키 공간에 두 이름을 다 넣었는데
+    'UTG'가 두 체계에 똑같이 있어서, 4~7인 테이블의 UTG(8맥스로는 UTG1·LJ·HJ·CO)가 전부
+    8맥스 UTG 차트에 섞였다 (실측: 8인 UTG 기회 6번인데 9,466번으로 집계)."""
     hands = db.get("hands", {})
     if _HERO_CACHE["n"] == len(hands) and _HERO_CACHE["data"] is not None:
         return _HERO_CACHE["data"]
@@ -717,9 +722,8 @@ def _hero_rfi(db):
         combo = store._combo(r.get("hero_cards") or [])
         if not pos or not sb or not combo:
             continue
-        # 내장 차트용(MP)과 가져온 8맥스 차트용(UTG1/LJ/HJ) 두 이름에 같이 센다
-        for p in {pos, _pos_8max(r.get("hero_pos"), r.get("players"))}:
-            e = data.setdefault((p, sb, combo), [0, 0])
+        for key in (("raw", pos), ("8", _pos_8max(r.get("hero_pos"), r.get("players")))):
+            e = data.setdefault((*key, sb, combo), [0, 0])
             e[1] += 1
             if r.get("rfi"):
                 e[0] += 1
@@ -786,9 +790,13 @@ def _hero_vs(db):
     return data
 
 
-def hero_cells(db, pos, bucket, vs=None):
+def hero_cells(db, pos, bucket, vs=None, builtin=False):
     """그 스팟의 조합별 실전 기록 {조합: [액션 횟수, 기회 횟수, (방어면) 3벳 횟수]}.
-    오픈 차트면 액션 = 오픈, 방어 차트면 액션 = 방어(콜+3벳). rebuild 안 된 DB면 빈 dict."""
+    오픈 차트면 액션 = 오픈, 방어 차트면 액션 = 방어(콜+3벳). rebuild 안 된 DB면 빈 dict.
+
+    `builtin`은 비교 대상이 내장 근사 차트일 때 — 그때만 원래 자리 이름으로 센 기록을 쓴다
+    (가져온 차트는 8맥스 체계라 뒤에 남은 인원으로 옮긴 기록이어야 한다). 차트의 `source`가
+    없으면 내장이다."""
     pos = _norm_pos(pos)
     if vs:
         if not vs_personalized(db):
@@ -798,12 +806,14 @@ def hero_cells(db, pos, bucket, vs=None):
                 if k[0] == pos and k[1] == bucket and k[2] == vs}
     if not personalized(db):
         return {}
-    return {k[2]: e for k, e in _hero_rfi(db).items() if k[0] == pos and k[1] == bucket}
+    scheme = "raw" if builtin else "8"
+    return {k[3]: e for k, e in _hero_rfi(db).items()
+            if k[0] == scheme and k[1] == pos and k[2] == bucket}
 
 
-def hero_record(db, pos, bucket, combo, vs=None):
+def hero_record(db, pos, bucket, combo, vs=None, builtin=False):
     """그 조합을 실제로 어떻게 쳤는지 (기회 없으면 None)."""
-    e = hero_cells(db, pos, bucket, vs).get(combo)
+    e = hero_cells(db, pos, bucket, vs, builtin).get(combo)
     if not e or not e[1]:
         return None
     out = {"opens": e[0], "opps": e[1], "rate": round(e[0] / e[1] * 100)}
@@ -882,7 +892,7 @@ def next_question(db, positions=None, stacks=None):
         c = chart(pos, bucket, db, vs)
         if not c:
             continue
-        hero = hero_cells(db, pos, bucket, vs)
+        hero = hero_cells(db, pos, bucket, vs, builtin=not c["source"])
         for combo in all_combos():
             # 차트 빈도가 곧 목표치다 — 가져온 차트의 혼합 빈도(0.62 등)도 그대로 쓴다.
             # 오픈 차트: 실전 기록(rfi)은 레이즈만 세므로 콜(림프) 몫은 빼고 비교한다.
@@ -1009,7 +1019,7 @@ def _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record):
                      + ("" if c["chart_stack"] == bucket
                         else f" ({STACK_LABEL.get(c['chart_stack'])} 차트로 대체)"))
     vs = c["vs"]
-    rec = hero_record(db, pos, bucket, combo, vs)
+    rec = hero_record(db, pos, bucket, combo, vs, builtin=not c.get("source"))
     if rec and vs and (c["allin"] or c["limp"]):
         lines.append(f"실전 기록: 이 스팟에서 {combo} {rec['opps']}회 중 "
                      f"{rec['opens']}회 {verb} (**{rec['rate']}%**).")
@@ -1043,7 +1053,7 @@ def chart_view(db, pos, stack, vs=None):
     if not c:
         return {"error": "해당 포지션·스택 차트가 없습니다."}
     # 실전 기록은 버킷 단위로만 쌓인다 (핸드마다 스택이 제각각이라 bb로는 안 묶인다)
-    hero = hero_cells(db, pos, c["bucket"], c["vs"])
+    hero = hero_cells(db, pos, c["bucket"], c["vs"], builtin=not c["source"])
     acts = ("open", "call") if c["vs"] and not c["limp"] else ("open",)
     cells = {}
     for combo in all_combos():
