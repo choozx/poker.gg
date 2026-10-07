@@ -290,6 +290,18 @@ class TestCoach(unittest.TestCase):
         self.assertEqual(len(self.db["coach"]["chats"]), coach.MAX_CHATS)
 
 
+class TestWebFiles(unittest.TestCase):
+    def test_index_references_only_served_static_files(self):
+        # 화면은 web/ 파일이다 — index.html이 부르는 /static/ 파일이 전부 WEB_STATIC에 있어야 실제로 내려간다
+        import re
+        import gui
+        html = gui.web_file("index.html").decode("utf-8")
+        refs = set(re.findall(r'/static/([\w.-]+)', html))
+        self.assertEqual(refs, set(gui.WEB_STATIC))
+        for name in refs:
+            self.assertTrue(gui.web_file(name).strip(), name)
+
+
 class TestListApis(unittest.TestCase):
     def test_hands_by_combo_includes_markdown(self):
         # 실제로 났던 버그: markdown을 DB에 저장하지 않게 된 뒤 그리드 드릴다운만 본문 없이 와서 렌더가 깨졌다

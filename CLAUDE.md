@@ -45,8 +45,14 @@ Modules, strict dependency direction `convert ← store ← {bankroll, quiz, ran
   the AI-analysis format) and JSON, and is a standalone CLI. No state, no I/O beyond the CLI.
 - **`store.py`** — the DB layer over `hands_db.json`. Load/save/merge plus all aggregate queries
   (`stats`, `hand_grid`, `tournament_list`, `review_hands`). Imports from `convert` only.
-- **`gui.py`** — the HTTP server (`http.server`, threaded) **and the entire frontend**, which lives
-  as one big `INDEX_HTML` string (HTML+CSS+vanilla JS). Also holds the AI backends and prompts.
+- **`gui.py`** — the HTTP server (`http.server`, threaded): API routes, AI backends and prompts.
+- **`web/`** — the entire frontend: `index.html` (skeleton) + `app.css` + `app.js` (vanilla JS, no build).
+  `gui.py` reads them **per request** (`web_file`, `Cache-Control: no-cache`), so frontend edits need only a
+  browser reload, not a server restart. Only files listed in `WEB_STATIC` are served under `/static/`
+  (no path traversal). It used to be one 4,000-line `INDEX_HTML` string inside gui.py; the split was
+  verified byte-for-byte (the three files reassemble into the old string). `node --check web/app.js` is a
+  handy syntax check if node is around (not a project dependency). The browser's `/favicon.ico` 404 is
+  expected — the app never served one.
 - **`bankroll.py`** — the **real-money** domain (kept strictly separate from chip EV; see below).
 - **`quiz.py`** — the 🎯 문제 풀기 domain: leak-spot detection + question picking (see below).
 - **`ranges.py`** — the 📐 오픈 레인지 drill: preflop RFI charts + **local** grading (see below).
@@ -395,7 +401,7 @@ streams) · `/api/coach/delete` (`{id}`).
 
 ### ⏱ 토너먼트 타이머 — frontend-only, no server state
 
-A live blind clock (sidebar `SEL = -6`), entirely inside `INDEX_HTML`'s JS (`tm*` functions,
+A live blind clock (sidebar `SEL = -6`), entirely inside the frontend JS (`web/app.js`, `tm*` functions,
 `TIMER` state). It touches **no Python, no endpoint, no `hands_db.json`** — settings and run state
 persist to `localStorage` under `ahh_timer_v1` only, so it is not cloud-synced. Keep it that way
 unless the user asks for cross-device timers.

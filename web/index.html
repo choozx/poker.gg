@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>poker.gg</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <h1>♠️ poker.gg</h1>
+  <span class="spacer"></span>
+  <button id="btnReport" onclick="openReport()" style="display:none">📊 종합 리포트</button>
+  <button id="btnOpen">파일 열기</button>
+  <input type="file" id="file" accept=".txt,.log" multiple style="display:none">
+</header>
+
+<div id="report-overlay" onclick="if(event.target===this) closeReport()">
+  <div id="report-panel">
+    <div id="report-head">
+      <h2>📊 종합 리포트</h2>
+      <span class="spacer"></span>
+      <button onclick="closeReport()">닫기</button>
+    </div>
+    <div id="report-body"></div>
+  </div>
+</div>
+
+<div id="drop">
+  <strong>핸드 히스토리 파일을 여기에 드래그</strong>
+  클릭해서 파일을 선택할 수도 있어요 (.txt, 여러 개 가능)
+</div>
+
+<div id="layout">
+  <div id="sidebar"></div>
+  <div id="main">
+    <div id="mainhead"></div>
+    <div id="hands"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -296,7 +296,8 @@ python3 convert.py hands.txt --format json      # 구조화 데이터로 출력
 
 | 파일 | 역할 |
 |---|---|
-| `gui.py` | 웹앱 서버 + 프론트엔드(메인 진입점) |
+| `gui.py` | 웹앱 서버 — API·AI 백엔드 (메인 진입점) |
+| `web/` | 프론트엔드 — `index.html` · `app.css` · `app.js` (빌드 없음, 고친 뒤 새로고침만 하면 반영) |
 | `convert.py` | 핸드 히스토리 파서/변환기 (CLI 겸용) |
 | `store.py` | 핸드 DB(`hands_db.json`) 로드/저장/병합·집계 |
 | `bankroll.py` | 뱅크롤(실제 돈) — 시트 이주·핸드 매칭·캠페인 트리·win/loss 판정·바이인 추천·잔고 추적·입출금 원장 |

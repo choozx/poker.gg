@@ -1,0 +1,420 @@
+
+  :root {
+    --bg: #14171c; --panel: #1d2128; --panel2: #242a33; --border: #313845;
+    --text: #d8dee8; --dim: #8a93a3; --accent: #4da3ff; --green: #3fbf6f; --red: #e0556a;
+    --gold: #e8b84f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text);
+         font: 14px/1.55 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 18px;
+           background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header .spacer { flex: 1; }
+  label.small { color: var(--dim); font-size: 12px; }
+  input[type=text] { background: var(--panel2); border: 1px solid var(--border);
+                     color: var(--text); border-radius: 6px; padding: 5px 9px; width: 110px; }
+  button { background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+           border-radius: 6px; padding: 6px 13px; cursor: pointer; font-size: 13px; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0c1117; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.1); color: #0c1117; }
+
+  #drop { margin: 60px auto; max-width: 620px; border: 2px dashed var(--border);
+          border-radius: 14px; padding: 70px 40px; text-align: center; color: var(--dim);
+          transition: border-color .15s, background .15s; cursor: pointer; }
+  #drop.over { border-color: var(--accent); background: rgba(77,163,255,.06); }
+  #drop strong { color: var(--text); font-size: 16px; display: block; margin-bottom: 8px; }
+
+  #layout { display: none; height: calc(100vh - 53px); }
+  #layout.active { display: flex; }
+  #sidebar { width: 320px; min-width: 320px; overflow-y: auto;
+             background: var(--panel); border-right: 1px solid var(--border); padding: 12px; }
+  .tourney { padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px;
+             margin-bottom: 9px; cursor: pointer; transition: border-color .1s; }
+  .tourney:hover { border-color: var(--accent); }
+  .tourney.sel { border-color: var(--accent); background: rgba(77,163,255,.08); }
+  .tourney .tname { font-weight: 600; margin-bottom: 3px; }
+  .tourney .tmeta { color: var(--dim); font-size: 12px; }
+  .tourney.review { border-color: rgba(232,184,79,.45); }
+  .tourney.review.sel { border-color: var(--gold); background: rgba(232,184,79,.08); }
+  .tourney.review .tname { color: var(--gold); }
+
+  #main { flex: 1; overflow-y: auto; padding: 18px 24px; }
+  #mainhead { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  #mainhead h2 { font-size: 17px; flex: 1; min-width: 200px; }
+
+  .hand { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px;
+          background: var(--panel); overflow: hidden; }
+  .hand-head { display: flex; align-items: center; gap: 12px; padding: 10px 14px; cursor: pointer; }
+  .hand-head:hover { background: var(--panel2); }
+  .hand-head .hid { color: var(--dim); font-size: 12px; width: 105px; }
+  .hand-head .pos { background: var(--panel2); border: 1px solid var(--border);
+                    border-radius: 5px; padding: 1px 7px; font-size: 12px; width: 52px; text-align: center; }
+  .hand-head .cards { font-weight: 700; font-size: 15px; width: 84px; letter-spacing: 1px; }
+  .hand-head .tags { flex: 1; color: var(--dim); font-size: 12px; }
+  .hand-head .net { font-weight: 700; font-size: 13px; width: 200px; text-align: right; white-space: nowrap; }
+  .hand-head .ai-flag { width: 46px; text-align: right; font-size: 13px; letter-spacing: 1px; }
+  .pos-badge { color: var(--gold); }
+  .net.win { color: var(--green); } .net.lose { color: var(--red); }
+  .hand-body { display: none; border-top: 1px solid var(--border);
+               padding: 14px 18px; background: #181c22; }
+  .hand.open .hand-body { display: block; }
+
+  .hand-body h2 { font-size: 15px; margin-bottom: 4px; color: var(--gold); }
+  .hand-body p { margin: 2px 0; }
+  .hand-body ul { list-style: none; margin: 2px 0 10px 6px; }
+  .hand-body li { padding: 1px 0; }
+  .hand-body strong { color: #fff; }
+  .hand-body .sect { margin-top: 10px; font-weight: 700; color: var(--accent); }
+  .decision { background: rgba(232,184,79,.12); border-left: 3px solid var(--gold);
+              padding-left: 8px; border-radius: 3px; }
+
+  .suit-s { color: #c9d3e0; } .suit-h { color: #ff6b7d; }
+  .suit-d { color: #58a6ff; } .suit-c { color: #56d364; }
+
+  /* ⏱ 토너먼트 타이머 — 핸드 DB와 무관한 독립 도구 */
+  .tourney.timer { border-color: rgba(192,132,252,.45); }
+  .tourney.timer.sel { border-color: #c084fc; background: rgba(192,132,252,.08); }
+  .tourney.timer .tname { color: #c084fc; }
+  .tm-wrap { max-width: 800px; }
+  .tm-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+             padding: 20px 24px 18px; margin-bottom: 12px; }
+  .tm-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .tm-lv { font-size: 13px; font-weight: 700; letter-spacing: 2.5px; color: var(--dim); }
+  .tm-blinds { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tm-clock { font-size: 76px; font-weight: 700; line-height: 1.08; text-align: center;
+              font-variant-numeric: tabular-nums; letter-spacing: 2px; margin: 8px 0 2px; }
+  .tm-clock.warn { color: var(--gold); }
+  .tm-clock.brk { color: #c084fc; }
+  .tm-clock.done { color: var(--dim); font-size: 46px; }
+  .tm-next { text-align: center; color: var(--dim); font-size: 13px; min-height: 20px; }
+  .tm-bar { height: 5px; background: var(--panel2); border-radius: 3px; margin-top: 16px; overflow: hidden; }
+  .tm-bar > i { display: block; height: 100%; background: var(--accent); }
+  .tm-bar > i.brk { background: #c084fc; }
+  .tm-ctrl { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .tm-ctrl .spacer { flex: 1; }
+  .tm-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+              gap: 10px; margin-bottom: 12px; }
+  .tm-stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 11px 14px; }
+  .tm-stat > span { color: var(--dim); font-size: 12px; }
+  .tm-stat > b { display: block; font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0 1px; }
+  .tm-stat > em { color: var(--dim); font-size: 11px; font-style: normal; }
+  .tm-stat.itm > b { color: var(--green); }
+  .tm-stat.bubble > b { color: var(--gold); }
+  .tm-mini { background: var(--panel2); border: 1px solid var(--border); color: var(--dim);
+             border-radius: 5px; padding: 1px 7px; font-size: 12px; cursor: pointer; margin-left: 6px; }
+  .tm-mini:hover { border-color: var(--accent); color: var(--accent); }
+  details.tm-panel { background: var(--panel); border: 1px solid var(--border);
+                     border-radius: 10px; margin-bottom: 12px; }
+  details.tm-panel > summary { cursor: pointer; padding: 11px 14px; font-weight: 600; font-size: 13px; }
+  details.tm-panel > summary::marker { color: var(--dim); }
+  details.tm-panel > div { padding: 12px 14px 16px; border-top: 1px solid var(--border); }
+  .tm-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; }
+  .tm-form h4 { grid-column: 1 / -1; font-size: 12px; color: var(--dim); font-weight: 600;
+                margin-top: 4px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .tm-form h4:first-child { margin-top: 0; border-top: none; padding-top: 0; }
+  .tm-f { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--dim); }
+  .tm-f input, .tm-f select { background: var(--panel2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 13px; width: 100%; }
+  .tm-f em { font-style: normal; font-size: 11px; color: #6f7889; }
+  table.tm-struct { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  table.tm-struct th { color: var(--dim); font-size: 11px; font-weight: 600; text-align: right; padding: 5px 8px; }
+  table.tm-struct td { padding: 4px 8px; text-align: right; border-top: 1px solid var(--border); }
+  table.tm-struct th:first-child, table.tm-struct td:first-child { text-align: left; }
+  table.tm-struct tr.cur td { background: rgba(77,163,255,.13); color: var(--accent); font-weight: 700; }
+  table.tm-struct tr.brk td { color: #c084fc; }
+
+  /* 🎯 문제 풀기 — 내 리크 스팟에서 뽑은 스팟 문제 */
+  .tourney.quiz { border-color: rgba(255,166,87,.45); }
+  .tourney.quiz.sel { border-color: #ffa657; background: rgba(255,166,87,.08); }
+  .tourney.quiz .tname { color: #ffa657; }
+  .qz-wrap { max-width: 860px; }
+  .qz-tgrow { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+  .qz-tglabel { color: var(--dim); font-size: 12px; min-width: 46px; }
+  .qz-tg { background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
+           padding: 4px 11px; font-size: 12.5px; cursor: pointer; color: var(--dim);
+           font-variant-numeric: tabular-nums; }
+  .qz-tg:hover { border-color: #ffa657; color: var(--text); }
+  .qz-tg.on { border-color: #ffa657; background: rgba(255,166,87,.14); color: #ffa657; font-weight: 600; }
+  .qz-sel { background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
+            padding: 4px 8px; font-size: 12.5px; color: var(--text); margin-right: 14px;
+            min-width: 108px; }
+  .qz-sel:hover { border-color: #ffa657; }
+  .qz-tg.empty { opacity: .38; }          /* 해당 스팟이 없는 선택지 — 눌러도 되지만 비어 있음 */
+  .qz-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+             padding: 18px 22px; margin-bottom: 12px; }
+  .qz-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .qz-tag { font-size: 11px; font-weight: 700; border-radius: 5px; padding: 2px 8px;
+            background: rgba(255,166,87,.15); color: #ffa657; }
+  .qz-tag.street { background: rgba(77,163,255,.15); color: var(--accent); }
+  .qz-tag.ai { background: rgba(192,132,252,.15); color: #c084fc; }
+  .qz-tag.cache { background: var(--panel2); color: var(--dim); }
+  /* 핸드 마크다운 표시 — .hand-body 와 같은 규칙 (문제 카드 안에서 재사용) */
+  .qz-md h2 { font-size: 15px; margin-bottom: 4px; color: var(--gold); }
+  .qz-md p { margin: 2px 0; }
+  .qz-md ul { list-style: none; margin: 2px 0 10px 6px; }
+  .qz-md li { padding: 1px 0; }
+  .qz-md strong { color: #fff; }
+  .qz-md .sect { margin-top: 10px; font-weight: 700; color: var(--accent); }
+  .qz-sit { border-top: 1px solid var(--border); padding-top: 10px; font-size: 13px; }
+  .qz-sit li.askturn { background: rgba(255,166,87,.13); border-left: 2px solid #ffa657;
+                       padding-left: 8px; color: #ffa657; font-weight: 600; }
+  .qz-choices { display: grid; gap: 8px; margin-top: 14px; }
+  .qz-choice { text-align: left; background: var(--panel2); border: 1px solid var(--border);
+               color: var(--text); border-radius: 8px; padding: 11px 14px; font-size: 14px;
+               cursor: pointer; transition: border-color .12s; }
+  .qz-choice:hover:not(:disabled) { border-color: #ffa657; }
+  .qz-choice:disabled { cursor: default; opacity: .5; }
+  .qz-choice.picked { border-color: #ffa657; background: rgba(255,166,87,.1); opacity: 1; }
+  .qz-choice .k { display: inline-block; min-width: 20px; color: var(--dim); font-weight: 700; }
+  .qz-verdict { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 700;
+                margin-bottom: 8px; }
+  .qz-verdict .g { font-size: 13px; border-radius: 6px; padding: 3px 10px; }
+  .qz-g-좋음 { background: rgba(63,191,111,.18); color: var(--green); }
+  .qz-g-무난 { background: rgba(77,163,255,.15); color: var(--accent); }
+  .qz-g-의문 { background: rgba(230,180,80,.18); color: var(--gold); }
+  .qz-g-실수 { background: rgba(255,107,125,.18); color: #ff6b7d; }
+  .qz-reveal { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px;
+               font-size: 13px; color: var(--dim); }
+  .qz-reveal b { color: var(--text); }
+  .qz-score { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .qz-score > div { background: var(--panel); border: 1px solid var(--border);
+                    border-radius: 10px; padding: 10px 14px; }
+  .qz-score span { color: var(--dim); font-size: 12px; }
+  .qz-score b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .qz-note { color: var(--dim); font-size: 12px; margin-bottom: 12px; line-height: 1.6; }
+  /* 📐 오픈 레인지 드릴 — 채점이 로컬이라 스트리밍 영역이 없고 카드 한 장으로 끝난다 */
+  .rg-ctx { text-align: center; color: var(--dim); font-size: 13px; }
+  .rg-ctx b { color: var(--text); font-size: 15px; }
+  .rg-hero { display: flex; align-items: center; justify-content: center; gap: 10px;
+             margin: 16px 0 6px; }
+  .rg-c { width: 62px; height: 86px; border-radius: 8px; background: #f4f6fa; color: #14161a;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          font-weight: 800; font-size: 27px; line-height: 1.02;
+          box-shadow: 0 3px 10px rgba(0,0,0,.5); }
+  .rg-c.red { color: #cf2438; }
+  .rg-combo { text-align: center; color: var(--dim); font-size: 12px; }
+  .rg-acts { display: flex; gap: 10px; justify-content: center; margin-top: 18px; flex-wrap: wrap; }
+  .rg-acts button { min-width: 148px; padding: 12px 16px; font-size: 15px; font-weight: 700; }
+  .rg-acts button.picked { border-color: #ffa657; background: rgba(255,166,87,.12); }
+  .rg-key { opacity: .5; font-weight: 500; font-size: 12px; margin-left: 7px; }
+  .rg-res { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px;
+            font-size: 13px; line-height: 1.75; }
+  .rg-res .why { color: var(--dim); }
+  .rg-res .why b { color: var(--text); }
+  .rg-legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--dim); font-size: 12px;
+               margin: 8px 0 10px; }
+  .rg-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+                 margin-right: 5px; vertical-align: middle; font-style: normal; }
+  .hgrid .hc.rg-cur { outline: 2px solid #ffa657; outline-offset: -2px; }
+  .hgrid .hc.rg-dev { box-shadow: inset 0 0 0 1px #ff6b7d; }
+  .rg-imp select, .rg-imp textarea { background: var(--panel2); border: 1px solid var(--border);
+               color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 13px; }
+  .rg-imp textarea { font-family: ui-monospace, monospace; resize: vertical; }
+  .rg-imp-row { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+                padding: 6px 0; border-top: 1px solid var(--border); }
+  .rg-imp-row span:first-child { font-size: 13px; flex: 0 0 auto; }
+  .rg-imp-row span:nth-child(2) { color: var(--dim); font-size: 12px; flex: 1; }
+
+  .ai-box { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 12px; }
+  .ai-result { background: rgba(77,163,255,.05); border: 1px solid rgba(77,163,255,.25);
+               border-radius: 9px; padding: 12px 16px; margin-top: 8px; }
+  .ai-result h2 { color: var(--accent) !important; font-size: 14px; margin-top: 8px; }
+  .ai-loading { color: var(--dim); padding: 8px 2px; }
+  .ai-loading::after { content: ''; animation: dots 1.4s steps(4,end) infinite; }
+  @keyframes dots { 0% {content:'';} 25% {content:'.';} 50% {content:'..';} 75% {content:'...';} }
+  .ai-error { color: var(--red); padding: 6px 2px; font-size: 13px; }
+  .ai-cursor { color: var(--accent); animation: blink 1s steps(2,start) infinite; }
+  @keyframes blink { to { visibility: hidden; } }
+
+  /* 💬 AI 코치 */
+  .co-wrap { max-width: 860px; display: flex; flex-direction: column; gap: 12px; }
+  .co-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .co-bar select { max-width: 360px; }
+  .co-msgs { display: flex; flex-direction: column; gap: 12px; min-height: 120px; }
+  .co-msg { border-radius: 10px; padding: 10px 14px; line-height: 1.6; font-size: 14px; }
+  .co-msg.user { align-self: flex-end; max-width: 80%; white-space: pre-wrap;
+                 background: rgba(77,163,255,.14); border: 1px solid rgba(77,163,255,.35); }
+  .co-msg.coach { background: var(--panel); border: 1px solid var(--border); }
+  .co-msg.coach h2, .co-msg.coach h3 { font-size: 14px; margin: 8px 0 4px; }
+  .co-refs { font-size: 11px; color: var(--dim); margin-top: 4px; white-space: normal; }
+  .co-fail { color: var(--red); font-size: 12px; margin-top: 8px; }
+  .co-input { position: sticky; bottom: -18px; background: var(--bg); padding: 10px 0 14px;
+              display: flex; gap: 8px; align-items: stretch; }
+  .co-input textarea { flex: 1; resize: vertical; min-height: 58px; background: var(--panel2);
+                       color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+                       padding: 8px 10px; font: inherit; font-size: 14px; }
+  .co-hint { color: var(--dim); font-size: 12px; margin-top: -6px; }
+  .co-ex { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .ai-spinner { display: inline-block; width: 11px; height: 11px; vertical-align: -1px;
+    margin-left: 3px; border: 2px solid var(--green); border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .ai-meta { color: var(--dim); font-size: 11px; margin-top: 6px; text-align: right; }
+
+  #report-overlay { display: none; position: fixed; inset: 0; z-index: 50;
+                    background: rgba(0,0,0,.62); align-items: center; justify-content: center; }
+  #report-overlay.open { display: flex; }
+  #report-panel { width: min(860px, 92vw); max-height: 86vh; overflow-y: auto;
+                  background: var(--panel); border: 1px solid var(--border);
+                  border-radius: 14px; padding: 20px 26px 24px; }
+  #report-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  #report-head h2 { font-size: 17px; }
+  #report-body h2 { color: var(--gold); font-size: 15px; margin: 14px 0 6px; }
+  #report-body ul { list-style: none; margin: 4px 0 10px 6px; }
+  #report-body li { padding: 2px 0; }
+  #report-body strong { color: #fff; }
+  #report-body .ai-meta { margin-top: 14px; }
+
+  .tourney.stats { border-color: rgba(77,163,255,.45); }
+  .tourney.stats.sel { border-color: var(--accent); background: rgba(77,163,255,.1); }
+  .tourney.stats .tname { color: var(--accent); }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
+                gap: 10px; margin-bottom: 20px; }
+  .stat-card { background: var(--panel); border: 1px solid var(--border);
+               border-radius: 10px; padding: 12px 14px; }
+  .stat-card .v { font-size: 22px; font-weight: 700; letter-spacing: .3px; }
+  .stat-card .l { color: var(--dim); font-size: 12px; margin-top: 2px; }
+  .stat-card .sub { color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .stat-card .v.win { color: var(--green); } .stat-card .v.lose { color: var(--red); }
+
+  .stat-section { margin-bottom: 22px; }
+  .stat-section > h3 { font-size: 14px; color: var(--gold); margin-bottom: 8px; }
+  .chart-box { background: var(--panel); border: 1px solid var(--border);
+               border-radius: 10px; padding: 14px 16px; }
+  table.stat-table { width: 100%; border-collapse: collapse; font-size: 13px;
+                     background: var(--panel); border: 1px solid var(--border);
+                     border-radius: 10px; overflow: hidden; }
+  table.stat-table th, table.stat-table td { padding: 8px 12px; text-align: right;
+                     border-bottom: 1px solid var(--border); }
+  table.stat-table th { color: var(--dim); font-weight: 600; font-size: 12px;
+                        background: var(--panel2); }
+  table.stat-table td:first-child, table.stat-table th:first-child { text-align: left; }
+  table.stat-table tr:last-child td { border-bottom: none; }
+  table.stat-table tbody tr.clickable { cursor: pointer; }
+  table.stat-table tbody tr.clickable:hover { background: var(--panel2); }
+  .tnum.win { color: var(--green); } .tnum.lose { color: var(--red); }
+
+  .grid-wrap { overflow-x: auto; padding-bottom: 4px; }
+  table.hgrid { border-collapse: separate; border-spacing: 2px; }
+  table.hgrid th { color: var(--dim); font-size: 11px; font-weight: 600;
+                   width: 22px; height: 22px; text-align: center; }
+  table.hgrid td { padding: 0; }
+  .hgrid .hc { width: 52px; height: 44px; border-radius: 4px; background: var(--panel2);
+               display: flex; flex-direction: column; align-items: center; justify-content: center;
+               line-height: 1.15; border: 1px solid transparent; }
+  .hgrid .hc.pair { border-color: rgba(232,184,79,.5); }
+  .hgrid .hc .lab { font-weight: 700; font-size: 11px; }
+  .hgrid .hc.mix .lab { text-shadow: 0 1px 2px rgba(0,0,0,.8); }
+  .hgrid .hc .val { font-size: 10px; color: var(--text); opacity: .92; }
+  .hgrid .hc.empty { opacity: .25; }
+  .hgrid .hc.dim { opacity: .4; }
+
+  /* 📊 레인지 차트 뷰어 — GTO 툴과 같은 모양: 셀을 빈도 비율만큼 가로로 채운다 */
+  .rgv-grid { display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); gap: 2px;
+              max-width: 720px; }
+  .rgv-c { position: relative; aspect-ratio: 1 / 1; border-radius: 3px; overflow: hidden;
+           display: flex; align-items: center; justify-content: center;
+           font-size: 12px; font-weight: 700; color: #fff; cursor: default;
+           text-shadow: 0 1px 2px rgba(0,0,0,.55); background: #4d7bb3; }
+  .rgv-c .fill { position: absolute; inset: 0 auto 0 0; background: #dd4c45; }
+  /* 올인은 레이즈보다 진한 빨강 — GTO 툴의 두 톤을 그대로 따른다 */
+  .rgv-c .jamfill { position: absolute; inset: 0 auto 0 0; background: #72271f; }
+  /* 콜(림프)은 초록 — 빨강(레이즈·올인) 바로 오른쪽, 나머지가 파랑(폴드) */
+  .rgv-c .callfill { position: absolute; top: 0; bottom: 0; background: #4f9a5c; }
+  .rgv-c .t { position: relative; }
+  .rgv-c .pc { position: absolute; right: 2px; bottom: 1px; font-size: 9px; font-weight: 600;
+               opacity: .9; z-index: 1; }
+  .rgv-c.pair { box-shadow: inset 0 0 0 1px rgba(255,255,255,.35); }
+  .rgv-c.dev { box-shadow: inset 0 0 0 2px #ffdd57; }
+  .rgv-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .rgv-head h3 { font-size: 16px; }
+  .rgv-head .pct { color: var(--red); font-weight: 700; }
+  .rgv-stack { margin-right: 16px; min-width: 300px; }
+  .rgv-stack-top { display: flex; align-items: baseline; gap: 6px; }
+  .rgv-bb { font-size: 15px; color: #ffa657; font-variant-numeric: tabular-nums; }
+  .rgv-range { -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+               border-radius: 2px; background: var(--border); outline: none; margin: 8px 0 2px; }
+  .rgv-range::-webkit-slider-thumb { -webkit-appearance: none; width: 15px; height: 15px;
+               border-radius: 50%; background: #ffa657; cursor: pointer;
+               box-shadow: 0 0 0 3px rgba(255,166,87,.18); }
+  .rgv-range::-moz-range-thumb { width: 15px; height: 15px; border: none; border-radius: 50%;
+               background: #ffa657; cursor: pointer; }
+  /* 눈금은 bb 값이 아니라 인덱스 위치 — 양끝은 썸 반지름만큼 안으로 들인다 */
+  .rgv-ticks { position: relative; height: 14px; margin: 0 7px; }
+  .rgv-ticks span { position: absolute; transform: translateX(-50%); font-size: 10px;
+                    color: var(--dim); cursor: pointer; font-variant-numeric: tabular-nums; }
+  .rgv-ticks span:hover { color: var(--text); }
+  .rgv-ticks span.on { color: #ffa657; font-weight: 700; }
+  .rgv-ticks span.miss { opacity: .35; }
+  /* 📊 액션 카드 바 — 칩 색은 차트 칸 색과 같다 (레이즈 빨강 · 올인 진한 빨강 · 콜 초록 · 폴드 파랑) */
+  .rgv-bar { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 8px; margin-bottom: 8px; }
+  /* 📊 리크 리포트 표 — 위쪽(+, 너무 많이)은 빨강 계열, 아래쪽(−, 너무 적게)은 파랑 계열 */
+  table.lk { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  table.lk th { text-align: left; color: var(--dim); font-weight: 500; font-size: 12px; padding: 6px 8px;
+                border-bottom: 1px solid var(--border); }
+  table.lk td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.lk tr:not(:first-child) { cursor: pointer; }
+  table.lk tr:not(:first-child):hover { background: var(--panel); }
+  table.lk td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .lk-sub { color: var(--dim); font-size: 11px; }
+  .lk-diff { font-size: 11px; font-weight: 600; }
+  .lk-diff.up { color: #ff8a7a; } .lk-diff.down { color: #7fb4ff; }
+  .lk-chip { display: inline-block; margin: 0 4px 4px 0; padding: 2px 7px; border-radius: 5px; font-size: 12px;
+             background: var(--panel2); border-left: 3px solid; cursor: pointer; white-space: nowrap; }
+  .lk-chip.up { border-left-color: #dd4c45; } .lk-chip.down { border-left-color: #4d7bb3; }
+  .lk-chip:hover { filter: brightness(1.3); }
+  .rgv-max { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .rgv-max button { padding: 4px 11px; font-size: 12px; }
+  .rgv-max span { color: var(--dim); font-size: 12px; margin-left: 6px; }
+  .rgv-icm { border: 1px solid rgba(255,166,87,.45); background: rgba(255,166,87,.08);
+             border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; line-height: 1.6; }
+  .rgv-card .pn .fmt { font-size: 10px; font-weight: 500; color: var(--dim); }
+  .rgv-card { flex: 0 0 auto; min-width: 88px; background: var(--panel); border: 1px solid var(--border);
+              border-radius: 9px; padding: 7px 8px; cursor: pointer; }
+  .rgv-card:hover { border-color: var(--dim); }
+  .rgv-card.cur { border-color: #ffa657; box-shadow: 0 0 0 1px #ffa657 inset; cursor: default; }
+  .rgv-card.later { opacity: .55; }
+  .rgv-card.none .pn { color: var(--dim); }
+  .rgv-card .pn { font-weight: 700; font-size: 13px; margin-bottom: 4px; display: flex; gap: 5px; align-items: center; }
+  .rgv-card .pn .op { font-size: 10px; font-weight: 600; color: #dd4c45; }
+  .rgv-chip { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 2px 6px;
+              border-radius: 5px; margin-top: 3px; border-left: 3px solid transparent; background: var(--panel2); }
+  .rgv-chip b { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .rgv-chip.raise { border-left-color: #dd4c45; } .rgv-chip.jam { border-left-color: #72271f; }
+  .rgv-chip.call { border-left-color: #4f9a5c; } .rgv-chip.fold { border-left-color: #4d7bb3; }
+  .rgv-chip.sel { background: rgba(255,166,87,.16); color: #ffa657; font-weight: 700; }
+  .rgv-chip[onclick]:hover { filter: brightness(1.3); cursor: pointer; }
+  .rgv-chip.off { opacity: .4; cursor: not-allowed; }
+  .rgv-cnote { font-size: 11px; color: var(--dim); margin-top: 4px; }
+
+  .tourney.search { border-color: rgba(86,211,100,.4); }
+  .tourney.search.sel { border-color: var(--green); background: rgba(86,211,100,.08); }
+  .tourney.search .tname { color: var(--green); }
+
+  #tsearch { flex: 1; min-width: 180px; max-width: 360px; }
+  select.ts-sort { background: var(--panel2); border: 1px solid var(--border);
+                   color: var(--text); border-radius: 6px; padding: 5px 8px; }
+  .ts-counter { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+  .ts-card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+             padding: 11px 14px; margin-bottom: 8px; cursor: pointer; transition: border-color .1s; }
+  .ts-card:hover { border-color: var(--accent); }
+  .ts-card .ts-top { display: flex; align-items: center; gap: 8px; }
+  .ts-card .ts-name { font-weight: 600; }
+  .ts-card .ts-id { color: var(--dim); font-size: 12px; }
+  .ts-card .ts-arrow { margin-left: auto; color: var(--dim); }
+  .ts-card:hover .ts-arrow { color: var(--accent); }
+  .ts-card .ts-meta { color: var(--dim); font-size: 12px; margin-top: 3px; }
+  .ts-pager { display: flex; align-items: center; gap: 5px; justify-content: center;
+              margin: 16px 0 8px; flex-wrap: wrap; }
+  .ts-pager button { min-width: 34px; padding: 5px 9px; }
+  .ts-pager button:disabled { opacity: .4; cursor: default; }
+  .ts-pager button:disabled:hover { border-color: var(--border); color: var(--text); }
+  .ts-ellip { color: var(--dim); padding: 0 2px; }
+
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+           background: var(--accent); color: #0c1117; font-weight: 600;
+           padding: 9px 20px; border-radius: 8px; opacity: 0; transition: opacity .25s; }
+  .toast.show { opacity: 1; }
