@@ -319,12 +319,13 @@ def _stack_bucket(sb):
     return "deep"
 
 
-def hands_by_combo(db, combo, pos=None, stack=None):
+def hands_by_combo(db, combo, pos=None, stack=None, hero="Hero"):
     """특정 스타팅 핸드 조합(AA/AKs/AKo)의 핸드 목록 (raw 제외, 시간순).
 
-    pos/stack 필터는 hand_grid와 동일 — 그리드 칸 클릭 드릴다운용."""
+    pos/stack 필터는 hand_grid와 동일 — 그리드 칸 클릭 드릴다운용. markdown은 DB에 없으므로
+    다른 목록 API처럼 `hand_view`로 raw에서 다시 만든다 (빠지면 프론트가 본문을 못 그린다)."""
     hands = [
-        {k: v for k, v in r.items() if k != "raw"}
+        hand_view(r, hero)
         for r in db["hands"].values()
         if _combo(r.get("hero_cards") or []) == combo
         and not (pos and (r.get("hero_pos") or "") != pos)

@@ -178,6 +178,18 @@ card → "everyone between folds"). It is **only a view of `(pos, vs)`** — no 
 empty = folded to `pos` (open chart), `vs` set = `vs` opened and the rest folded (defense chart). The
 current seat's card shows the chart's overall action split. Data stops at "one open + one response",
 so 3벳/콜/림프 continuations are rendered but disabled (`NA` tooltip), and folding to BB is a walk.
+**리크 리포트** (the tab's second mode, `RANGE.view.mode = 'leak'`, `ranges.leak_report`) lines every imported
+chart up against hero's record per spot (seat × opener-kind × stack bucket): actual action rate vs the chart
+expectation **weighted by the combos hero was actually dealt**, sorted by "차트와 다르게 친 결정 수" =
+Σ_combo |actions − opportunities × chart freq| (frequency gap × sample in one number). What counts as the
+action follows the hero tallies: opens (raise share — `rfi` doesn't count limps), defense (any non-fold),
+calls vs all-in, iso-raises vs limp (`_target`). It compares only where **that bucket has its own imported
+chart** (`chart_stack == bucket`) — a fallback chart from another bucket would grade 40bb hands with a
+20bb chart. Rows open the chart with the hero overlay on, at the bb of the chart the row used (not the
+bucket key — the slider has no bucket ticks). Combo chips open the matching hands (`spot_hands`, same
+selection rules as the tallies so counts and lists agree) in the grid drill-down view (`SEL = -4`,
+`DRILL.back` routes the back button to the report). Uses the same seat-count setting as the chart/drill.
+
 A **8/7/6맥스 · 5/4/3명** toggle (`rgvSeats`, `RANGE.view.max`) just drops seats from the front of the bar — data stays
 8max-keyed because an open range is set by how many players are behind (7max UTG = 8max UTG1, 6max UTG =
 8max LJ; same rule as `_pos_8max`), so no separate charts exist per format. If the current seat or opener

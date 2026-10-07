@@ -720,6 +720,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .rgv-ticks span.miss { opacity: .35; }
   /* 📊 액션 카드 바 — 칩 색은 차트 칸 색과 같다 (레이즈 빨강 · 올인 진한 빨강 · 콜 초록 · 폴드 파랑) */
   .rgv-bar { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 8px; margin-bottom: 8px; }
+  /* 📊 리크 리포트 표 — 위쪽(+, 너무 많이)은 빨강 계열, 아래쪽(−, 너무 적게)은 파랑 계열 */
+  table.lk { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  table.lk th { text-align: left; color: var(--dim); font-weight: 500; font-size: 12px; padding: 6px 8px;
+                border-bottom: 1px solid var(--border); }
+  table.lk td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.lk tr:not(:first-child) { cursor: pointer; }
+  table.lk tr:not(:first-child):hover { background: var(--panel); }
+  table.lk td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .lk-sub { color: var(--dim); font-size: 11px; }
+  .lk-diff { font-size: 11px; font-weight: 600; }
+  .lk-diff.up { color: #ff8a7a; } .lk-diff.down { color: #7fb4ff; }
+  .lk-chip { display: inline-block; margin: 0 4px 4px 0; padding: 2px 7px; border-radius: 5px; font-size: 12px;
+             background: var(--panel2); border-left: 3px solid; cursor: pointer; white-space: nowrap; }
+  .lk-chip.up { border-left-color: #dd4c45; } .lk-chip.down { border-left-color: #4d7bb3; }
+  .lk-chip:hover { filter: brightness(1.3); }
   .rgv-max { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
   .rgv-max button { padding: 4px 11px; font-size: 12px; }
   .rgv-max span { color: var(--dim); font-size: 12px; margin-left: 6px; }
@@ -1556,7 +1571,8 @@ function renderMain() {
       <button class="primary" onclick="downloadMd()">⬇ .md 다운로드</button>`;
   }
 
-  const backBtn = SEL === -4 ? `<button onclick="backToGrid()">← 그리드로</button>`
+  const backBtn = SEL === -4 ? (DRILL && DRILL.back ? `<button onclick="${DRILL.back[0]}">${DRILL.back[1]}</button>`
+                                                      : `<button onclick="backToGrid()">← 그리드로</button>`)
     : SEL >= 0 ? `<button onclick="selectSearch()">← 검색으로</button>` : '';
   $('#mainhead').innerHTML = `
     ${backBtn}
@@ -3271,7 +3287,8 @@ let RANGE = {
   imp: {pos: '', vs: '', stack: '', text: '', source: '', busy: false, err: '', msg: ''},
   // 📊 레인지 차트 뷰어 (문제를 내지 않는 보기 전용 모드). vs '' = 오픈 차트
   view: {pos: '', vs: '', stack: '', chart: null, loading: false, err: '', rate: false, cache: {},
-         max: rgvLoadMax()},   // 테이블 인원 (8/7/6맥스) — 화면에서 앞자리를 몇 개 빼고 보여줄지
+         max: rgvLoadMax(),    // 테이블 인원 (8/7/6맥스) — 화면에서 앞자리를 몇 개 빼고 보여줄지
+         mode: 'chart', leaks: null},   // mode: 'chart' | 'leak' (리크 리포트), leaks: 인원별 리포트 캐시
 };
 
 function rgFilterQS() {
@@ -3284,6 +3301,7 @@ function rgFilterQS() {
 async function rgLoadState() {
   try { RANGE.state = await (await fetch('/api/range/state')).json(); }
   catch (e) { RANGE.state = {error: String(e)}; }
+  RANGE.view.leaks = null;        // 차트가 새로 들어왔을 수 있다 — 리크 리포트는 다시 계산 (0.2초)
   renderSidebar();
   if (SEL === -7) renderQuiz();
   if (SEL === -8) renderRangeChart();
@@ -3614,8 +3632,98 @@ function selectRangeChart() {
 
 function renderRangeChart() {
   if (SEL !== -8) return;
-  $('#mainhead').innerHTML = '<h2>📊 레인지 차트</h2>';
-  renderRangeView();
+  const mb = (k, l) => `<button class="${RANGE.view.mode === k ? 'primary' : ''}" onclick="rgvSetMode('${k}')">${l}</button>`;
+  $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">📊 레인지 차트</h2>${mb('chart', '차트')}${mb('leak', '리크 리포트')}`;
+  if (RANGE.view.mode === 'leak') renderLeakView(); else renderRangeView();
+}
+
+function rgvSetMode(m) { RANGE.view.mode = m; renderRangeChart(); $('#main').scrollTop = 0; }
+
+// ── 리크 리포트 — 가져온 차트 vs 내 실전, '차트와 다르게 친 결정 수' 순 (서버 ranges.leak_report) ──
+// 인원 설정은 차트·드릴과 같은 것을 쓴다. 결과는 인원별로 캐시하고, 차트를 새로 가져오면(state 갱신) 비운다.
+async function loadLeaks() {
+  const v = RANGE.view, key = String(v.max);
+  if (v.leaks && v.leaks.key === key) return;
+  v.leaks = {key, loading: true};
+  renderRangeChart();
+  try {
+    const d = await (await fetch('/api/range/leaks?max=' + v.max)).json();
+    if (v.leaks.key === key) v.leaks = {key, data: d};
+  } catch (e) { v.leaks = {key, err: String(e)}; }
+  renderRangeChart();
+}
+
+function leakSetMax(n) {
+  RANGE.view.max = +n;
+  try { localStorage.setItem('ahh_rgv_max', String(n)); } catch (e) {}
+  renderRangeChart();
+}
+
+// 행 → 그 스팟의 차트를 '내 실전 기록 겹쳐 보기'로 연다 (어긋난 칸에 테두리)
+function leakOpenChart(i) {
+  const r = RANGE.view.leaks.data.rows[i], v = RANGE.view;
+  v.mode = 'chart'; v.rate = true;
+  // 리포트는 구간(15–25bb 등)으로 비교하므로 그 구간에서 실제로 쓴 차트의 bb로 연다
+  v.stack = r.bb === null || r.bb === undefined ? r.stack : String(r.bb);
+  rgvGo(r.pos, r.vs || '');
+  renderRangeChart();
+}
+
+// 조합 칩 → 그 스팟에서 그 조합을 받은 실제 핸드들 (그리드 드릴다운과 같은 핸드 목록 화면)
+async function leakOpenHands(i, j) {
+  const r = RANGE.view.leaks.data.rows[i], c = r.combos[j];
+  const q = new URLSearchParams({pos: r.pos, vs: r.vs || '', bucket: r.bucket, combo: c.combo});
+  SEL = -4; DRILL = null; renderSidebar();
+  const name = `📊 ${r.label} · ${r.stack_label} · ${c.combo}`;
+  $('#mainhead').innerHTML = `<button onclick="leakBack()">← 리크 리포트로</button><h2>${esc(name)}</h2>`;
+  $('#hands').innerHTML = '<div class="ai-loading">핸드 불러오는 중</div>';
+  const data = await fetch('/api/range/hands?' + q).then(x => x.json());
+  if (SEL !== -4) return;
+  for (const h of data.hands)
+    if (h.analysis && !AI_CACHE[h.hand_id])
+      AI_CACHE[h.hand_id] = {status: 'done', text: h.analysis, backend: '저장됨'};
+  DRILL = {id: 'drill', name, hand_count: data.hands.length, hands: data.hands,
+           back: ['leakBack()', '← 리크 리포트로']};
+  renderMain(); $('#main').scrollTop = 0;
+}
+function leakBack() { RANGE.view.mode = 'leak'; selectRangeChart(); }
+
+function renderLeakView() {
+  const v = RANGE.view, st = RANGE.state;
+  if (!st) { $('#hands').innerHTML = '<div class="qz-wrap"><div class="ai-loading">불러오는 중</div></div>'; return; }
+  if (!v.leaks || v.leaks.key !== String(v.max)) { loadLeaks(); return; }
+  const maxSel = `<span class="qz-tglabel">인원</span>
+    <select class="qz-sel" onchange="leakSetMax(this.value)">${[8, 7, 6, 5, 4, 3].map(n =>
+      `<option value="${n}" ${n === v.max ? 'selected' : ''}>${rgvMaxName(n)}</option>`).join('')}</select>`;
+  const L = v.leaks;
+  let body;
+  if (L.loading) body = '<div class="ai-loading">내 기록과 차트를 맞대어 보는 중</div>';
+  else if (L.err) body = `<div class="qz-note">${esc(L.err)}</div>`;
+  else if (L.data.personalized === false) body = `<div class="qz-note">DB가 <code>--rebuild</code> 전이라
+      오픈 기회를 판정할 수 없습니다 — <code>python3 gui.py --rebuild</code> 후 다시 열어 주세요.</div>`;
+  else if (!L.data.rows.length) body = `<div class="qz-note">비교할 스팟이 없습니다 — 가져온 차트가 있는 구간에서
+      기회가 ${L.data.min_n}번 이상인 스팟만 싣습니다.</div>`;
+  else body = `<table class="lk">
+      <tr><th>스팟</th><th>기회</th><th>실제 vs 차트</th><th title="조합마다 |실제 횟수 − 기회 × 차트 빈도|의 합">다르게 친 결정</th><th>대표 조합 (실제 / 기회 · 차트)</th></tr>
+      ${L.data.rows.map((r, i) => `<tr onclick="leakOpenChart(${i})" title="${esc(r.chart_label)} 차트에 내 기록을 겹쳐 봅니다">
+        <td><b>${esc(r.label)}</b><br><span class="lk-sub">${esc(r.stack_label)} · ${esc(r.act_name)}</span></td>
+        <td class="num">${r.n.toLocaleString()}</td>
+        <td class="num">${r.actual}% <span class="lk-sub">/ ${r.expected}%</span><br>
+          <span class="lk-diff ${r.diff > 0 ? 'up' : 'down'}">${r.diff > 0 ? '+' : ''}${r.diff}p ${
+            Math.abs(r.diff) < 2 ? '' : r.diff > 0 ? '많이 ' + esc(r.act_name) : '적게 ' + esc(r.act_name)}</span></td>
+        <td class="num"><b>${Math.round(r.wrong)}</b></td>
+        <td>${r.combos.map((c, j) => `<span class="lk-chip ${c.acts / c.opps > c.target / 100 ? 'up' : 'down'}"
+            onclick="event.stopPropagation(); leakOpenHands(${i}, ${j})"
+            title="이 조합을 받은 실제 핸드 ${c.opps}개 보기">${c.combo} ${c.acts}/${c.opps} · ${c.target}%</span>`).join('')}</td>
+      </tr>`).join('')}
+    </table>`;
+  $('#hands').innerHTML = `<div class="qz-wrap" style="max-width:1100px">
+    <div class="qz-tgrow">${maxSel}</div>
+    <div class="qz-note">가져온 차트와 내 실전 기록을 스팟마다 맞대어 봅니다. 기대치는 <b>내가 실제로 받은 조합</b>으로
+      계산하고, <b>차트와 다르게 친 결정 수</b>(빈도 차이 × 표본) 순으로 정렬합니다. 그 구간에 가져온 차트가 있고
+      기회가 ${L.data ? L.data.min_n : 15}번 이상인 스팟만 싣습니다. 행을 누르면 그 차트에 내 기록을 겹쳐 보고,
+      조합을 누르면 실제 핸드로 갑니다.</div>
+    ${body}</div>`;
 }
 
 // 상황(vs)은 '' = 오픈 차트, 그 밖엔 오프너 이름. 슬롯은 (포지션, 상황, 스택)으로 갈린다.
@@ -4300,7 +4408,7 @@ class Handler(BaseHTTPRequestHandler):
             combo = qs.get("combo", [""])[0]
             pos = qs.get("pos", [""])[0] or None
             stack = qs.get("stack", [""])[0] or None
-            resp = store.hands_by_combo(DB, combo, pos=pos, stack=stack)
+            resp = store.hands_by_combo(DB, combo, pos=pos, stack=stack, hero=HERO)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/tournament":
             qs = parse_qs(urlparse(self.path).query)
@@ -4331,6 +4439,15 @@ class Handler(BaseHTTPRequestHandler):
             chat = coach.get_chat(DB, qs.get("id", [""])[0])
             self._send(json.dumps(chat or {"error": "대화를 찾지 못했습니다."}, ensure_ascii=False),
                        "application/json; charset=utf-8", code=200 if chat else 404)
+        elif path == "/api/range/leaks":
+            qs = parse_qs(urlparse(self.path).query)
+            resp = ranges.leak_report(DB, max_seats=qs.get("max", ["8"])[0] or 8)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/range/hands":
+            qs = parse_qs(urlparse(self.path).query)
+            g = lambda k: qs.get(k, [""])[0]
+            resp = ranges.spot_hands(DB, g("pos"), g("vs") or None, g("bucket"), g("combo"), hero=HERO)
+            self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/range/state":
             self._send(json.dumps(ranges.state_view(DB), ensure_ascii=False),
                        "application/json; charset=utf-8")

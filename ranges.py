@@ -823,6 +823,97 @@ def hero_record(db, pos, bucket, combo, vs=None, builtin=False):
 
 
 # ---------------------------------------------------------------------------
+# 차트 대비 리크 리포트 — 가져온 차트와 내 실전 기록을 스팟마다 맞대어 본다 (AI 호출 없음)
+# ---------------------------------------------------------------------------
+
+LEAK_MIN_N = 15        # 이보다 기회가 적은 스팟은 싣지 않는다 (몇 판으로는 리크라 할 수 없다)
+
+
+def _target(c, combo):
+    """그 조합에서 '액션'으로 칠 차트 빈도 — 실전 기록이 세는 것과 같은 기준.
+    오픈 차트: 레이즈만(rfi는 림프를 안 센다) / 방어: 비폴드 전부 / 올인: 콜 / 림프: 레이즈."""
+    w = c["weights"].get(combo, 0.0)
+    return w - c["call"].get(combo, 0.0) if not c["vs"] else w
+
+
+def leak_report(db, max_seats=8):
+    """스팟(자리 × 상대 × 스택 구간)마다 실제 액션율 vs 차트 기대치, **차트와 다르게 친 결정 수**.
+
+    기대치는 내가 실제로 받은 조합으로 가중한다 (표본이 작을 때 패 운을 리크로 읽지 않게).
+    '다르게 친 결정 수' = 조합마다 |실제 액션 횟수 − 기회 × 차트 빈도|의 합 — 빈도와 표본을
+    한 숫자로 묶은 손해 크기의 대용치라, 이 순서로 정렬한다. 비교는 **그 구간에 가져온 차트가
+    있을 때만** 한다 (다른 구간 차트로 대체해 비교하면 40bb 핸드를 20bb 차트로 재게 된다).
+    인원에서 빠지는 앞자리(자리·오프너)는 싣지 않는다."""
+    off = seats_off(max_seats)
+    spots = {(s["pos"], s["vs"] or None) for s in custom_slots(db)}
+    rows = []
+    for pos, vs in spots:
+        if pos in off or vs_parts(vs)[0] in off:
+            continue
+        for bucket in STACK_ORDER:
+            c = chart(pos, bucket, db, vs)
+            if not c or not c.get("source") or c["chart_stack"] != bucket:
+                continue
+            cells = hero_cells(db, pos, bucket, vs)
+            n = sum(e[1] for e in cells.values())
+            if n < LEAK_MIN_N:
+                continue
+            acts = sum(e[0] for e in cells.values())
+            exp = sum(e[1] * _target(c, k) for k, e in cells.items())
+            combos = []
+            for k, e in cells.items():
+                t = _target(c, k)
+                miss = abs(e[0] - e[1] * t)
+                if e[1] >= 2 and abs(e[0] / e[1] - t) >= 0.25:
+                    combos.append({"combo": k, "acts": e[0], "opps": e[1],
+                                   "target": round(t * 100), "miss": round(miss, 1)})
+            combos.sort(key=lambda x: -x["miss"])
+            wrong = sum(abs(e[0] - e[1] * _target(c, k)) for k, e in cells.items())
+            kind = vs_parts(vs)[1]
+            rows.append({
+                "pos": pos, "vs": vs, "bucket": bucket, "stack": c["stack"], "bb": c["bb"],
+                "label": spot_name(pos, vs), "stack_label": STACK_LABEL[bucket],
+                "chart_label": c["label"],
+                # 무엇을 '액션'으로 셌나 — 문구용
+                "act_name": "오픈" if not vs else {"raise": "방어", "allin": "콜", "limp": "레이즈"}[kind],
+                "n": n, "actual": round(acts / n * 100, 1), "expected": round(exp / n * 100, 1),
+                "diff": round((acts - exp) / n * 100, 1), "wrong": round(wrong, 1),
+                "combos": combos[:6],
+            })
+    rows.sort(key=lambda r: -r["wrong"])
+    return {"rows": rows, "max": int(max_seats) if str(max_seats).isdigit() else 8,
+            "personalized": personalized(db), "vs_personalized": vs_personalized(db),
+            "min_n": LEAK_MIN_N}
+
+
+def spot_hands(db, pos, vs, bucket, combo, hero="Hero"):
+    """리포트의 조합 칩 → 그 스팟에서 그 조합을 받은 실제 핸드들 (시간순, raw 제외 + 본문).
+    고르는 기준은 실전 기록 집계(_hero_rfi/_hero_vs)와 같다 — 숫자와 목록이 어긋나지 않게."""
+    vs = _norm_vs(vs) if vs else None
+    op, kind = vs_parts(vs)
+    out = []
+    for r in db.get("hands", {}).values():
+        if store._combo(r.get("hero_cards") or []) != combo:
+            continue
+        if store._stack_bucket(r.get("stack_bb")) != bucket:
+            continue
+        n = r.get("players")
+        if _pos_8max(r.get("hero_pos"), n) != pos:
+            continue
+        if not vs:
+            ok = r.get("pf_faced") == "none"
+        elif kind == "limp":
+            ok = r.get("pf_faced") == "limp" and _pos_8max(r.get("pf_limper"), n) == op
+        else:
+            ok = (r.get("pf_faced") == "raise" and _pos_8max(r.get("pf_opener"), n) == op
+                  and bool(r.get("pf_opener_allin")) == (kind == "allin"))
+        if ok:
+            out.append(store.hand_view(r, hero))
+    out.sort(key=lambda h: h.get("datetime") or "")
+    return {"hands": out, "label": f"{spot_name(pos, vs)} · {STACK_LABEL.get(bucket, bucket)} · {combo}"}
+
+
+# ---------------------------------------------------------------------------
 # 출제
 # ---------------------------------------------------------------------------
 
