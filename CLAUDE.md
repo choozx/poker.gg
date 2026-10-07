@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A local web app that converts CoinPoker tournament hand-history `.txt` files into a readable format
 and runs per-hand AI (Claude) analysis. Pure Python **standard library only** — no external packages,
-no build step, no test suite. Target: Python 3.8+. UI text and code comments are in Korean.
+no build step. Target: Python 3.8+. UI text and code comments are in Korean.
 
 ## Commands
 
@@ -22,9 +22,16 @@ python3 convert.py hands.txt              # interactive: list tournaments → co
 python3 convert.py hands.txt --list       # list tournaments only
 python3 convert.py hands.txt --tournament 63446 -o out.md
 python3 convert.py hands.txt --format json
+
+python3 -m unittest discover -s tests     # 회귀 테스트 (DB 불필요)
 ```
 
-There are no tests, linters, or CI. Verify changes by running `gui.py` against `sample_hand.txt`
+Tests: `python3 -m unittest discover -s tests` (stdlib `unittest`, no DB needed — `sample_hand.txt` plus
+dicts built in the test). Most cases pin a bug that actually happened (UTG 기록 섞임, 감시 모드 되돌리기 직후
+저장, 그리드 드릴다운 본문 누락…); when you fix one, add its case — and check the test fails with the bug
+put back, since a scenario that doesn't reproduce the bug passes either way (the first undo test did). The watch
+loop is tested by monkeypatching `capture_fast`/`read_grid`/`read_line`/`send`, not with images. No linters or CI.
+Beyond tests, verify UI changes by running `gui.py` against `sample_hand.txt`
 (drag-drop into the browser) or `python3 convert.py sample_hand.txt`.
 
 ## Architecture
