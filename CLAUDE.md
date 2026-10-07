@@ -29,7 +29,9 @@ python3 -m unittest discover -s tests     # 회귀 테스트 (DB 불필요)
 Tests: `python3 -m unittest discover -s tests` (stdlib `unittest`, no DB needed — `sample_hand.txt` plus
 dicts built in the test). Most cases pin a bug that actually happened (UTG 기록 섞임, 감시 모드 되돌리기 직후
 저장, 그리드 드릴다운 본문 누락…); when you fix one, add its case — and check the test fails with the bug
-put back, since a scenario that doesn't reproduce the bug passes either way (the first undo test did). The watch
+put back, since a scenario that doesn't reproduce the bug passes either way (the first undo test did).
+Put the bug back on a **backup copy** of the file and restore from that copy — `git checkout -- file` also
+throws away your uncommitted fix (that happened once). The watch
 loop is tested by monkeypatching `capture_fast`/`read_grid`/`read_line`/`send`, not with images. No linters or CI.
 Beyond tests, verify UI changes by running `gui.py` against `sample_hand.txt`
 (drag-drop into the browser) or `python3 convert.py sample_hand.txt`.
@@ -369,9 +371,11 @@ are single-call (`stream(system, user)`), so continuity is faked: `build_prompt`
 prompt's own sections). Each message also carries:
 
 - **`profile_text(db)`** — "내 플레이 요약", recomputed per message from **frozen meta fields only**
-  (~0.3s on 100k hands, ~3K chars): VPIP/PFR, 최근 `RECENT_HANDS` vs 전체, 포지션별 칩 EV, 오픈율 vs
-  차트 and BB 방어율 vs 가져온 방어 차트 (both **weighted by the combos hero was actually dealt**, so a
-  small sample's card luck isn't read as a leak), `quiz.leak_spots`, `store.leak_report`, drill scores.
+  (~0.4s on 60k hands, ~8K chars): VPIP/PFR, 최근 `RECENT_HANDS` vs 전체, 포지션별 칩 EV, the **📊 리크
+  리포트 rows** (`ranges.leak_report` — the *same* computation the tab shows, so the coach and the screen
+  never disagree; top `LEAK_DETAIL` spots with example combos, the rest one line each), `quiz.leak_spots`,
+  `store.leak_report` (AI-analysis grades), drill scores. Don't re-derive chart comparisons in coach.py —
+  it used to have its own copy and the two could drift.
   This is what stops the AI from inventing numbers — `COACH_SYSTEM_PROMPT` tells it to quote only these.
   On un-rebuilt DBs the chart sections say *why* they're empty, so "no data" isn't read as "no leak".
 - **`#핸드번호` refs** — the hand's `render_markdown` + its stored `analysis`. The UI only shows the

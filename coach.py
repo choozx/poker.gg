@@ -7,6 +7,7 @@
   1. **내 플레이 요약** (`profile_text`) — 매 메시지에 붙는 컨텍스트. DB가 90MB라 핸드를
      통째로 넘길 수 없으므로 이미 얼려 둔 메타 필드만 모아 숫자로 요약한다 (AI 호출 없음).
      AI가 "내 BTN 오픈 넓어?"에 지어낸 숫자가 아니라 내 실제 숫자로 답하게 하는 부분.
+     차트 비교는 📊 리크 리포트와 **같은 계산**(`ranges.leak_report`)을 그대로 싣는다.
   2. **핸드 참조** (`find_hand`) — 메시지에 `#번호`를 쓰면 그 핸드 원문 + 기존 분석을 붙인다.
      UI가 번호 끝 6자리만 보여주므로 끝자리 일치도 받는다 (유일할 때만).
   3. **대화 저장** — `db["coach"]["chats"]`, 최근 `MAX_CHATS`개 · 대화당 `MAX_MESSAGES`개.
@@ -32,7 +33,6 @@ MAX_MESSAGES = 60       # 대화 하나에 남기는 메시지 수
 HISTORY_TURNS = 10      # 프롬프트에 다시 싣는 최근 턴 수 (1턴 = 질문 + 답)
 MAX_REF_HANDS = 3       # 한 번에 붙이는 참조 핸드 수 (핸드 원문이 길다)
 RECENT_HANDS = 2000     # '최근' 비교 구간 — 날짜 대신 핸드 수 (드문드문 쳐도 표본이 일정하게)
-MIN_SPOT_N = 20         # 차트 비교 줄을 싣는 최소 기회 수 (그 아래는 노이즈)
 
 HAND_REF_RE = re.compile(r"#(\d{6,})")
 
@@ -93,77 +93,25 @@ def _freqs(hands):
             f"오픈(RFI) {_pct(rfi, len(opp))} ({n:,}핸드)")
 
 
-def _vs_chart_lines(db):
-    """가져온/내장 오픈 차트 대비 내 실제 오픈율, 가져온 방어 차트(vs 오픈) 대비 내 방어율.
+LEAK_DETAIL = 12      # 리크 상위 몇 스팟을 대표 조합까지 자세히 싣나 (나머지는 한 줄씩)
 
-    차트 기대치는 **내가 실제로 받은 조합**으로 가중한다 — 표본이 작으면 받은 패가 치우쳐
-    있어서, 차트 전체 오픈%와 그냥 비교하면 차이가 패 운에서 나온다. 자리는 `_pos_8max`로
-    8맥스 이름에 맞춘다 (가져온 차트가 8맥스라서)."""
-    hands = db.get("hands", {})
-    rfi, dev = {}, []
-    for r in hands.values():
-        if r.get("pf_faced") != "none":
-            continue
-        pos = ranges._pos_8max(r.get("hero_pos"), r.get("players"))
-        sb = store._stack_bucket(r.get("stack_bb"))
-        combo = store._combo(r.get("hero_cards") or [])
-        if not pos or not sb or not combo:
-            continue
-        e = rfi.setdefault((pos, sb), {}).setdefault(combo, [0, 0])
-        e[1] += 1
-        if r.get("rfi"):
-            e[0] += 1
 
-    lines = []
-    for (pos, sb), combos in sorted(rfi.items(), key=lambda kv: (
-            ranges.POS_ORDER.index(kv[0][0]) if kv[0][0] in ranges.POS_ORDER else 99,
-            ranges.STACK_ORDER.index(kv[0][1]))):
-        c = ranges.chart(pos, sb, db)
-        n = sum(e[1] for e in combos.values())
-        if not c or n < MIN_SPOT_N:
-            continue
-        made = sum(e[0] for e in combos.values())
-        exp = sum(e[1] * (c["weights"].get(k, 0.0) - c["call"].get(k, 0.0))
-                  for k, e in combos.items())
-        src = "가져온 차트" if c["source"] else "내장 근사"
-        lines.append(f"- {pos} {ranges.STACK_LABEL[sb]}: 실제 {_pct(made, n)} / "
-                     f"차트대로면 {_pct(exp, n)} (기회 {n}회, {src} {c['label']})")
-        for k, (o, t) in combos.items():
-            target = c["weights"].get(k, 0.0) - c["call"].get(k, 0.0)
-            if t >= 3 and abs(o / t - target) >= 0.5:
-                dev.append((abs(o / t - target) * min(1.0, t / 6), pos, sb, k, o, t, target))
-
-    vs_lines = []
-    if ranges.vs_personalized(db):
-        agg = {}
-        for (pos, sb, vs, combo), e in ranges._hero_vs(db).items():
-            agg.setdefault((pos, sb, vs), {})[combo] = e
-        p8 = lambda p: ranges.POS_8MAX.index(p) if p in ranges.POS_8MAX else 99
-        vk = lambda v: (p8(ranges.vs_parts(v)[0]), ranges._KIND_ORDER[ranges.vs_parts(v)[1]])
-        for (pos, sb, vs), combos in sorted(agg.items(), key=lambda kv: (
-                p8(kv[0][0]), ranges.STACK_ORDER.index(kv[0][1]), vk(kv[0][2]))):
-            c = ranges.chart(pos, sb, db, vs)
-            n = sum(e[1] for e in combos.values())
-            if not c or n < MIN_SPOT_N:
-                continue
-            d = sum(e[0] for e in combos.values())
-            r3 = sum(e[2] for e in combos.values())
-            exp_d = sum(e[1] * c["weights"].get(k, 0.0) for k, e in combos.items())
-            exp_r = sum(e[1] * (c["weights"].get(k, 0.0) - c["call"].get(k, 0.0))
-                        for k, e in combos.items())
-            name = ranges.spot_name(pos, vs)
-            if c["allin"] or c["limp"]:          # 올인을 받으면 콜뿐 / 림프를 받으면 레이즈냐 체크냐
-                vs_lines.append(f"- {name} {ranges.STACK_LABEL[sb]}: {c['verb']} {_pct(d, n)} "
-                                f"(차트 {_pct(exp_d, n)}) · 기회 {n}회")
-            else:
-                vs_lines.append(f"- {name} {ranges.STACK_LABEL[sb]}: 방어 {_pct(d, n)} "
-                                f"(차트 {_pct(exp_d, n)}) · 3벳 {_pct(r3, n)} (차트 {_pct(exp_r, n)}) "
-                                f"· 기회 {n}회")
-
-    dev.sort(reverse=True)
-    dev_lines = [f"- {pos} {ranges.STACK_LABEL[sb]} {k}: {t}회 중 {o}회 오픈 "
-                 f"(차트 {target * 100:.0f}%)" for _, pos, sb, k, o, t, target in dev[:10]]
-    return lines, vs_lines, dev_lines
+def _leak_lines(db):
+    """'📊 리크 리포트'와 **같은 계산**(ranges.leak_report)을 요약 줄로. 화면과 코치가 서로 다른
+    숫자를 말하지 않게 계산은 한 곳에만 둔다. 상위 LEAK_DETAIL개는 대표 조합까지, 나머지는 한 줄씩.
+    모든 인원(8)으로 돌린다 — 표본이 적은 자리는 리포트가 알아서 뺀다(LEAK_MIN_N)."""
+    rows = ranges.leak_report(db, 8)["rows"]
+    out = []
+    for i, r in enumerate(rows):
+        head = (f"- {r['label']} {r['stack_label']} ({r['act_name']}): 실제 {r['actual']}% / "
+                f"차트 {r['expected']}% ({r['diff']:+}p) · 기회 {r['n']}회")
+        if i < LEAK_DETAIL:
+            combos = ", ".join(f"{c['combo']} {c['acts']}/{c['opps']}(차트 {c['target']}%)"
+                               for c in r["combos"][:4])
+            out.append(f"{head} · 다르게 친 결정 ≈{r['wrong']:.0f}" + (f" · 예: {combos}" if combos else ""))
+        else:
+            out.append(head)
+    return out
 
 
 def profile_text(db):
@@ -191,18 +139,14 @@ def profile_text(db):
         out.append(f"- {p['pos']}: {p['hands']:,}핸드 · VPIP {_pct(p['vpip'], p['hands'])} · "
                    f"칩 {p['net_bb']:+.1f}bb ({p['net_bb'] / p['hands'] * 100:+.1f}bb/100)")
 
-    personalized = ranges.personalized(db)
-    if personalized:
-        lines, vs_lines, dev_lines = _vs_chart_lines(db)
-        out += ["", "### 오픈(폴드로 나에게 옴) — 실제 오픈율 vs 차트",
-                *(lines or ["- (비교할 표본이 부족합니다)"])]
-        if dev_lines:
-            out += ["", "### 차트와 가장 어긋난 조합 (오픈)", *dev_lines]
-        out += ["", "### 방어(오픈 한 번만 받음) — 실제 방어율 vs 가져온 차트"]
+    if ranges.personalized(db):
+        lines = _leak_lines(db)
+        out += ["", "### 차트 대비 리크 — 가져온 차트와 내 실전 (차트와 다르게 친 결정 수 순)",
+                "(기대치는 내가 실제로 받은 조합 기준. 오픈=레이즈만, 방어=콜+3벳, 올인을 받음=콜, "
+                "림프를 받음=아이솔 레이즈. 앱의 📊 리크 리포트와 같은 숫자)",
+                *(lines or ["- (가져온 차트가 있고 표본이 충분한 스팟이 없습니다)"])]
         if not ranges.vs_personalized(db):
-            out.append("- (DB에 오프너 기록이 없음 — `--rebuild` 전이라 집계 불가)")
-        else:
-            out += vs_lines or ["- (가져온 방어 차트가 없거나 표본이 부족합니다)"]
+            out.append("- (방어 쪽은 DB에 오프너 기록이 없어 빠짐 — `--rebuild` 전)")
     else:
         out += ["", "### 차트 비교",
                 "- (DB가 `--rebuild` 전이라 오픈/방어 기회를 판정할 수 없어 집계 불가)"]

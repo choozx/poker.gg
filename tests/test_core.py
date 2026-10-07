@@ -120,7 +120,8 @@ class TestVsKinds(unittest.TestCase):
 
 def hand(pos, players, combo_cards, faced="none", rfi=False, **kw):
     r = {"hero_pos": pos, "players": players, "stack_bb": 20, "hero_cards": combo_cards,
-         "pf_faced": faced, "rfi": rfi, "pf_opener": kw.pop("pf_opener", None)}
+         "pf_faced": faced, "rfi": rfi, "pf_opener": kw.pop("pf_opener", None),
+         "tournament_id": "t1", "tournament_name": "테스트", "datetime": "2026/01/01 00:00:00"}
     r.update(kw)
     return r
 
@@ -271,6 +272,17 @@ class TestCoach(unittest.TestCase):
         prompt, refs, _ = coach.build_prompt(self.db, cid, "그럼 3벳은?")
         self.assertEqual(refs, ["69187300001"])
         self.assertIn("> ## 답", prompt)                 # 지난 답의 제목은 인용으로 — 구역 제목과 섞이지 않게
+
+    def test_profile_uses_leak_report_numbers(self):
+        # 코치 요약과 📊 리크 리포트가 같은 숫자를 말해야 한다 (예전엔 계산이 두 벌이었다)
+        db = {"hands": {}}
+        ranges.import_chart(db, "CO", "20", "AA:100,KK:100")
+        db["hands"] = {"1": hand("CO", 7, ["Ah", "Ad"], rfi=True, pf_opener=None),
+                       **{f"t{i}": hand("CO", 7, ["7h", "2d"], rfi=False) for i in range(20)}}
+        ranges._HERO_CACHE.update(n=None, data=None)
+        row = ranges.leak_report(db, 8)["rows"][0]
+        p = coach.profile_text(db)
+        self.assertIn(f"실제 {row['actual']}% / 차트 {row['expected']}%", p)
 
     def test_chat_caps(self):
         for i in range(coach.MAX_CHATS + 5):
