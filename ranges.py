@@ -834,19 +834,42 @@ def _vs_list(db, pos):
     return sorted(got, key=key)
 
 
-def _contexts(db, positions=None, stacks=None):
+def seats_off(max_seats=8):
+    """그 인원 테이블에 없는 8맥스 자리 — 인원이 줄면 **앞자리부터** 빠진다 (7맥스면 UTG,
+    6맥스면 UTG·UTG1 …). 뒤에 남은 인원이 같으면 같은 자리라 나머지 차트는 그대로 쓴다."""
+    try:
+        n = min(8, max(3, int(max_seats)))
+    except (TypeError, ValueError):
+        n = 8
+    return set(POS_8MAX[:8 - n])
+
+
+def max_name(n):
+    """6명 이상은 'N맥스'(테이블 포맷), 5명 이하는 'N명'(파이널 테이블 등) — 프론트와 같은 규칙."""
+    return f"{n}맥스" if n >= 6 else f"{n}명"
+
+
+def _contexts(db, positions=None, stacks=None, max_seats=8):
     """출제 대상 (포지션, 스택버킷, 상대, 몫). 빈 필터 = 전체.
 
     오픈 차트는 (포지션, 버킷)마다 하나, 방어 차트는 가져온 상대마다 하나씩이다. 방어
     차트가 상대 7명분 들어와도 그 포지션이 7배로 쏠리지 않게, 한 (포지션, 버킷)의 방어
-    문제들은 몫(share)을 나눠 가져 **합쳐서 오픈 차트 하나만큼**만 나오게 한다."""
+    문제들은 몫(share)을 나눠 가져 **합쳐서 오픈 차트 하나만큼**만 나오게 한다.
+
+    `max_seats`(테이블 인원)에서 빠지는 앞자리는 자리로도, 오프너로도 출제하지 않는다 —
+    7맥스만 치는 사람에게 8맥스 UTG 문제는 실전에 없는 자리다."""
     positions = set(positions or ()) or set(POS_ORDER)
     stacks = set(stacks or ()) or set(STACK_ORDER)
+    off = seats_off(max_seats)
+    # 내장 'MP'는 LJ·HJ를 하나로 묶은 옛 근사 차트다 — 그 자리를 가져온 8맥스 차트가 있으면 중복이고,
+    # 4명 이하 테이블엔 MP 자리 자체가 없다
+    imported = {_split_key(k)[0] for k in _charts(db) if not _split_key(k)[2]}
+    drop_mp = bool(imported & {"LJ", "HJ"}) or len(off) >= 4
     out = []
     for p in POS_ORDER:
-        if p not in positions:
+        if p not in positions or p in off or (p == "MP" and drop_mp):
             continue
-        vss = _vs_list(db, p)
+        vss = [v for v in _vs_list(db, p) if vs_parts(v)[0] not in off]
         for s in STACK_ORDER:
             if s not in stacks:
                 continue
@@ -876,13 +899,13 @@ def _deal(combo):
     return [hi + s1, lo + s2]
 
 
-def next_question(db, positions=None, stacks=None):
+def next_question(db, positions=None, stacks=None, max_seats=8):
     """다음 오픈 레인지 문제. AI 호출 없음 — 전부 로컬에서 만든다.
 
     가중치: 기본 1. 내 실전 기록이 차트와 어긋날수록 크게 (최대 ×9), 이미 차트대로
     잘 치고 있는 조합은 작게 (×0.4) — 아는 걸 계속 묻지 않기 위해서다.
     최근에 나온 조합은 ×0.15로 눌러 같은 문제가 연달아 나오는 걸 막는다."""
-    ctxs = _contexts(db, positions, stacks)
+    ctxs = _contexts(db, positions, stacks, max_seats)
     if not ctxs:
         return {"error": "선택한 조합에 해당하는 차트가 없습니다."}
     recent = _recent_combos(db)
@@ -931,7 +954,10 @@ def next_question(db, positions=None, stacks=None):
     return {"question": {
         "pos": pos, "vs": vs, "stack": bucket, "combo": combo,
         "cards": _deal(combo),
-        "pos_label": POS_KO.get(pos, pos),
+        # 인원이 준 테이블의 첫 자리는 그 포맷에서 'UTG'라 부른다 (7맥스 UTG = 8맥스 UTG1)
+        "pos_label": POS_KO.get(pos, pos) + (
+            f" · {max_name(int(max_seats))} UTG" if seats_off(max_seats)
+            and pos == POS_8MAX[len(seats_off(max_seats))] else ""),
         "vs_label": f"vs {op} {KIND_NAME[kind]}" if vs else None,
         "stack_label": STACK_LABEL.get(bucket, "?"),
         "verb": verb,
@@ -1142,6 +1168,8 @@ def state_view(db):
     """UI 초기 상태 — 토글 선택지와 성적표."""
     custom = custom_slots(db)
     have = set(RFI) | {s["pos"] for s in custom}
+    if {s["pos"] for s in custom if not s["vs"]} & {"LJ", "HJ"}:
+        have.discard("MP")          # 가져온 LJ·HJ가 있으면 옛 내장 MP는 출제하지 않는다 (_contexts와 같은 규칙)
     return {
         # n=None → 프론트 토글이 개수 배지/흐림 처리를 하지 않는다 (차트는 항상 있다)
         "positions": [{"key": p, "label": p, "n": None} for p in POS_ORDER if p in have],

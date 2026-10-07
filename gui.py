@@ -3275,10 +3275,10 @@ let RANGE = {
 };
 
 function rgFilterQS() {
-  const p = [];
+  const p = ['max=' + RANGE.view.max];        // 테이블 인원 — 차트 탭과 같은 설정을 쓴다
   if (RANGE.pos.length) p.push('pos=' + RANGE.pos.map(encodeURIComponent).join(','));
   if (RANGE.stack.length) p.push('stack=' + RANGE.stack.join(','));
-  return p.length ? '?' + p.join('&') : '';
+  return '?' + p.join('&');
 }
 
 async function rgLoadState() {
@@ -3965,12 +3965,26 @@ function renderRangeView() {
   $('#hands').innerHTML = `<div class="qz-wrap">${picker}${body}</div>`;
 }
 
+// 드릴의 테이블 인원 — 📊 차트 탭과 **같은 설정**(RANGE.view.max, 브라우저 기억)을 쓴다.
+// 빠진 앞자리가 포지션 필터에 골라져 있으면 비운다 (그 자리 문제는 더 안 나오므로)
+function rgDrillSetMax(n) {
+  RANGE.view.max = +n;
+  try { localStorage.setItem('ahh_rgv_max', String(n)); } catch (e) {}
+  const off = RANGE.state ? RANGE.state.import_positions.map(p => p.key).slice(0, 8 - RANGE.view.max) : [];
+  if (RANGE.pos.length && off.includes(RANGE.pos[0])) RANGE.pos = [];
+  renderQuiz();
+}
+
 function renderRangeQuiz() {
   const st = RANGE.state;
+  const off = st && st.import_positions ? st.import_positions.map(p => p.key).slice(0, 8 - RANGE.view.max) : [];
+  const maxSel = `<span class="qz-tglabel">인원</span>
+    <select class="qz-sel" onchange="rgDrillSetMax(this.value)">${[8, 7, 6, 5, 4, 3].map(n =>
+      `<option value="${n}" ${n === RANGE.view.max ? 'selected' : ''}>${rgvMaxName(n)}</option>`).join('')}</select>`;
   const filters = st && st.positions ? qzSelectRow([
-    ['포지션', st.positions, RANGE.pos[0] || '', 'rgTogglePos'],
+    ['포지션', st.positions.filter(p => !off.includes(p.key)), RANGE.pos[0] || '', 'rgTogglePos'],
     ['스택', st.stacks, RANGE.stack[0] || '', 'rgToggleStack'],
-  ]) : '';
+  ]).replace('<div class="qz-tgrow">', '<div class="qz-tgrow">' + maxSel) : '';
   const note = st && st.personalized === false ? `
     <div class="qz-note">📊 <code>python3 gui.py --rebuild</code> 를 돌리면 내가 실제로 차트와
       어긋나게 친 조합이 우선 출제됩니다 — 지금은 균등 무작위로 냅니다.</div>` : `
@@ -4323,7 +4337,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/range/next":
             qs = parse_qs(urlparse(self.path).query)
             pos, stacks, _ = _quiz_filters(qs)
-            resp = ranges.next_question(DB, positions=pos, stacks=stacks)
+            resp = ranges.next_question(DB, positions=pos, stacks=stacks,
+                                        max_seats=qs.get("max", ["8"])[0] or 8)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/range/chart":
             qs = parse_qs(urlparse(self.path).query)
