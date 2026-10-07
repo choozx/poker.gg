@@ -1,5 +1,7 @@
 
-let DATA = null, SEL = 0, HIDE_FOLDS = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤, -6 타이머, -7 문제
+let DATA = null, SEL = 0, HIDE_FOLDS = false;
+// 🎯 차트 이탈만 보기 — 프리플랍 결정이 가져온 차트와 어긋난 핸드(서버가 붙인 chart_dev)만
+let DEV_ONLY = false;   // SEL: -1 복기, -2 통계, -3 검색, -4 드릴다운, -5 뱅크롤, -6 타이머, -7 문제
 let STACK_UNIT = 'chips';   // 스택 변화 차트 단위: 'chips'(절대 칩) | 'bb'
 let DRILL = null;   // 그리드 칸 클릭 시 해당 조합 핸드 목록 ({id,name,hand_count,hands})
 let BANKROLL = null, BANK_EDIT = null, BANK_SHOWFORM = false, BANK_FILTER = 'all', BANK_PREFILL = null, BANK_CHART = 'cum';
@@ -573,10 +575,13 @@ function currentTourney() {
 function visibleHands() {
   const t = currentTourney();
   const hands = (t && t.hands) || [];
+  // 이탈 핸드는 대부분 '차트는 오픈인데 폴드'라 프리폴드 숨기기보다 이 필터가 우선이다
+  if (DEV_ONLY) return hands.filter(h => h.chart_dev);
   return HIDE_FOLDS ? hands.filter(h => !h.no_action_fold) : hands;
 }
 
 function toggleFolds() { HIDE_FOLDS = !HIDE_FOLDS; renderMain(); }
+function toggleDevOnly() { DEV_ONLY = !DEV_ONLY; renderMain(); $('#main').scrollTop = 0; }
 
 function setStackUnit(u) { if (STACK_UNIT === u) return; STACK_UNIT = u; renderMain(); }
 
@@ -706,7 +711,9 @@ function reviewAnalyzed(h) {
 function renderMain() {
   const t = currentTourney();
   let hands = visibleHands();
-  let countLabel = HIDE_FOLDS
+  const nDev = ((t && t.hands) || []).filter(h => h.chart_dev).length;
+  let countLabel = DEV_ONLY ? `${hands.length}핸드 표시 (🎯 차트 이탈만)`
+    : HIDE_FOLDS
     ? `${hands.length}핸드 표시 (프리폴드 ${t.hand_count - hands.length}개 숨김)`
     : `${t.hand_count}핸드`;
 
@@ -738,6 +745,8 @@ function renderMain() {
     countLabel = `${t.hand_count}핸드`;
   } else {
     headBtns = `
+      <button onclick="toggleDevOnly()" class="${DEV_ONLY ? 'primary' : ''}" ${nDev || DEV_ONLY ? '' : 'disabled'}
+        title="프리플랍 결정이 가져온 GTO 차트와 어긋난 핸드 (고른 액션의 차트 빈도 25% 이하)">${DEV_ONLY ? '✓ ' : ''}🎯 차트 이탈 ${nDev}</button>
       <button onclick="toggleFolds()" class="${HIDE_FOLDS ? 'primary' : ''}">${HIDE_FOLDS ? '✓ ' : ''}프리폴드 숨기기</button>
       <button onclick="toggleAll(true)">모두 펼치기</button>
       <button onclick="toggleAll(false)">모두 접기</button>
@@ -760,6 +769,8 @@ function renderMain() {
     if (h.showdown) tags.push('showdown');
     if (SEL === -1 && h.tournament_name) tags.unshift(esc(h.tournament_name));  // 복기 뷰: 출처 토너
     if (h.review && h.review.length) tags.push('📌 ' + h.review.join('·'));
+    if (h.chart_dev) tags.push(`<span class="dev-tag" title="${esc(h.chart_dev.chart + ' · 차트 ' + h.chart_dev.mix)}">🎯 ${
+      esc(h.chart_dev.did)} · 차트 ${esc(h.chart_dev.best)} ${h.chart_dev.best_pct}%</span>`);
     return `
     <div class="hand" id="hand${i}">
       <div class="hand-head" onclick="document.getElementById('hand${i}').classList.toggle('open')">
@@ -771,6 +782,8 @@ function renderMain() {
         ${netHtml(h.net, h.net_bb)}
       </div>
       <div class="hand-body">
+        ${h.chart_dev ? `<div class="dev-note">🎯 <b>차트 이탈</b> — ${esc(h.chart_dev.chart)} ${esc(h.chart_dev.combo)}:
+          실제 <b>${esc(h.chart_dev.did)}</b> (차트 ${h.chart_dev.did_pct}%) · 차트는 ${esc(h.chart_dev.mix)}</div>` : ''}
         ${mdToHtml(stripHeader(h.markdown))}
         <div class="ai-box" id="ai-${h.hand_id}">${aiBoxHtml(h.hand_id)}</div>
         <div style="margin-top:8px"><button onclick="coachFromHand('${h.hand_id}')">💬 이 핸드로 대화</button></div>
@@ -2450,6 +2463,7 @@ let RANGE = {
   status: 'idle',   // idle | loading | ready | graded | error
   state: null,      // /api/range/state (토글 선택지 + 성적표)
   pos: [], stack: [],
+  spot: null,       // 리크 리포트에서 고정한 스팟 {pos, vs, bucket, label} — 있으면 드롭다운 대신 이것만
   q: null,          // 현재 문제
   picked: null,     // 고른 액션 id
   res: null,        // 채점 결과 (로컬이라 한 번에 온다)
@@ -2467,6 +2481,10 @@ let RANGE = {
 
 function rgFilterQS() {
   const p = ['max=' + RANGE.view.max];        // 테이블 인원 — 차트 탭과 같은 설정을 쓴다
+  const s = RANGE.spot;
+  if (s)       // 리크 리포트에서 고정한 스팟 — 드롭다운 필터 대신 그 스팟(자리·상대·구간) 하나만
+    return '?' + p.concat(['pos=' + encodeURIComponent(s.pos), 'stack=' + s.bucket,
+                           'spot=' + encodeURIComponent(s.vs || 'open')]).join('&');
   if (RANGE.pos.length) p.push('pos=' + RANGE.pos.map(encodeURIComponent).join(','));
   if (RANGE.stack.length) p.push('stack=' + RANGE.stack.join(','));
   return '?' + p.join('&');
@@ -2862,6 +2880,21 @@ async function leakOpenHands(i, j) {
 }
 function leakBack() { RANGE.view.mode = 'leak'; selectRangeChart(); }
 
+// 행의 '🎯 드릴' → 📐 드릴을 그 스팟 하나로 고정해 바로 시작 (해제하면 원래 필터로)
+function leakDrill(i) {
+  const r = RANGE.view.leaks.data.rows[i];
+  RANGE.spot = {pos: r.pos, vs: r.vs || '', bucket: r.bucket, label: `${r.label} · ${r.stack_label} (${r.act_name})`};
+  RANGE.status = 'idle'; RANGE.q = null; RANGE.res = null; RANGE.chart = null; RANGE.showChart = false;
+  QUIZ.mode = 'range';
+  selectQuiz();
+  rgNext();
+}
+function rgUnpin() {
+  RANGE.spot = null;
+  RANGE.status = 'idle'; RANGE.q = null; RANGE.res = null; RANGE.chart = null; RANGE.showChart = false;
+  renderQuiz();
+}
+
 function renderLeakView() {
   const v = RANGE.view, st = RANGE.state;
   if (!st) { $('#hands').innerHTML = '<div class="qz-wrap"><div class="ai-loading">불러오는 중</div></div>'; return; }
@@ -2880,7 +2913,9 @@ function renderLeakView() {
   else body = `<table class="lk">
       <tr><th>스팟</th><th>기회</th><th>실제 vs 차트</th><th title="조합마다 |실제 횟수 − 기회 × 차트 빈도|의 합">다르게 친 결정</th><th>대표 조합 (실제 / 기회 · 차트)</th></tr>
       ${L.data.rows.map((r, i) => `<tr onclick="leakOpenChart(${i})" title="${esc(r.chart_label)} 차트에 내 기록을 겹쳐 봅니다">
-        <td><b>${esc(r.label)}</b><br><span class="lk-sub">${esc(r.stack_label)} · ${esc(r.act_name)}</span></td>
+        <td><b>${esc(r.label)}</b><br><span class="lk-sub">${esc(r.stack_label)} · ${esc(r.act_name)}</span>
+          <br><button class="lk-drill" onclick="event.stopPropagation(); leakDrill(${i})"
+            title="이 스팟만 📐 드릴로 연습">🎯 드릴</button></td>
         <td class="num">${r.n.toLocaleString()}</td>
         <td class="num">${r.actual}% <span class="lk-sub">/ ${r.expected}%</span><br>
           <span class="lk-diff ${r.diff > 0 ? 'up' : 'down'}">${r.diff > 0 ? '+' : ''}${r.diff}p ${
@@ -3263,7 +3298,11 @@ function renderRangeQuiz() {
   const maxSel = `<span class="qz-tglabel">인원</span>
     <select class="qz-sel" onchange="rgDrillSetMax(this.value)">${[8, 7, 6, 5, 4, 3].map(n =>
       `<option value="${n}" ${n === RANGE.view.max ? 'selected' : ''}>${rgvMaxName(n)}</option>`).join('')}</select>`;
-  const filters = st && st.positions ? qzSelectRow([
+  const filters = RANGE.spot ? `<div class="qz-note rg-pin">📌 리크 리포트에서 고정한 스팟:
+      <b>${esc(RANGE.spot.label)}</b> — 이 스팟만 냅니다
+      <button onclick="rgUnpin()">해제</button>
+      <button onclick="leakBack()">← 리크 리포트로</button></div>`
+    : st && st.positions ? qzSelectRow([
     ['포지션', st.positions.filter(p => !off.includes(p.key)), RANGE.pos[0] || '', 'rgTogglePos'],
     ['스택', st.stacks, RANGE.stack[0] || '', 'rgToggleStack'],
   ]).replace('<div class="qz-tgrow">', '<div class="qz-tgrow">' + maxSel) : '';

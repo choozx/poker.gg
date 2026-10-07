@@ -886,31 +886,94 @@ def leak_report(db, max_seats=8):
             "min_n": LEAK_MIN_N}
 
 
+def hand_spot(r):
+    """핸드 기록 → 그 프리플랍 결정이 걸린 스팟 (8맥스 자리, 상대 또는 None) — 차트로 잴 수 없는
+    상황(멀티웨이·3벳 이후·rebuild 전 기록)이면 None. 실전 기록 집계(_hero_rfi/_hero_vs)와 같은 규칙이다."""
+    n = r.get("players")
+    pos = _pos_8max(r.get("hero_pos"), n)
+    if not pos:
+        return None
+    faced = r.get("pf_faced")
+    if faced == "none":
+        return pos, None
+    if faced == "limp" and r.get("pf_limper"):
+        return pos, _pos_8max(r.get("pf_limper"), n) + LIMP
+    if faced == "raise" and r.get("pf_opener"):
+        return pos, _pos_8max(r.get("pf_opener"), n) + (ALLIN if r.get("pf_opener_allin") else "")
+    return None
+
+
 def spot_hands(db, pos, vs, bucket, combo, hero="Hero"):
     """리포트의 조합 칩 → 그 스팟에서 그 조합을 받은 실제 핸드들 (시간순, raw 제외 + 본문).
-    고르는 기준은 실전 기록 집계(_hero_rfi/_hero_vs)와 같다 — 숫자와 목록이 어긋나지 않게."""
-    vs = _norm_vs(vs) if vs else None
-    op, kind = vs_parts(vs)
+    고르는 기준은 hand_spot — 집계·차트 이탈 표시와 같아서 숫자와 목록이 어긋나지 않는다."""
+    want = (pos, _norm_vs(vs) if vs else None)
     out = []
     for r in db.get("hands", {}).values():
-        if store._combo(r.get("hero_cards") or []) != combo:
-            continue
-        if store._stack_bucket(r.get("stack_bb")) != bucket:
-            continue
-        n = r.get("players")
-        if _pos_8max(r.get("hero_pos"), n) != pos:
-            continue
-        if not vs:
-            ok = r.get("pf_faced") == "none"
-        elif kind == "limp":
-            ok = r.get("pf_faced") == "limp" and _pos_8max(r.get("pf_limper"), n) == op
-        else:
-            ok = (r.get("pf_faced") == "raise" and _pos_8max(r.get("pf_opener"), n) == op
-                  and bool(r.get("pf_opener_allin")) == (kind == "allin"))
-        if ok:
+        if (store._combo(r.get("hero_cards") or []) == combo
+                and store._stack_bucket(r.get("stack_bb")) == bucket and hand_spot(r) == want):
             out.append(store.hand_view(r, hero))
     out.sort(key=lambda h: h.get("datetime") or "")
     return {"hands": out, "label": f"{spot_name(pos, vs)} · {STACK_LABEL.get(bucket, bucket)} · {combo}"}
+
+
+def _hero_choice(r, kind):
+    """그 핸드에서 히어로가 한 프리플랍 액션을 차트의 세 몫(open/call/fold) 중 하나로."""
+    a = r.get("pf_action")
+    if kind is None:                                   # 폴드로 나에게 옴
+        return "open" if r.get("rfi") else ("call" if a == "call" else "fold")
+    if kind == "limp":                                 # 림프를 받은 BB — 레이즈냐 체크냐
+        return "open" if a in ("open", "3bet", "allin") else "fold"
+    if kind == "allin":                                # 올인을 받음 — 들어가면 콜뿐
+        return "fold" if a == "fold" else "call"
+    return "open" if a in ("3bet", "allin") else ("call" if a == "call" else "fold")
+
+
+def hand_deviation(db, r, cache=None):
+    """그 핸드의 프리플랍 결정이 차트와 어긋났으면 설명 dict, 아니면 None.
+
+    '어긋남' = 히어로가 고른 액션의 차트 빈도가 FOLD_LO(25%) 이하 — 드릴의 [실수] 기준과 같다.
+    비교는 리크 리포트와 같은 조건(그 구간에 가져온 차트가 있을 때만)이라, 표시와 리포트 숫자가 맞는다."""
+    spot = hand_spot(r)
+    bucket = store._stack_bucket(r.get("stack_bb"))
+    combo = store._combo(r.get("hero_cards") or [])
+    if not spot or not bucket or not combo:
+        return None
+    pos, vs = spot
+    key = (pos, bucket, vs)
+    if cache is not None and key in cache:
+        c = cache[key]
+    else:
+        c = chart(pos, bucket, db, vs)
+        if cache is not None:
+            cache[key] = c
+    if not c or not c.get("source") or c["chart_stack"] != bucket:
+        return None
+    w = c["weights"].get(combo, 0.0)
+    d = _dist(w, min(c["call"].get(combo, 0.0), w))
+    kind = vs_parts(vs)[1]
+    choice = _hero_choice(r, kind)
+    if d[choice] > FOLD_LO:
+        return None
+    name = {"open": c["verb"], "call": c["call_name"], "fold": c["fold_name"]}
+    best = max(d, key=d.get)
+    return {"spot": spot_name(pos, vs), "chart": c["label"], "combo": combo,
+            "did": name[choice], "did_pct": round(d[choice] * 100),
+            "best": name[best], "best_pct": round(d[best] * 100),
+            "mix": " · ".join(f"{name[k]} {round(d[k] * 100)}%" for k in ("open", "call", "fold")
+                              if d[k] > 0.005)}
+
+
+def annotate_deviations(db, hands):
+    """핸드 목록(API 응답용 dict들)에 차트 이탈 정보를 붙인다 — `chart_dev` 키. 차트 조회는 목록
+    안에서 캐시한다 (한 토너먼트 수백 핸드가 같은 스팟 몇십 개를 공유한다)."""
+    cache = {}
+    n = 0
+    for h in hands:
+        dev = hand_deviation(db, h, cache)
+        if dev:
+            h["chart_dev"] = dev
+            n += 1
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -940,7 +1003,7 @@ def max_name(n):
     return f"{n}맥스" if n >= 6 else f"{n}명"
 
 
-def _contexts(db, positions=None, stacks=None, max_seats=8):
+def _contexts(db, positions=None, stacks=None, max_seats=8, vs_only=None):
     """출제 대상 (포지션, 스택버킷, 상대, 몫). 빈 필터 = 전체.
 
     오픈 차트는 (포지션, 버킷)마다 하나, 방어 차트는 가져온 상대마다 하나씩이다. 방어
@@ -948,7 +1011,10 @@ def _contexts(db, positions=None, stacks=None, max_seats=8):
     문제들은 몫(share)을 나눠 가져 **합쳐서 오픈 차트 하나만큼**만 나오게 한다.
 
     `max_seats`(테이블 인원)에서 빠지는 앞자리는 자리로도, 오프너로도 출제하지 않는다 —
-    7맥스만 치는 사람에게 8맥스 UTG 문제는 실전에 없는 자리다."""
+    7맥스만 치는 사람에게 8맥스 UTG 문제는 실전에 없는 자리다.
+
+    `vs_only`가 None이 아니면 **그 상황만** 낸다 — ''는 오픈 차트만, 'CO'·'CO-allin'은 그 방어
+    차트만. 📊 리크 리포트의 '이 스팟 드릴'이 한 스팟을 고정할 때 쓴다."""
     positions = set(positions or ()) or set(POS_ORDER)
     stacks = set(stacks or ()) or set(STACK_ORDER)
     off = seats_off(max_seats)
@@ -964,8 +1030,13 @@ def _contexts(db, positions=None, stacks=None, max_seats=8):
         for s in STACK_ORDER:
             if s not in stacks:
                 continue
-            out.append((p, s, None, 1.0))
-            out.extend((p, s, vs, 1.0 / len(vss)) for vs in vss)
+            if vs_only is None:
+                out.append((p, s, None, 1.0))
+                out.extend((p, s, vs, 1.0 / len(vss)) for vs in vss)
+            elif vs_only == "":
+                out.append((p, s, None, 1.0))
+            elif _norm_vs(vs_only) in vss:
+                out.append((p, s, _norm_vs(vs_only), 1.0))
     return out
 
 
@@ -990,13 +1061,13 @@ def _deal(combo):
     return [hi + s1, lo + s2]
 
 
-def next_question(db, positions=None, stacks=None, max_seats=8):
+def next_question(db, positions=None, stacks=None, max_seats=8, vs_only=None):
     """다음 오픈 레인지 문제. AI 호출 없음 — 전부 로컬에서 만든다.
 
     가중치: 기본 1. 내 실전 기록이 차트와 어긋날수록 크게 (최대 ×9), 이미 차트대로
     잘 치고 있는 조합은 작게 (×0.4) — 아는 걸 계속 묻지 않기 위해서다.
     최근에 나온 조합은 ×0.15로 눌러 같은 문제가 연달아 나오는 걸 막는다."""
-    ctxs = _contexts(db, positions, stacks, max_seats)
+    ctxs = _contexts(db, positions, stacks, max_seats, vs_only)
     if not ctxs:
         return {"error": "선택한 조합에 해당하는 차트가 없습니다."}
     recent = _recent_combos(db)

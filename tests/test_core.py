@@ -155,6 +155,17 @@ class TestSeatsAndHero(unittest.TestCase):
         self.assertFalse(any(p == "MP" for p, _, _, _ in ctx))      # 가져온 LJ가 있으면 옛 MP는 뺀다
 
 
+class TestPinnedSpot(unittest.TestCase):
+    def test_vs_only_pins_one_situation(self):
+        db = {"hands": {}}
+        ranges.import_chart(db, "BB", "20", "22+", vs="CO", call="22:100")
+        ranges.import_chart(db, "BB", "20", "AA", vs="CO-allin")
+        ctx = ranges._contexts(db, positions=["BB"], stacks=["short"], vs_only="CO-allin")
+        self.assertEqual([(p, s, v) for p, s, v, _ in ctx], [("BB", "short", "CO-allin")])
+        ctx = ranges._contexts(db, positions=["CO"], stacks=["short"], vs_only="")   # 오픈 차트만
+        self.assertTrue(ctx and all(v is None for _, _, v, _ in ctx))
+
+
 class TestLeakReport(unittest.TestCase):
     def test_expected_is_weighted_by_dealt_combos(self):
         db = {"hands": {}}
@@ -169,6 +180,36 @@ class TestLeakReport(unittest.TestCase):
         r = rows[0]
         self.assertEqual((r["n"], r["expected"], r["actual"]), (22, round(2 / 22 * 100, 1), round(1 / 22 * 100, 1)))
         self.assertEqual(r["wrong"], 1.0)                            # KK 한 번을 안 열었다
+
+
+class TestHandDeviation(unittest.TestCase):
+    def setUp(self):
+        self.db = {"hands": {}}
+        ranges.import_chart(self.db, "CO", "20", "AA:100,KK:100")              # AA·KK만 오픈
+        ranges.import_chart(self.db, "BB", "20", "AA:100,KK:100,22:100", vs="CO", call="22:100")
+
+    def dev(self, r):
+        return ranges.hand_deviation(self.db, r, {})
+
+    def test_open_spot(self):
+        self.assertIsNone(self.dev(hand("CO", 7, ["Ah", "Ad"], rfi=True)))     # 차트대로 오픈
+        d = self.dev(hand("CO", 7, ["Ah", "Ad"], rfi=False))                  # 오픈 100%인데 폴드
+        self.assertEqual((d["did"], d["best"], d["best_pct"]), ("폴드", "오픈", 100))
+        self.assertIsNotNone(self.dev(hand("CO", 7, ["7h", "2d"], rfi=True)))  # 폴드 칸을 오픈
+
+    def test_defense_spot_and_annotate(self):
+        call22 = hand("BB", 7, ["2h", "2d"], faced="raise", pf_opener="CO", pf_action="call",
+                      pf_opener_allin=False)
+        fold22 = dict(call22, pf_action="fold")
+        self.assertIsNone(self.dev(call22))
+        self.assertEqual(self.dev(fold22)["did"], "폴드")
+        hands = [call22, fold22]
+        self.assertEqual(ranges.annotate_deviations(self.db, hands), 1)
+        self.assertIn("chart_dev", hands[1])
+
+    def test_no_chart_for_bucket_no_flag(self):
+        # 그 구간(40bb+)엔 가져온 차트가 없다 — 다른 구간 차트로 판정하지 않는다
+        self.assertIsNone(self.dev(dict(hand("CO", 7, ["Ah", "Ad"], rfi=False), stack_bb=60)))
 
 
 # ---------------------------------------------------------------------------

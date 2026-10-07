@@ -204,6 +204,17 @@ chart** (`chart_stack == bucket`) — a fallback chart from another bucket would
 bucket key — the slider has no bucket ticks). Combo chips open the matching hands (`spot_hands`, same
 selection rules as the tallies so counts and lists agree) in the grid drill-down view (`SEL = -4`,
 `DRILL.back` routes the back button to the report). Uses the same seat-count setting as the chart/drill.
+Each row has a **🎯 드릴** button that pins the 📐 drill to that one spot (`RANGE.spot` →
+`?spot=open|<opener[-allin|-limp]>` → `_contexts(vs_only=…)`). The opener goes in `spot`, not `vs=`, because
+`parse_qs` silently drops a blank `vs=` and a pinned *open* spot has no opener.
+
+**🎯 차트 이탈 (per hand).** `ranges.hand_deviation` grades one hand's preflop decision against the chart of
+its spot — `hand_spot(r)` is the single "which spot is this hand?" rule shared by the hero tallies,
+`spot_hands` and this, so the badge, the hand list and the report counts agree. A hand is flagged when the
+chosen action's chart share is ≤ `FOLD_LO` (25%, the drill's [실수] line), and only where the leak report would
+compare (that bucket has its own imported chart). `store` can't import `ranges`, so gui.py adds `chart_dev`
+to every hand-list response (tournament, review, grid drill-down, report hands) via `annotate_deviations`.
+The tournament header's "🎯 차트 이탈 N" filter overrides 프리폴드 숨기기 — most deviations *are* folds.
 
 A **8/7/6맥스 · 5/4/3명** toggle (`rgvSeats`, `RANGE.view.max`) just drops seats from the front of the bar — data stays
 8max-keyed because an open range is set by how many players are behind (7max UTG = 8max UTG1, 6max UTG =

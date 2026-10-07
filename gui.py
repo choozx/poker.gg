@@ -404,6 +404,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/review":
             resp = store.review_hands(DB)
+            resp["chart_devs"] = ranges.annotate_deviations(DB, resp["hands"])
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/stats":
             resp = store.stats(DB)
@@ -423,11 +424,14 @@ class Handler(BaseHTTPRequestHandler):
             pos = qs.get("pos", [""])[0] or None
             stack = qs.get("stack", [""])[0] or None
             resp = store.hands_by_combo(DB, combo, pos=pos, stack=stack, hero=HERO)
+            resp["chart_devs"] = ranges.annotate_deviations(DB, resp["hands"])
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/tournament":
             qs = parse_qs(urlparse(self.path).query)
             tid = qs.get("id", [""])[0]
             resp = store.tournament_hands(DB, tid)
+            # 핸드마다 프리플랍이 가져온 차트와 어긋났는지 (chart_dev) — 복기할 핸드를 바로 고르게
+            resp["chart_devs"] = ranges.annotate_deviations(DB, resp["hands"])
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/bankroll":
             resp = bankroll.summary(DB)
@@ -461,6 +465,7 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             g = lambda k: qs.get(k, [""])[0]
             resp = ranges.spot_hands(DB, g("pos"), g("vs") or None, g("bucket"), g("combo"), hero=HERO)
+            resp["chart_devs"] = ranges.annotate_deviations(DB, resp["hands"])
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/range/state":
             self._send(json.dumps(ranges.state_view(DB), ensure_ascii=False),
@@ -468,8 +473,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/range/next":
             qs = parse_qs(urlparse(self.path).query)
             pos, stacks, _ = _quiz_filters(qs)
+            # spot=open(오픈 차트만) / spot=CO·CO-allin(그 방어 차트만) — 리크 리포트의 '이 스팟 드릴'.
+            # 빈 vs=로 보내면 parse_qs가 키째 버리므로 오픈은 'open'이라는 이름으로 받는다
+            spot = qs.get("spot", [""])[0]
             resp = ranges.next_question(DB, positions=pos, stacks=stacks,
-                                        max_seats=qs.get("max", ["8"])[0] or 8)
+                                        max_seats=qs.get("max", ["8"])[0] or 8,
+                                        vs_only=None if not spot else ("" if spot == "open" else spot))
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/range/chart":
             qs = parse_qs(urlparse(self.path).query)
