@@ -385,29 +385,51 @@ def send(port, pos, stack, freq, jam, call, source, vs=None):
 # 도구가 GTO 툴을 대신 클릭하지는 않는다 — 사이트를 자동으로 긁는 건 이용약관 문제가 될 수 있다.
 
 POLL_SEC = 0.8        # 화면 확인 간격
+# 기본 수집 대상 스택 — 짧은 스택(7·10bb)은 13bb와 레인지가 크게 달라(대부분 올인/폴드) 따로 둔다.
+# 이미 시작한 스택을 먼저 끝내고 새 스택으로 넘어간다. GTO 툴에 없는 스택이면 --stacks 로 바꿔 준다
+TARGET_STACKS = (7, 10, 13, 15, 20, 25, 28, 30, 32, 35)
 STABLE_POLLS = 2      # 같은 차트가 이만큼 연달아 보여야 저장 (넘어가는 중간 화면을 피한다)
 
 
-def plan(stacks, only=None, jams=(), limps=()):
+def plan(stacks, only=None, jams=(), limps=(), no_raise=()):
     """캡처 순서표 [(포지션, 스택, 상대 또는 None)]. GTO 툴에서 클릭해 가는 순서를 따른다:
     (스택마다) UTG 오픈 차트 → UTG 레이즈 후 UTG1·LJ…BB의 방어 차트 → (UTG가 그 스택에서
     올인으로도 연다면) UTG 올인 후 UTG1…BB의 방어 차트 → UTG1 오픈 차트 → …
 
     `jams` = 오픈 차트에 올인(진한 빨강)이 있는 (오프너, 스택) 집합. 올인을 받는 노드는 그때만
     존재하므로, 이미 가져온 오픈 차트를 보고 정한다 — 올인 오픈이 없는 스택에 빈 칸을 만들지 않게.
-    `limps` = SB 오픈 차트에 림프(초록)가 있는 스택 — 그 스택엔 'SB 림프 → BB' 칸이 붙는다."""
+    `limps` = SB 오픈 차트에 림프(초록)가 있는 스택 — 그 스택엔 'SB 림프 → BB' 칸이 붙는다.
+    `no_raise` = 오픈 차트에 **레이즈가 없는**(올인/림프만 있는) (오프너, 스택) — 그 오프너의
+    '레이즈를 받음' 칸은 GTO 툴에 노드가 없으니 빼서, 없는 화면을 건너뛸 일이 없게 한다."""
     import ranges
     order = ranges.POS_8MAX
     out = []
     for st in stacks:
         for i, op in enumerate(order[:-1]):              # 오프너는 UTG~SB (BB는 오픈 기회가 없다)
             out.append((op, st, None))
-            out.extend((resp, st, op) for resp in order[i + 1:])
+            if (op, str(st)) not in no_raise:
+                out.extend((resp, st, op) for resp in order[i + 1:])
             if (op, str(st)) in jams:
                 out.extend((resp, st, op + ranges.ALLIN) for resp in order[i + 1:])
             if op == "SB" and str(st) in limps:
                 out.append(("BB", st, "SB" + ranges.LIMP))
     return [t for t in out if not only or t[0] in only]
+
+
+def open_shares(freq, jam, call):
+    """오픈 차트 읽은 값 → {'raise', 'jam', 'call'} 비중(%) — 순서표에 어떤 방어 칸을 둘지 정한다."""
+    cw = lambda c: 6 if len(c) == 2 else 4 if c.endswith("s") else 12
+    tot = lambda d: sum(v * cw(k) for k, v in d.items()) / 1326 * 100
+    t, j, c = tot(freq), tot(jam), tot(call)
+    return {"raise": t - j - c, "jam": j, "call": c}
+
+
+def plan_sets(rfi):
+    """{(오프너, 스택): 비중} → plan()에 넘길 (jams, limps, no_raise). 0.05%p 아래는 없는 것으로 본다."""
+    jams = {k for k, v in rfi.items() if v["jam"] > 0.05}
+    limps = {k[1] for k, v in rfi.items() if k[0] == "SB" and v["call"] > 0.05}
+    no_raise = {k for k, v in rfi.items() if v["raise"] <= 0.05}
+    return jams, limps, no_raise
 
 
 def fetch_state(port):
@@ -500,23 +522,25 @@ def watch(a):
     import ranges
     st = fetch_state(a.port)
     have = {(c["pos"], c.get("vs") or None, str(c["stack"])) for c in st.get("custom") or []}
+    started = {str(c["bb"]) for c in st.get("custom") or [] if c.get("bb") is not None}
     if a.stacks:
         stacks = [s.strip() for s in a.stacks.split(",") if s.strip()]
-    else:                                   # 기본 = 이미 가져온 차트들의 bb 목록
-        stacks = sorted({str(c["bb"]) for c in st.get("custom") or [] if c.get("bb") is not None},
-                        key=float)
+    else:     # 기본 = 이미 시작한 스택 먼저(작은 것부터), 그다음 아직 없는 목표 스택
+        stacks = (sorted(started, key=float)
+                  + [str(x) for x in TARGET_STACKS if str(x) not in started])
     for s in stacks:
         if parse_stack(s)[1] is None:
             raise SystemExit(f"--stacks 에는 bb 숫자만 씁니다 (받은 값: {s})")
     if not stacks:
         raise SystemExit("스택 목록이 없습니다 — --stacks 13,15,20 처럼 주세요.")
     only = {ranges._norm_pos(p) for p in a.only.split(",")} if a.only else None
-    jams = {(c["pos"], str(c["stack"])) for c in st.get("custom") or []
-            if not c.get("vs") and c.get("has_jam") and c.get("jam_pct", 0) > 0.05}
-    limps = {str(c["stack"]) for c in st.get("custom") or []
-             if c["pos"] == "SB" and not c.get("vs") and c.get("has_call") and c.get("call_pct", 0) > 0.05}
-    full = plan(stacks, only, jams, limps)
-    todo = [t for t in full if (t[0], t[2], t[1]) not in have]
+    # 이미 가진 오픈 차트의 레이즈/올인/림프 비중 — 어떤 방어 칸을 둘지 정한다. 수집하면서 갱신된다
+    rfi = {(c["pos"], str(c["stack"])): {"raise": c.get("pct", 0) - c.get("jam_pct", 0) - c.get("call_pct", 0),
+                                         "jam": c.get("jam_pct", 0), "call": c.get("call_pct", 0)}
+           for c in st.get("custom") or [] if not c.get("vs")}
+    key = lambda t: (t[0], t[2], t[1])
+    full = plan(stacks, only, *plan_sets(rfi))
+    todo = [t for t in full if key(t) not in have]
     print(f"감시 모드 — 스택 {', '.join(stacks)}bb · 전체 {len(full)}장 중 이미 있는 "
           f"{len(full) - len(todo)}장 건너뜀 → 남은 {len(todo)}장")
     if not todo:
@@ -567,6 +591,11 @@ def watch(a):
                     continue
                 j, slot = saved.pop()
                 delete_slot(a.port, slot[0], slot[1], slot[2])
+                have.discard(key(slot))
+                if not slot[2]:                         # 오픈 차트를 지웠으면 그 뒤 방어 칸을 다시 짠다
+                    rfi.pop((slot[0], str(slot[1])), None)
+                todo = todo[:j] + [t for t in plan(stacks, only, *plan_sets(rfi))
+                                   if key(t) not in have and t not in todo[:j]]
                 print(f"   ↩️  {slot_name(slot)} 지웠습니다 — 그 칸부터 다시")
                 i, pending, held = j, None, None
                 reseed = True
@@ -623,6 +652,20 @@ def watch(a):
               + (f" ({' · '.join(extra)})" if extra else "")
               + ("" if notes["lines_ok"] else "  ⚠️ 격자선을 못 찾아 등분으로 읽음"))
         saved.append((i, slot))
+        have.add(key(slot))
+        if not slot[2]:
+            # 오픈 차트를 방금 찍었다 — 이 차트에 올인/림프가 있으면 그걸 받는 칸을 바로 뒤에 넣고,
+            # 레이즈 오픈이 없으면 '레이즈를 받음' 칸을 뺀다 (다시 실행하지 않아도 되게)
+            rfi[(slot[0], str(slot[1]))] = open_shares(freq, jam, call)
+            old_tail = todo[i + 1:]
+            todo = todo[:i + 1] + [t for t in plan(stacks, only, *plan_sets(rfi))
+                                   if key(t) not in have and t not in todo[:i + 1]]
+            added = len([t for t in todo[i + 1:] if t not in old_tail])
+            dropped = len([t for t in old_tail if t not in todo[i + 1:]])
+            if added or dropped:
+                print(f"      순서표 갱신 — " + " · ".join(x for x in (
+                    f"{added}칸 추가 (올인/림프를 받는 칸)" if added else "",
+                    f"{dropped}칸 뺌 (레이즈 오픈이 없음)" if dropped else "") if x))
         last_sig, pending, held = sig, None, None
         i += 1
         if i < len(todo):

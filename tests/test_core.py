@@ -233,9 +233,13 @@ class TestWatchPlan(unittest.TestCase):
 class TestWatchLoop(unittest.TestCase):
     """화면 대신 '어떤 차트가 떠 있나'를 이름으로 흉내 내 감시 루프를 돌린다."""
 
-    CHARTS = {"A": {"AA": 1.0}, "B": {"KK": 1.0}, "C": {"QQ": 1.0}}
+    CHARTS = {"A": {"AA": 1.0}, "B": {"KK": 1.0}, "C": {"QQ": 1.0},
+              "J": ({"AA": 1.0, "KK": 1.0}, {"AA": 1.0, "KK": 1.0}, {})}   # 올인만 있는 오픈 차트
 
-    def run_watch(self, steps, todo_have=()):
+    DEFAULT_STATE = {"custom": [{"pos": "UTG", "stack": "20", "bb": 20, "vs": None, "pct": 15,
+                                 "has_jam": False, "jam_pct": 0, "call_pct": 0}]}
+
+    def run_watch(self, steps, stacks="20", only="UTG1,LJ", state=None):
         g = grab_chart
         saved, deleted, cur = [], [], {"i": 0, "scr": steps[0][1]}
 
@@ -251,9 +255,10 @@ class TestWatchLoop(unittest.TestCase):
         patches = {
             "read_line": line,
             "capture_fast": lambda: cur["scr"],
-            "read_grid": lambda im, box=None: (self.CHARTS[im], {}, {}, {"box": (0, 0, 1, 1), "lines_ok": True}),
-            "fetch_state": lambda port: {"custom": [{"pos": "UTG", "stack": "20", "bb": 20, "vs": None,
-                                                    "has_jam": False, "jam_pct": 0}]},
+            "read_grid": lambda im, box=None: (*(self.CHARTS[im] if isinstance(self.CHARTS[im], tuple)
+                                                 else (self.CHARTS[im], {}, {})),
+                                               {"box": (0, 0, 1, 1), "lines_ok": True}),
+            "fetch_state": lambda port: state or self.DEFAULT_STATE,
             "send": lambda port, pos, st, f, j, c, src, vs=None: saved.append((pos, st, vs, next(iter(f))))
                     or {"pct": 1.0},
             "delete_slot": lambda port, pos, st, vs: deleted.append((pos, st, vs)) or saved.pop(),
@@ -266,7 +271,7 @@ class TestWatchLoop(unittest.TestCase):
             import io
             import contextlib
             with contextlib.redirect_stdout(io.StringIO()):
-                g.watch(argparse.Namespace(port=0, stacks="20", only="UTG1,LJ", watch=True))
+                g.watch(argparse.Namespace(port=0, stacks=stacks, only=only, watch=True))
         finally:
             for k, v in old.items():
                 setattr(g, k, v)
@@ -288,6 +293,18 @@ class TestWatchLoop(unittest.TestCase):
                                          ("u\n", None), (None, "C"), (None, "C"), (None, "C")])
         self.assertEqual(deleted, [("UTG1", "20", "UTG")])
         self.assertEqual(saved, [])
+
+    def test_jam_only_open_rewrites_plan_in_the_same_run(self):
+        # 짧은 스택: UTG 오픈 차트에 레이즈가 없고 올인만 있다 → 'UTG1 vs UTG(레이즈)' 칸은 빠지고
+        # 'UTG1 vs UTG 올인' 칸이 바로 다음에 들어와야 한다 (다시 실행하지 않아도)
+        saved, _ = self.run_watch([(None, "A"), (None, "J"), (None, "J"), (None, "B"), (None, "B")],
+                                  stacks="10", only="UTG,UTG1", state={"custom": []})
+        self.assertEqual(saved, [("UTG", "10", None, "AA"), ("UTG1", "10", "UTG-allin", "KK")])
+
+    def test_plan_skips_raise_defense_without_raise_open(self):
+        p = grab_chart.plan(["10"], None, jams={("UTG", "10")}, no_raise={("UTG", "10")})
+        self.assertNotIn(("UTG1", "10", "UTG"), p)
+        self.assertIn(("UTG1", "10", "UTG-allin"), p)
 
     def test_enter_forces_save(self):
         saved, _ = self.run_watch([(None, "A"), ("\n", "A")])
