@@ -2463,7 +2463,7 @@ let RANGE = {
   status: 'idle',   // idle | loading | ready | graded | error
   state: null,      // /api/range/state (토글 선택지 + 성적표)
   pos: [], stack: [],
-  spot: null,       // 리크 리포트에서 고정한 스팟 {pos, vs, bucket, label} — 있으면 드롭다운 대신 이것만
+  spot: null,       // 리크 리포트에서 고정한 스팟 {pos, vs, stack(bb 차트), label} — 있으면 드롭다운 대신 이것만
   q: null,          // 현재 문제
   picked: null,     // 고른 액션 id
   res: null,        // 채점 결과 (로컬이라 한 번에 온다)
@@ -2483,7 +2483,7 @@ function rgFilterQS() {
   const p = ['max=' + RANGE.view.max];        // 테이블 인원 — 차트 탭과 같은 설정을 쓴다
   const s = RANGE.spot;
   if (s)       // 리크 리포트에서 고정한 스팟 — 드롭다운 필터 대신 그 스팟(자리·상대·구간) 하나만
-    return '?' + p.concat(['pos=' + encodeURIComponent(s.pos), 'stack=' + s.bucket,
+    return '?' + p.concat(['pos=' + encodeURIComponent(s.pos), 'stack=' + s.stack,
                            'spot=' + encodeURIComponent(s.vs || 'open')]).join('&');
   if (RANGE.pos.length) p.push('pos=' + RANGE.pos.map(encodeURIComponent).join(','));
   if (RANGE.stack.length) p.push('stack=' + RANGE.stack.join(','));
@@ -2864,7 +2864,7 @@ function leakOpenChart(i) {
 // 조합 칩 → 그 스팟에서 그 조합을 받은 실제 핸드들 (그리드 드릴다운과 같은 핸드 목록 화면)
 async function leakOpenHands(i, j) {
   const r = RANGE.view.leaks.data.rows[i], c = r.combos[j];
-  const q = new URLSearchParams({pos: r.pos, vs: r.vs || '', bucket: r.bucket, combo: c.combo});
+  const q = new URLSearchParams({pos: r.pos, vs: r.vs || '', stack: r.stack, combo: c.combo});
   SEL = -4; DRILL = null; renderSidebar();
   const name = `📊 ${r.label} · ${r.stack_label} · ${c.combo}`;
   $('#mainhead').innerHTML = `<button onclick="leakBack()">← 리크 리포트로</button><h2>${esc(name)}</h2>`;
@@ -2883,7 +2883,7 @@ function leakBack() { RANGE.view.mode = 'leak'; selectRangeChart(); }
 // 행의 '🎯 드릴' → 📐 드릴을 그 스팟 하나로 고정해 바로 시작 (해제하면 원래 필터로)
 function leakDrill(i) {
   const r = RANGE.view.leaks.data.rows[i];
-  RANGE.spot = {pos: r.pos, vs: r.vs || '', bucket: r.bucket, label: `${r.label} · ${r.stack_label} (${r.act_name})`};
+  RANGE.spot = {pos: r.pos, vs: r.vs || '', stack: r.stack, label: `${r.label} · ${r.stack_label} (${r.act_name})`};
   RANGE.status = 'idle'; RANGE.q = null; RANGE.res = null; RANGE.chart = null; RANGE.showChart = false;
   QUIZ.mode = 'range';
   selectQuiz();

@@ -173,8 +173,18 @@ open% should stay near the position's usual MTT RFI (UTG ~15 / CO ~25 / BTN ~44 
 **`pf` (<15bb) asks about a shove, not a raise** — `chart()` returns `verb = "올인"` there and the
 whole UI follows that field. Don't hardcode "오픈" in text that a pf question can reach.
 
-Personalization: `_hero_rfi(db)` groups hands with `pf_faced == "none"` (folded to hero = open
-opportunity) by (position, stack bucket, combo) and `next_question` weights a combo up to ×9 when
+**Comparisons use the nearest imported bb chart, not the 4 buckets.** Every hand is attached to the chart of
+its spot (`hand_spot`: seat × opener-kind) whose bb is **nearest to the hand's stack** (`hand_slot` /
+`nearest_slot`, tolerance `max(2bb, 15%)` so a 60bb hand isn't graded by a 35bb chart). The hero tally for
+imported charts is `_hero_slots` → `hero_cells(pos, vs, slot=bb)`, and the leak report, 🎯 차트 이탈,
+the chart overlay (`_chart_hero`), the drill's personalization and the AI coach all read it — one rule, so
+their numbers agree. It replaced per-bucket comparison, which used **one chart per bucket** (the bb nearest
+`_BUCKET_MID`): 25·28·30·32·35bb hands were all graded by the 30bb chart, and once a 10bb chart arrived,
+12–14bb hands were graded by 10bb. Drill questions for seats with imported charts are per bb chart too
+("13bb"); the drill's bucket filter still works (a bb chart belongs to its bucket). Only the built-in
+approximation charts (no bb) still use buckets — `_hero_rfi` (raw seat names) via `hero_cells(builtin=True)`.
+
+Personalization: `next_question` weights a combo up to ×9 when
 hero's actual open rate disagrees with the chart, ×0.4 when it already agrees, ×0.15 if it came up
 in the last `RECENT_SKIP` attempts. Needs `pf_faced`/`stack_bb`, so `personalized()` **auto-disables
 on un-rebuilt DBs** and the drill silently falls back to uniform random — both states must keep
@@ -194,14 +204,13 @@ empty = folded to `pos` (open chart), `vs` set = `vs` opened and the rest folded
 current seat's card shows the chart's overall action split. Data stops at "one open + one response",
 so 3벳/콜/림프 continuations are rendered but disabled (`NA` tooltip), and folding to BB is a walk.
 **리크 리포트** (the tab's second mode, `RANGE.view.mode = 'leak'`, `ranges.leak_report`) lines every imported
-chart up against hero's record per spot (seat × opener-kind × stack bucket): actual action rate vs the chart
+chart up against hero's record per spot (seat × opener-kind × **bb chart**): actual action rate vs the chart
 expectation **weighted by the combos hero was actually dealt**, sorted by "차트와 다르게 친 결정 수" =
 Σ_combo |actions − opportunities × chart freq| (frequency gap × sample in one number). What counts as the
 action follows the hero tallies: opens (raise share — `rfi` doesn't count limps), defense (any non-fold),
-calls vs all-in, iso-raises vs limp (`_target`). It compares only where **that bucket has its own imported
-chart** (`chart_stack == bucket`) — a fallback chart from another bucket would grade 40bb hands with a
-20bb chart. Rows open the chart with the hero overlay on, at the bb of the chart the row used (not the
-bucket key — the slider has no bucket ticks). Combo chips open the matching hands (`spot_hands`, same
+calls vs all-in, iso-raises vs limp (`_target`). Hands join the row of their nearest bb chart (see above), so
+the row count equals the chart overlay's opportunity count. Rows open the chart with the hero overlay on, at
+the row's bb. Combo chips open the matching hands (`spot_hands`, same
 selection rules as the tallies so counts and lists agree) in the grid drill-down view (`SEL = -4`,
 `DRILL.back` routes the back button to the report). Uses the same seat-count setting as the chart/drill.
 Each row has a **🎯 드릴** button that pins the 📐 drill to that one spot (`RANGE.spot` →
@@ -295,7 +304,7 @@ a delete-back-to-builtin button. `delete_chart` removes a custom slot.
 따른다**. 내장 방어 차트는 없다(가져온 것만). 드릴은 `_contexts`가 (포지션, 버킷)마다 오픈 1 + 상대별
 방어 문제를 만들되, 방어 쪽은 **몫을 나눠 합쳐서 오픈 하나만큼**만 나오게 한다(상대 7명분을 넣어도 BB가
 7배로 쏠리지 않게). 실전 기록은 `convert.hand_meta`의 **`pf_opener`**(오픈 한 번만 받았을 때 오프너
-자리, 림프·콜러·3벳 팟은 None) 기준 `_hero_vs`로 세고, 비율은 **방어(콜+3벳) 비율**이라 차트 합계와
+자리, 림프·콜러·3벳 팟은 None) 기준 `_hero_slots`로 세고, 비율은 **방어(콜+3벳) 비율**이라 차트 합계와
 비교한다(오픈 차트는 rfi가 레이즈만 세서 `weights - call`과 비교). 두 자리 모두 `_pos_8max`로 옮기며
 **원래 이름(MP1…)을 넘겨야** 한다 — `_norm_pos`로 MP로 접은 뒤엔 몇 번째 자리인지 못 센다.
 `pf_opener`는 새 필드라 `vs_personalized()`가 꺼지면 방어 쪽 겹쳐 보기·가중치만 꺼진다(오픈 쪽은 그대로).
@@ -337,10 +346,10 @@ GTO 툴에서도 다른 노드이고 레인지가 완전히 다르다(남은 액
 **포지션은 두 체계다.** 가져오는 차트(grab_chart·가져오기 패널)는 8맥스 GTO 툴 이름
 `ranges.POS_8MAX` = UTG UTG1 LJ HJ CO BTN SB BB만 받는다. 내장 `RFI` 차트는 옛 체계(UTG/MP/CO/BTN/SB,
 SB(BTN))를 그대로 쓰고, 8맥스 이름엔 내장 차트가 없다(가져온 것만 있다). 핸드 기록의 `hero_pos`는
-`convert.assign_positions`가 준 UTG/MP1/MP2/MP3이라, `_hero_rfi`가 `_pos_8max`로 테이블 인원(`players`)을
+`convert.assign_positions`가 준 UTG/MP1/MP2/MP3이라, `hand_spot`이 `_pos_8max`로 테이블 인원(`players`)을
 보고 8맥스 이름으로 바꿔 센다 — 그래서 가져온 LJ 차트에도 내 오픈률이 겹쳐진다. 원래 이름(내장 차트용)과
-8맥스 이름은 **체계를 나눠** 센다(`_hero_rfi` 키의 `"raw"`/`"8"`, `hero_cells(builtin=…)` — 비교하는 차트에
-`source`가 없으면 내장). 한 키 공간에 같이 넣으면 **'UTG'가 두 체계에 똑같이 있어서** 4~7인 테이블 UTG
+8맥스 이름은 **체계를 나눠** 센다(내장은 `_hero_rfi`, 가져온 차트는 `_hero_slots` — `_chart_hero`가 차트의
+`source` 유무로 고른다). 한 키 공간에 같이 넣으면 **'UTG'가 두 체계에 똑같이 있어서** 4~7인 테이블 UTG
 기록이 8맥스 UTG 차트에 섞인다 — 실제로 그랬고(8인 UTG 기회 6번이 9,466번으로 집계), 7·6맥스 위주 사용자에겐
 8맥스 UTG 겹쳐 보기가 거의 비어 있는 게 정상이다.
 환산 기준은 **뒤에 남은 인원 수**(`_BEHIND_8MAX`) 하나다: 오픈 레인지를 정하는 건 그 수뿐이라 테이블

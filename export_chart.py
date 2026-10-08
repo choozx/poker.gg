@@ -61,7 +61,8 @@ def collect(db, with_hero=False):
         if with_hero:
             # 오픈 차트면 [오픈, 기회], 방어 차트면 [방어, 기회] (올인을 받으면 콜, 림프를 받으면 레이즈)
             rec = {k: [e[0], e[1]] for k, e in
-                   ranges.hero_cells(db, slot["pos"], slot["bucket"], slot["vs"]).items() if e[1]}
+                   ranges.hero_cells(db, slot["pos"], slot["vs"], slot=slot["bb"]).items()
+                   if e[1]} if slot["bb"] is not None else {}
             if rec:
                 item["hero"] = rec
         out.setdefault(f"{slot['pos']}|{slot['vs'] or ''}", []).append(item)

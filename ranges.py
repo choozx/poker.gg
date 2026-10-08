@@ -701,15 +701,11 @@ def personalized(db):
 
 
 def _hero_rfi(db):
-    """(체계, 포지션, 스택버킷, 조합) → [오픈 횟수, 기회 횟수].
+    """**내장 근사 차트 전용** — (원래 자리 이름, 스택버킷, 조합) → [오픈 횟수, 기회 횟수].
 
-    '기회' = pf_faced가 "none"(폴드 투 히어로), '오픈' = rfi 플래그.
-    수만 핸드를 훑으므로 핸드 수를 키로 캐시한다 (임포트로만 늘어난다).
-
-    **체계를 나눠 센다** — "8"은 가져온 8맥스 차트용(뒤에 남은 인원으로 옮긴 이름), "raw"는
-    내장 차트용(핸드 기록의 원래 이름, MP1~3은 MP). 예전엔 한 키 공간에 두 이름을 다 넣었는데
-    'UTG'가 두 체계에 똑같이 있어서, 4~7인 테이블의 UTG(8맥스로는 UTG1·LJ·HJ·CO)가 전부
-    8맥스 UTG 차트에 섞였다 (실측: 8인 UTG 기회 6번인데 9,466번으로 집계)."""
+    내장 차트는 bb 단위가 아니라 4버킷이고 옛 이름(MP1~3은 MP)을 쓴다. 가져온 8맥스 차트와 비교하는
+    기록은 `_hero_slots`가 따로 센다 — 한 키 공간에 두 체계를 섞었다가 'UTG'가 두 체계에 똑같이 있어
+    4~7인 UTG 기록이 8맥스 UTG 차트에 섞인 적이 있다 (8인 UTG 기회 6번이 9,466번으로 집계)."""
     hands = db.get("hands", {})
     if _HERO_CACHE["n"] == len(hands) and _HERO_CACHE["data"] is not None:
         return _HERO_CACHE["data"]
@@ -722,16 +718,12 @@ def _hero_rfi(db):
         combo = store._combo(r.get("hero_cards") or [])
         if not pos or not sb or not combo:
             continue
-        for key in (("raw", pos), ("8", _pos_8max(r.get("hero_pos"), r.get("players")))):
-            e = data.setdefault((*key, sb, combo), [0, 0])
-            e[1] += 1
-            if r.get("rfi"):
-                e[0] += 1
+        e = data.setdefault((pos, sb, combo), [0, 0])
+        e[1] += 1
+        if r.get("rfi"):
+            e[0] += 1
     _HERO_CACHE.update({"n": len(hands), "data": data})
     return data
-
-
-_HERO_VS_CACHE = {"n": None, "data": None}
 
 
 def vs_personalized(db):
@@ -742,84 +734,129 @@ def vs_personalized(db):
     return False
 
 
-def _hero_vs(db):
-    """(내 자리, 스택버킷, 오프너 자리, 조합) → [방어 횟수, 기회 횟수, 그중 3벳(올인 포함)].
+# ── 가장 가까운 bb 차트 ──
+# 핸드의 스택은 제각각이라, 그 상황(자리·상대)에서 **가져온 차트 중 실제 스택에 가장 가까운 bb 차트**에
+# 붙여 비교한다. 예전엔 4버킷(15bb 미만 / 15–25 / 25–40 / 40+)마다 차트 한 장만 골라서, 25·28·30·32·35bb
+# 차트가 있어도 30bb 하나로 쟀고, 10bb가 들어오면 12–14bb 핸드까지 10bb 차트로 재게 됐다.
+# 너무 먼 차트엔 붙이지 않는다 (60bb 핸드를 35bb 차트로 재지 않게): 허용 거리 = max(2bb, 그 bb의 15%).
+SLOT_TOL_MIN, SLOT_TOL_FRAC = 2.0, 0.15
+_SLOT_CACHE = {"key": None, "index": None}
 
-    '기회' = 오픈 한 번만 받은 핸드(`pf_opener`가 있다 — 림프·콜러·3벳 팟은 빠져 있다).
-    '방어' = 폴드 말고 다 (콜·3벳·올인). 두 자리 모두 8맥스 이름으로 옮겨 센다 —
-    방어 차트는 가져온 8맥스 차트뿐이라서다."""
+
+def _slots_index(db):
+    """{(자리, 상대 또는 None): [bb, …]} — 가져온 bb 차트들 (작은 것부터). 차트 키 집합으로 캐시."""
+    charts = _charts(db)
+    key = tuple(sorted(charts))
+    if _SLOT_CACHE["key"] == key:
+        return _SLOT_CACHE["index"]
+    idx = {}
+    for k, rec in charts.items():
+        pos, _, vs = _split_key(k)
+        bb, _ = _slot_meta(k, rec)
+        if bb is not None and rec.get("weights"):
+            idx.setdefault((pos, vs), []).append(bb)
+    for v in idx.values():
+        v.sort()
+    _SLOT_CACHE.update({"key": key, "index": idx})
+    return idx
+
+
+def nearest_slot(bbs, stack_bb):
+    """가져온 bb 목록 중 스택에 가장 가까운 것 (허용 거리 밖이면 None)."""
+    if not bbs or stack_bb is None:
+        return None
+    best = min(bbs, key=lambda b: (abs(b - stack_bb), b))
+    return best if abs(best - stack_bb) <= max(SLOT_TOL_MIN, SLOT_TOL_FRAC * best) else None
+
+
+def hand_slot(db, r):
+    """핸드 → (자리, 상대 또는 None, 붙는 bb 차트) — 차트로 잴 수 없으면 None."""
+    spot = hand_spot(r)
+    if not spot:
+        return None
+    slot = nearest_slot(_slots_index(db).get(spot), r.get("stack_bb"))
+    return (spot[0], spot[1], slot) if slot is not None else None
+
+
+_HERO_SLOT_CACHE = {"key": None, "data": None}
+
+
+def _hero_slots(db):
+    """**가져온 차트용** 실전 기록 — (자리, 상대, bb 차트, 조합) → [액션 횟수, 기회 횟수, 그중 레이즈].
+
+    핸드마다 `hand_spot`으로 상황을 정하고 그 상황의 가장 가까운 bb 차트에 붙인다. '액션'은 그 차트가
+    묻는 것과 같은 기준이다: 오픈(rfi — 레이즈·올인, 림프는 안 센다) / 레이즈를 받음 → 방어(콜·3벳·올인)
+    / 올인을 받음 → 콜 / SB 림프를 받은 BB → 아이솔 레이즈. 핸드 수와 차트 키 집합으로 캐시한다."""
     hands = db.get("hands", {})
-    if _HERO_VS_CACHE["n"] == len(hands) and _HERO_VS_CACHE["data"] is not None:
-        return _HERO_VS_CACHE["data"]
+    key = (id(hands), len(hands), tuple(sorted(_charts(db))))
+    if _HERO_SLOT_CACHE["key"] == key:
+        return _HERO_SLOT_CACHE["data"]
     data = {}
     for r in hands.values():
-        if r.get("pf_limper") and r.get("pf_faced") == "limp":
-            # SB 혼자 림프한 팟의 BB — '방어' 대신 아이솔레이션 레이즈를 센다 (체크가 나머지)
-            pos = _pos_8max(r.get("hero_pos"), r.get("players"))
-            sb = store._stack_bucket(r.get("stack_bb"))
-            combo = store._combo(r.get("hero_cards") or [])
-            if pos and sb and combo:
-                e = data.setdefault((pos, sb, _pos_8max(r.get("pf_limper"), r.get("players")) + LIMP,
-                                     combo), [0, 0, 0])
-                e[1] += 1
-                if r.get("pf_action") in ("open", "3bet", "allin"):
-                    e[0] += 1
-                    e[2] += 1
-            continue
-        if not r.get("pf_opener") or r.get("pf_faced") != "raise":
-            continue
-        n = r.get("players")
-        # _pos_8max는 MP1/MP2 같은 원래 이름을 받아야 몇 번째 자리인지 센다 (_norm_pos 전에)
-        pos = _pos_8max(r.get("hero_pos"), n)
-        vs = _pos_8max(r.get("pf_opener"), n)
-        # 오픈 올인을 받은 핸드는 따로 센다 (rebuild 전 DB엔 이 필드가 없어 전부 레이즈 쪽에 섞인다)
-        if vs and r.get("pf_opener_allin"):
-            vs += ALLIN
-        sb = store._stack_bucket(r.get("stack_bb"))
+        hs = hand_slot(db, r)
         combo = store._combo(r.get("hero_cards") or [])
-        if not pos or not vs or not sb or not combo:
+        if not hs or not combo:
             continue
-        e = data.setdefault((pos, sb, vs, combo), [0, 0, 0])
+        pos, vs, slot = hs
+        kind = vs_parts(vs)[1]
+        a = r.get("pf_action")
+        if kind is None:
+            act = raise_ = bool(r.get("rfi"))
+        elif kind == "limp":
+            act = raise_ = a in ("open", "3bet", "allin")
+        else:
+            act, raise_ = a != "fold", a in ("3bet", "allin")
+        e = data.setdefault((pos, vs, slot, combo), [0, 0, 0])
         e[1] += 1
-        act = r.get("pf_action")
-        if act != "fold":
-            e[0] += 1
-        if act in ("3bet", "allin"):
-            e[2] += 1
-    _HERO_VS_CACHE.update({"n": len(hands), "data": data})
+        e[0] += act
+        e[2] += raise_
+    _HERO_SLOT_CACHE.update({"key": key, "data": data})
     return data
 
 
-def hero_cells(db, pos, bucket, vs=None, builtin=False):
-    """그 스팟의 조합별 실전 기록 {조합: [액션 횟수, 기회 횟수, (방어면) 3벳 횟수]}.
-    오픈 차트면 액션 = 오픈, 방어 차트면 액션 = 방어(콜+3벳). rebuild 안 된 DB면 빈 dict.
+def hero_cells(db, pos, vs=None, slot=None, bucket=None, builtin=False):
+    """그 상황의 조합별 실전 기록 {조합: [액션 횟수, 기회 횟수, 그중 레이즈]}.
 
-    `builtin`은 비교 대상이 내장 근사 차트일 때 — 그때만 원래 자리 이름으로 센 기록을 쓴다
-    (가져온 차트는 8맥스 체계라 뒤에 남은 인원으로 옮긴 기록이어야 한다). 차트의 `source`가
-    없으면 내장이다."""
+    가져온 차트면 `slot`(그 차트의 bb)으로 — 그 차트에 가장 가깝게 붙은 핸드만. 내장 근사 차트면
+    `builtin=True`와 `bucket`으로 옛 4버킷 기록을 쓴다. rebuild 안 된 DB면 빈 dict."""
     pos = _norm_pos(pos)
-    if vs:
-        if not vs_personalized(db):
+    if builtin:
+        if vs or not personalized(db):
             return {}
-        vs = _norm_vs(vs)
-        return {k[3]: e for k, e in _hero_vs(db).items()
-                if k[0] == pos and k[1] == bucket and k[2] == vs}
-    if not personalized(db):
+        return {k[2]: [e[0], e[1], e[0]] for k, e in _hero_rfi(db).items()
+                if k[0] == pos and k[1] == bucket}
+    if slot is None or not personalized(db) or (vs and not vs_personalized(db)):
         return {}
-    scheme = "raw" if builtin else "8"
-    return {k[3]: e for k, e in _hero_rfi(db).items()
-            if k[0] == scheme and k[1] == pos and k[2] == bucket}
+    vs = _norm_vs(vs) if vs else None
+    slot = int(slot)
+    return {k[3]: e for k, e in _hero_slots(db).items()
+            if k[0] == pos and k[1] == vs and k[2] == slot}
 
 
-def hero_record(db, pos, bucket, combo, vs=None, builtin=False):
-    """그 조합을 실제로 어떻게 쳤는지 (기회 없으면 None)."""
-    e = hero_cells(db, pos, bucket, vs, builtin).get(combo)
+def _chart_hero(db, c):
+    """차트 dict → 그 차트와 비교할 실전 기록 (가져온 bb 차트는 그 bb, 내장·구버전 버킷 차트는 버킷)."""
+    if c.get("source") and c.get("bb") is not None:
+        return hero_cells(db, c["pos"], c["vs"], slot=c["bb"])
+    if not c.get("source"):
+        return hero_cells(db, c["pos"], bucket=c["chart_stack"], builtin=True)
+    return {}
+
+
+def hero_record(db, c, combo):
+    """그 차트의 상황에서 그 조합을 실제로 어떻게 쳤는지 (기회 없으면 None)."""
+    e = _chart_hero(db, c).get(combo)
     if not e or not e[1]:
         return None
     out = {"opens": e[0], "opps": e[1], "rate": round(e[0] / e[1] * 100)}
-    if vs:
+    if c["vs"]:
         out["raises"] = e[2]
     return out
+
+
+def stack_text(stack):
+    """문구용 스택 이름 — bb 슬롯이면 '13bb', 버킷 키면 '<15bb' 같은 구간 이름."""
+    s = str(stack)
+    return f"{s}bb" if s.isdigit() else STACK_LABEL.get(s, s)
 
 
 # ---------------------------------------------------------------------------
@@ -837,24 +874,22 @@ def _target(c, combo):
 
 
 def leak_report(db, max_seats=8):
-    """스팟(자리 × 상대 × 스택 구간)마다 실제 액션율 vs 차트 기대치, **차트와 다르게 친 결정 수**.
+    """스팟(자리 × 상대 × **bb 차트**)마다 실제 액션율 vs 차트 기대치, **차트와 다르게 친 결정 수**.
 
-    기대치는 내가 실제로 받은 조합으로 가중한다 (표본이 작을 때 패 운을 리크로 읽지 않게).
-    '다르게 친 결정 수' = 조합마다 |실제 액션 횟수 − 기회 × 차트 빈도|의 합 — 빈도와 표본을
-    한 숫자로 묶은 손해 크기의 대용치라, 이 순서로 정렬한다. 비교는 **그 구간에 가져온 차트가
-    있을 때만** 한다 (다른 구간 차트로 대체해 비교하면 40bb 핸드를 20bb 차트로 재게 된다).
-    인원에서 빠지는 앞자리(자리·오프너)는 싣지 않는다."""
+    핸드는 그 상황의 가장 가까운 bb 차트에 붙는다 (`hand_slot`). 기대치는 내가 실제로 받은 조합으로
+    가중한다 (표본이 작을 때 패 운을 리크로 읽지 않게). '다르게 친 결정 수' = 조합마다 |실제 액션
+    횟수 − 기회 × 차트 빈도|의 합 — 빈도와 표본을 한 숫자로 묶은 손해 크기의 대용치라, 이 순서로
+    정렬한다. 인원에서 빠지는 앞자리(자리·오프너)는 싣지 않는다."""
     off = seats_off(max_seats)
-    spots = {(s["pos"], s["vs"] or None) for s in custom_slots(db)}
     rows = []
-    for pos, vs in spots:
+    for (pos, vs), bbs in _slots_index(db).items():
         if pos in off or vs_parts(vs)[0] in off:
             continue
-        for bucket in STACK_ORDER:
-            c = chart(pos, bucket, db, vs)
-            if not c or not c.get("source") or c["chart_stack"] != bucket:
+        for bb in bbs:
+            c = chart(pos, str(bb), db, vs)
+            if not c or not c.get("source"):
                 continue
-            cells = hero_cells(db, pos, bucket, vs)
+            cells = hero_cells(db, pos, vs, slot=bb)
             n = sum(e[1] for e in cells.values())
             if n < LEAK_MIN_N:
                 continue
@@ -871,8 +906,8 @@ def leak_report(db, max_seats=8):
             wrong = sum(abs(e[0] - e[1] * _target(c, k)) for k, e in cells.items())
             kind = vs_parts(vs)[1]
             rows.append({
-                "pos": pos, "vs": vs, "bucket": bucket, "stack": c["stack"], "bb": c["bb"],
-                "label": spot_name(pos, vs), "stack_label": STACK_LABEL[bucket],
+                "pos": pos, "vs": vs, "stack": str(bb), "bb": bb, "bucket": store._stack_bucket(bb),
+                "label": spot_name(pos, vs), "stack_label": f"{bb}bb",
                 "chart_label": c["label"],
                 # 무엇을 '액션'으로 셌나 — 문구용
                 "act_name": "오픈" if not vs else {"raise": "방어", "allin": "콜", "limp": "레이즈"}[kind],
@@ -888,7 +923,7 @@ def leak_report(db, max_seats=8):
 
 def hand_spot(r):
     """핸드 기록 → 그 프리플랍 결정이 걸린 스팟 (8맥스 자리, 상대 또는 None) — 차트로 잴 수 없는
-    상황(멀티웨이·3벳 이후·rebuild 전 기록)이면 None. 실전 기록 집계(_hero_rfi/_hero_vs)와 같은 규칙이다."""
+    상황(멀티웨이·3벳 이후·rebuild 전 기록)이면 None. 실전 기록 집계(_hero_slots)도 이 규칙을 쓴다."""
     n = r.get("players")
     pos = _pos_8max(r.get("hero_pos"), n)
     if not pos:
@@ -903,17 +938,16 @@ def hand_spot(r):
     return None
 
 
-def spot_hands(db, pos, vs, bucket, combo, hero="Hero"):
-    """리포트의 조합 칩 → 그 스팟에서 그 조합을 받은 실제 핸드들 (시간순, raw 제외 + 본문).
-    고르는 기준은 hand_spot — 집계·차트 이탈 표시와 같아서 숫자와 목록이 어긋나지 않는다."""
-    want = (pos, _norm_vs(vs) if vs else None)
+def spot_hands(db, pos, vs, stack, combo, hero="Hero"):
+    """리포트의 조합 칩 → 그 상황·그 bb 차트에 붙은 핸드 중 그 조합 (시간순, raw 제외 + 본문).
+    고르는 기준은 hand_slot — 집계·차트 이탈 표시와 같아서 숫자와 목록이 어긋나지 않는다."""
+    want = (pos, _norm_vs(vs) if vs else None, int(stack))
     out = []
     for r in db.get("hands", {}).values():
-        if (store._combo(r.get("hero_cards") or []) == combo
-                and store._stack_bucket(r.get("stack_bb")) == bucket and hand_spot(r) == want):
+        if store._combo(r.get("hero_cards") or []) == combo and hand_slot(db, r) == want:
             out.append(store.hand_view(r, hero))
     out.sort(key=lambda h: h.get("datetime") or "")
-    return {"hands": out, "label": f"{spot_name(pos, vs)} · {STACK_LABEL.get(bucket, bucket)} · {combo}"}
+    return {"hands": out, "label": f"{spot_name(pos, vs)} · {stack_text(stack)} · {combo}"}
 
 
 def _hero_choice(r, kind):
@@ -932,21 +966,20 @@ def hand_deviation(db, r, cache=None):
     """그 핸드의 프리플랍 결정이 차트와 어긋났으면 설명 dict, 아니면 None.
 
     '어긋남' = 히어로가 고른 액션의 차트 빈도가 FOLD_LO(25%) 이하 — 드릴의 [실수] 기준과 같다.
-    비교는 리크 리포트와 같은 조건(그 구간에 가져온 차트가 있을 때만)이라, 표시와 리포트 숫자가 맞는다."""
-    spot = hand_spot(r)
-    bucket = store._stack_bucket(r.get("stack_bb"))
+    비교 차트는 그 상황의 **가장 가까운 bb 차트**(`hand_slot`) — 리크 리포트와 같은 규칙이다."""
+    hs = hand_slot(db, r)
     combo = store._combo(r.get("hero_cards") or [])
-    if not spot or not bucket or not combo:
+    if not hs or not combo:
         return None
-    pos, vs = spot
-    key = (pos, bucket, vs)
+    pos, vs, slot = hs
+    key = (pos, vs, slot)
     if cache is not None and key in cache:
         c = cache[key]
     else:
-        c = chart(pos, bucket, db, vs)
+        c = chart(pos, str(slot), db, vs)
         if cache is not None:
             cache[key] = c
-    if not c or not c.get("source") or c["chart_stack"] != bucket:
+    if not c or not c.get("source"):
         return None
     w = c["weights"].get(combo, 0.0)
     d = _dist(w, min(c["call"].get(combo, 0.0), w))
@@ -1016,8 +1049,11 @@ def _contexts(db, positions=None, stacks=None, max_seats=8, vs_only=None):
     `vs_only`가 None이 아니면 **그 상황만** 낸다 — ''는 오픈 차트만, 'CO'·'CO-allin'은 그 방어
     차트만. 📊 리크 리포트의 '이 스팟 드릴'이 한 스팟을 고정할 때 쓴다."""
     positions = set(positions or ()) or set(POS_ORDER)
-    stacks = set(stacks or ()) or set(STACK_ORDER)
+    stacks = {str(x) for x in (stacks or ())} or set(STACK_ORDER)
     off = seats_off(max_seats)
+    idx = _slots_index(db)
+    # 스택 필터는 버킷 키(pf/short…)도, bb 차트(13…)도 받는다 — 리크 리포트 '이 스팟 드릴'이 bb를 고정한다
+    keep_bb = lambda bb: str(bb) in stacks or store._stack_bucket(bb) in stacks
     # 내장 'MP'는 LJ·HJ를 하나로 묶은 옛 근사 차트다 — 그 자리를 가져온 8맥스 차트가 있으면 중복이고,
     # 4명 이하 테이블엔 MP 자리 자체가 없다
     imported = {_split_key(k)[0] for k in _charts(db) if not _split_key(k)[2]}
@@ -1027,6 +1063,23 @@ def _contexts(db, positions=None, stacks=None, max_seats=8, vs_only=None):
         if p not in positions or p in off or (p == "MP" and drop_mp):
             continue
         vss = [v for v in _vs_list(db, p) if vs_parts(v)[0] not in off]
+        open_bbs = idx.get((p, None), [])
+        bbs = sorted(set(open_bbs) | {b for v in vss for b in idx.get((p, v), [])})
+        if bbs:
+            # 가져온 차트가 하나라도 있는 자리(오픈이 없는 BB 포함) — 문제는 **bb 차트 단위**("13bb")로 낸다.
+            # 방어 문제는 그 bb에 있는 상대들끼리 몫을 나눠, 합쳐서 오픈 차트 하나만큼만 나오게 한다
+            for bb in bbs:
+                if not keep_bb(bb):
+                    continue
+                here = [v for v in vss if bb in idx.get((p, v), [])]
+                if (vs_only is None or vs_only == "") and bb in open_bbs:
+                    out.append((p, str(bb), None, 1.0))
+                if vs_only is None:
+                    out.extend((p, str(bb), v, 1.0 / len(here)) for v in here)
+                elif vs_only and _norm_vs(vs_only) in here:
+                    out.append((p, str(bb), _norm_vs(vs_only), 1.0))
+            continue
+        # 내장 근사 차트(가져온 차트가 없는 자리) — 옛 4버킷
         for s in STACK_ORDER:
             if s not in stacks:
                 continue
@@ -1077,7 +1130,7 @@ def next_question(db, positions=None, stacks=None, max_seats=8, vs_only=None):
         c = chart(pos, bucket, db, vs)
         if not c:
             continue
-        hero = hero_cells(db, pos, bucket, vs, builtin=not c["source"])
+        hero = _chart_hero(db, c)
         for combo in all_combos():
             # 차트 빈도가 곧 목표치다 — 가져온 차트의 혼합 빈도(0.62 등)도 그대로 쓴다.
             # 오픈 차트: 실전 기록(rfi)은 레이즈만 세므로 콜(림프) 몫은 빼고 비교한다.
@@ -1108,7 +1161,7 @@ def next_question(db, positions=None, stacks=None, max_seats=8, vs_only=None):
         raise_label = "레이즈(아이솔)"
     elif vs:
         prompt = f"{op} {KIND_NAME[kind]} — 나머지는 폴드하고 나에게 왔습니다. "
-        raise_label = verb + ("(올인)" if bucket == "pf" else "")
+        raise_label = verb + ("(올인)" if parse_stack(bucket)[2] == "pf" else "")
     else:
         prompt = ("헤즈업, 상대 BB. " if pos == "SB(BTN)"
                   else "앞이 전부 폴드하고 나에게 왔습니다. ")
@@ -1121,7 +1174,7 @@ def next_question(db, positions=None, stacks=None, max_seats=8, vs_only=None):
             f" · {max_name(int(max_seats))} UTG" if seats_off(max_seats)
             and pos == POS_8MAX[len(seats_off(max_seats))] else ""),
         "vs_label": f"vs {op} {KIND_NAME[kind]}" if vs else None,
-        "stack_label": STACK_LABEL.get(bucket, "?"),
+        "stack_label": stack_text(bucket),
         "verb": verb,
         "chart_source": c.get("source"),
         "prompt": prompt,
@@ -1169,7 +1222,7 @@ def grade(db, pos, bucket, combo, choice, record=True, vs=None):
                 else f"{combo}는 차트상 **{fold}** 구간인데 {verb}했습니다{fs}.")
 
     lines = [head,
-             f"{spot_name(c['pos'], c['vs'])} · {STACK_LABEL.get(bucket, '?')} {verb} 레인지는 상위 "
+             f"{spot_name(c['pos'], c['vs'])} · {stack_text(bucket)} {verb} 레인지는 상위 "
              f"**{c['pct']}%** (경계 {c['mix_pct']}% 포함)."]
     return _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record)
 
@@ -1194,7 +1247,7 @@ def _grade3(db, c, pos, bucket, combo, choice, freq, call_f, v, record):
         head = (f"{combo}는 차트상 **{name[best]}** 쪽입니다 ({mix}) — "
                 f"{name.get(choice, choice)} 빈도는 {p * 100:.0f}%뿐입니다.")
     lines = [head,
-             f"{spot_name(c['pos'], c['vs'])} · {STACK_LABEL.get(bucket, '?')} 차트: 액션 합계 **{c['pct']}%** "
+             f"{spot_name(c['pos'], c['vs'])} · {stack_text(bucket)} 차트: 액션 합계 **{c['pct']}%** "
              f"(그중 콜 {c['call_pct']}%, 경계 {c['mix_pct']}% 포함)."]
     return _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record)
 
@@ -1204,10 +1257,10 @@ def _grade_tail(db, c, pos, bucket, combo, choice, g, v, freq, lines, record):
     verb = c["verb"]
     if c.get("source"):
         lines.append(f"차트 출처: **{c['source']}**"
-                     + ("" if c["chart_stack"] == bucket
+                     + ("" if c["chart_stack"] == parse_stack(bucket)[2]
                         else f" ({STACK_LABEL.get(c['chart_stack'])} 차트로 대체)"))
     vs = c["vs"]
-    rec = hero_record(db, pos, bucket, combo, vs, builtin=not c.get("source"))
+    rec = hero_record(db, c, combo)
     if rec and vs and (c["allin"] or c["limp"]):
         lines.append(f"실전 기록: 이 스팟에서 {combo} {rec['opps']}회 중 "
                      f"{rec['opens']}회 {verb} (**{rec['rate']}%**).")
@@ -1240,8 +1293,8 @@ def chart_view(db, pos, stack, vs=None):
     c = chart(pos, stack, db, vs)
     if not c:
         return {"error": "해당 포지션·스택 차트가 없습니다."}
-    # 실전 기록은 버킷 단위로만 쌓인다 (핸드마다 스택이 제각각이라 bb로는 안 묶인다)
-    hero = hero_cells(db, pos, c["bucket"], c["vs"], builtin=not c["source"])
+    # 실전 기록 — 가져온 bb 차트면 그 차트에 가장 가깝게 붙은 핸드들 (hand_slot), 내장이면 버킷
+    hero = _chart_hero(db, c)
     acts = ("open", "call") if c["vs"] and not c["limp"] else ("open",)
     cells = {}
     for combo in all_combos():

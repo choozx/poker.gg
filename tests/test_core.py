@@ -126,6 +126,33 @@ def hand(pos, players, combo_cards, faced="none", rfi=False, **kw):
     return r
 
 
+def reset_caches():
+    ranges._HERO_CACHE.update(n=None, data=None)
+    ranges._HERO_SLOT_CACHE.update(key=None, data=None)
+    ranges._SLOT_CACHE.update(key=None, index=None)
+
+
+class TestNearestSlot(unittest.TestCase):
+    def test_nearest_with_tolerance(self):
+        self.assertEqual(ranges.nearest_slot([7, 10, 13], 12), 13)
+        self.assertEqual(ranges.nearest_slot([7, 10, 13], 8.4), 7)
+        self.assertEqual(ranges.nearest_slot([25, 28, 30, 32, 35], 40), 35)      # 35의 15% = 5.25 안
+        self.assertIsNone(ranges.nearest_slot([25, 28, 30, 32, 35], 41))
+        self.assertIsNone(ranges.nearest_slot([7, 10, 13], 3))                   # 7에서 4bb — 너무 멀다
+
+    def test_13bb_hand_uses_13bb_chart_not_10bb(self):
+        # 예전 버그: 버킷(<15bb)마다 차트 한 장(11bb에 가까운 10bb)만 써서 13bb 핸드도 10bb 차트로 쟀다
+        db = {"hands": {}}
+        ranges.import_chart(db, "CO", "10", "72o:100")          # 10bb: 72o 오픈
+        ranges.import_chart(db, "CO", "13", "AA:100")           # 13bb: AA만 오픈
+        reset_caches()
+        r13 = dict(hand("CO", 7, ["7h", "2d"], rfi=True), stack_bb=13)
+        r10 = dict(hand("CO", 7, ["7h", "2d"], rfi=True), stack_bb=10)
+        self.assertEqual(ranges.hand_slot(db, r13), ("CO", None, 13))
+        self.assertIn("13bb", ranges.hand_deviation(db, r13, {})["chart"])     # 13bb 차트로 이탈
+        self.assertIsNone(ranges.hand_deviation(db, r10, {}))                  # 10bb 차트로는 정답
+
+
 class TestSeatsAndHero(unittest.TestCase):
     def test_pos_8max_by_players_behind(self):
         self.assertEqual(ranges._pos_8max("UTG", 7), "UTG1")
@@ -138,10 +165,12 @@ class TestSeatsAndHero(unittest.TestCase):
         # 실제로 났던 버그: 7인 UTG가 8맥스 UTG 차트에 섞였다 (8인 UTG 6번이 9,466번으로)
         db = {"hands": {str(i): hand("UTG", 7, ["Ah", "Kd"], rfi=True) for i in range(5)}}
         db["hands"]["x"] = hand("UTG", 8, ["Ah", "Kd"], rfi=False)
-        ranges._HERO_CACHE.update(n=None, data=None)
-        self.assertEqual(ranges.hero_cells(db, "UTG", "short")["AKo"], [0, 1])            # 8인 UTG만
-        self.assertEqual(ranges.hero_cells(db, "UTG1", "short")["AKo"], [5, 5])           # 7인 UTG
-        self.assertEqual(ranges.hero_cells(db, "UTG", "short", builtin=True)["AKo"], [5, 6])  # 내장=원래 이름
+        for p in ("UTG", "UTG1"):
+            ranges.import_chart(db, p, "20", "AKo:100")
+        reset_caches()
+        self.assertEqual(ranges.hero_cells(db, "UTG", slot=20)["AKo"], [0, 1, 0])        # 8인 UTG만
+        self.assertEqual(ranges.hero_cells(db, "UTG1", slot=20)["AKo"], [5, 5, 5])       # 7인 UTG
+        self.assertEqual(ranges.hero_cells(db, "UTG", bucket="short", builtin=True)["AKo"][:2], [5, 6])  # 내장=원래 이름
 
     def test_seats_off_and_contexts(self):
         self.assertEqual(ranges.seats_off(7), {"UTG"})
@@ -161,7 +190,9 @@ class TestPinnedSpot(unittest.TestCase):
         ranges.import_chart(db, "BB", "20", "22+", vs="CO", call="22:100")
         ranges.import_chart(db, "BB", "20", "AA", vs="CO-allin")
         ctx = ranges._contexts(db, positions=["BB"], stacks=["short"], vs_only="CO-allin")
-        self.assertEqual([(p, s, v) for p, s, v, _ in ctx], [("BB", "short", "CO-allin")])
+        self.assertEqual([(p, s, v) for p, s, v, _ in ctx], [("BB", "20", "CO-allin")])   # 문제는 bb 차트 단위
+        ctx = ranges._contexts(db, positions=["BB"], stacks=["20"], vs_only="CO")           # bb로 고정해도 같다
+        self.assertEqual([(p, s, v) for p, s, v, _ in ctx], [("BB", "20", "CO")])
         ctx = ranges._contexts(db, positions=["CO"], stacks=["short"], vs_only="")   # 오픈 차트만
         self.assertTrue(ctx and all(v is None for _, _, v, _ in ctx))
 
@@ -174,7 +205,7 @@ class TestLeakReport(unittest.TestCase):
             "1": hand("CO", 7, ["Ah", "Ad"], rfi=True), "2": hand("CO", 7, ["Kh", "Kd"], rfi=False),
             **{f"t{i}": hand("CO", 7, ["7h", "2d"], rfi=False) for i in range(20)},
         }
-        ranges._HERO_CACHE.update(n=None, data=None)
+        reset_caches()
         rows = ranges.leak_report(db, 7)["rows"]
         self.assertEqual(len(rows), 1)
         r = rows[0]
@@ -337,7 +368,7 @@ class TestCoach(unittest.TestCase):
         ranges.import_chart(db, "CO", "20", "AA:100,KK:100")
         db["hands"] = {"1": hand("CO", 7, ["Ah", "Ad"], rfi=True, pf_opener=None),
                        **{f"t{i}": hand("CO", 7, ["7h", "2d"], rfi=False) for i in range(20)}}
-        ranges._HERO_CACHE.update(n=None, data=None)
+        reset_caches()
         row = ranges.leak_report(db, 8)["rows"][0]
         p = coach.profile_text(db)
         self.assertIn(f"실제 {row['actual']}% / 차트 {row['expected']}%", p)

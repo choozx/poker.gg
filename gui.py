@@ -464,7 +464,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/range/hands":
             qs = parse_qs(urlparse(self.path).query)
             g = lambda k: qs.get(k, [""])[0]
-            resp = ranges.spot_hands(DB, g("pos"), g("vs") or None, g("bucket"), g("combo"), hero=HERO)
+            resp = ranges.spot_hands(DB, g("pos"), g("vs") or None, g("stack"), g("combo"), hero=HERO)
             resp["chart_devs"] = ranges.annotate_deviations(DB, resp["hands"])
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
         elif path == "/api/range/state":
