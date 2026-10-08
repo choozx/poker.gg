@@ -769,12 +769,22 @@ def nearest_slot(bbs, stack_bb):
     return best if abs(best - stack_bb) <= max(SLOT_TOL_MIN, SLOT_TOL_FRAC * best) else None
 
 
+def hand_bb(r, vs=None):
+    """그 핸드를 차트에 붙일 스택(bb). 오픈은 내 스택, 방어(상대가 있음)는 **유효 스택** — 오프너와 나 중
+    작은 쪽(`pf_eff_bb`). 차트는 모두가 같은 스택이라고 가정해서, 20bb인 내가 5bb 올인을 받은 핸드를
+    '20bb 올인을 받음' 차트로 재면 콜을 과소평가한다 (실측: 올인을 받은 핸드의 56%가 상대 스택 < 내 80%).
+    `pf_eff_bb`가 없는 DB(이 필드 전에 rebuild)는 예전처럼 내 스택으로 떨어진다."""
+    if vs and r.get("pf_eff_bb") is not None:
+        return r["pf_eff_bb"]
+    return r.get("stack_bb")
+
+
 def hand_slot(db, r):
     """핸드 → (자리, 상대 또는 None, 붙는 bb 차트) — 차트로 잴 수 없으면 None."""
     spot = hand_spot(r)
     if not spot:
         return None
-    slot = nearest_slot(_slots_index(db).get(spot), r.get("stack_bb"))
+    slot = nearest_slot(_slots_index(db).get(spot), hand_bb(r, spot[1]))
     return (spot[0], spot[1], slot) if slot is not None else None
 
 
@@ -993,7 +1003,10 @@ def hand_deviation(db, r, cache=None):
             "did": name[choice], "did_pct": round(d[choice] * 100),
             "best": name[best], "best_pct": round(d[best] * 100),
             "mix": " · ".join(f"{name[k]} {round(d[k] * 100)}%" for k in ("open", "call", "fold")
-                              if d[k] > 0.005)}
+                              if d[k] > 0.005),
+            # 상대 스택이 나보다 작아 유효 스택으로 차트를 골랐으면 그 값 — '내 스택과 다른 bb 차트'가
+            # 왜 붙었는지 문구로 보이게
+            "eff_bb": hand_bb(r, vs) if vs and hand_bb(r, vs) != r.get("stack_bb") else None}
 
 
 def annotate_deviations(db, hands):

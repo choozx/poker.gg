@@ -491,16 +491,22 @@ def hand_meta(h, hero="Hero"):
     #   (MTT 트리에선 사실상 SB 림프 → BB). 'BB vs SB 림프' 차트에 내 기록을 겹쳐 보는 데 쓴다.
     #  pf_opener_allin = 그 오픈이 올인이었나. 오픈 레이즈를 받은 것과 오픈 올인을 받은 것은
     #   레인지가 완전히 다른 상황이라(올인엔 콜/폴드뿐) 방어 차트도 따로다. pf_opener가 None이면 None.
+    #  pf_eff_bb = 오프너(또는 림퍼)와 나 중 **작은 스택**(bb). GTO 차트는 모두가 같은 스택이라고
+    #   가정하므로 방어 차트는 내 스택이 아니라 이 유효 스택으로 고른다 — 20bb인 내가 5bb 올인을 받으면
+    #   '5bb 근처 차트'가 맞다(내 스택으로 고르면 '20bb 올인을 받음'과 비교돼 콜을 과소평가했다).
+    #  1bb 이하 올인(빅블라인드도 못 채운 숏스택)은 레이즈가 아니라 림프처럼 센다 — 오픈 올인으로
+    #   세면 '오픈 올인을 받음' 차트에 엉뚱하게 붙는다. 림퍼로도 잡지 않는다(그 차트도 아니다).
+    #  RETURN(언콜드 반환)은 결정이 아니다 — BB가 블라인드로 올인해 판이 끝난 SB가 '폴드'로 세지 않게.
     rfi_opp = rfi = False
     pf_action = "fold"
-    pf_faced = pf_opener = pf_opener_allin = pf_limper = None
+    pf_faced = pf_opener = pf_opener_allin = pf_limper = pf_eff_bb = None
     prior_raise = prior_vol = False
     raisers, entrants, n_vol = [], [], 0
     for a in h.actions:
         if a.street != "preflop":
             break
-        if a.verb.startswith("posts"):
-            continue                                  # 블라인드/앤티는 자발적 액션 아님
+        if a.verb.startswith("posts") or a.verb == "return":
+            continue                                  # 블라인드/앤티·반환은 자발적 액션 아님
         if a.player == hero:
             rfi_opp = not prior_vol                   # 폴드 투 히어로면 오픈 기회
             pf_faced = "raise" if prior_raise else ("limp" if prior_vol else "none")
@@ -509,6 +515,10 @@ def hand_meta(h, hero="Hero"):
                 pf_opener_allin = raisers[0][1] == "allin" if pf_opener else None
             elif not raisers and n_vol == 1 and entrants[0][1] == "calls":
                 pf_limper = next((p.position for p in h.players if p.name == entrants[0][0]), None)
+            other = raisers[0][0] if pf_opener else (entrants[0][0] if pf_limper else None)
+            op_p = next((p for p in h.players if p.name == other), None)
+            if op_p and hero_p and h.bb:
+                pf_eff_bb = round(min(op_p.chips, hero_p.chips) / h.bb, 1)
             if a.verb in ("raises", "bets"):
                 pf_action = "3bet" if prior_raise else "open"
             elif a.verb == "allin":
@@ -517,13 +527,16 @@ def hand_meta(h, hero="Hero"):
                 pf_action = "call"
             rfi = rfi_opp and a.verb in ("raises", "allin")
             break
-        if a.verb in ("raises", "allin"):
+        verb = a.verb
+        if verb == "allin" and h.bb and a.to_amount <= h.bb:
+            verb = "short_allin"                      # 1bb 이하 올인 — 레이즈 아님(림프처럼)
+        if verb in ("raises", "allin"):
             prior_raise = True
-            raisers.append((a.player, a.verb))
-        if a.verb in ("calls", "bets", "raises", "allin"):
+            raisers.append((a.player, verb))
+        if verb in ("calls", "bets", "raises", "allin", "short_allin"):
             prior_vol = True                          # 앞에 자발적 참여(콜/레이즈)가 있었음
             n_vol += 1
-            entrants.append((a.player, a.verb))
+            entrants.append((a.player, verb))
     # 핸드 시작 시 히어로 스택(bb) — 스택 깊이 필터용
     stack_bb = round(hero_p.chips / h.bb, 1) if hero_p and h.bb else None
     net_bb = round(net / h.bb, 1) if h.bb else None
@@ -553,6 +566,7 @@ def hand_meta(h, hero="Hero"):
         "pf_opener": pf_opener,
         "pf_opener_allin": pf_opener_allin,
         "pf_limper": pf_limper,
+        "pf_eff_bb": pf_eff_bb,
         "stack_bb": stack_bb,
         "showdown": went_showdown,
         "no_action_fold": no_action_fold,

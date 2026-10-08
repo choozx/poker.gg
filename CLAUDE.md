@@ -180,7 +180,11 @@ imported charts is `_hero_slots` → `hero_cells(pos, vs, slot=bb)`, and the lea
 the chart overlay (`_chart_hero`), the drill's personalization and the AI coach all read it — one rule, so
 their numbers agree. It replaced per-bucket comparison, which used **one chart per bucket** (the bb nearest
 `_BUCKET_MID`): 25·28·30·32·35bb hands were all graded by the 30bb chart, and once a 10bb chart arrived,
-12–14bb hands were graded by 10bb. Drill questions for seats with imported charts are per bb chart too
+12–14bb hands were graded by 10bb. **Defense spots use the effective stack** (`hand_bb`: `pf_eff_bb` = min(opener or limper, hero)
+in bb) — GTO charts assume equal stacks, and grading a 20bb hero facing a 5bb shove by the "20bb vs all-in"
+chart undercounts calls (56% of real vs-all-in hands had an opener under 80% of hero's stack). Opens still use
+hero's own `stack_bb`. DBs rebuilt before `pf_eff_bb` existed fall back to `stack_bb`. The 🎯 차트 이탈 note
+shows `(유효 Nbb)` when the effective stack picked the chart. Drill questions for seats with imported charts are per bb chart too
 ("13bb"); the drill's bucket filter still works (a bb chart belongs to its bucket). Only the built-in
 approximation charts (no bb) still use buckets — `_hero_rfi` (raw seat names) via `hero_cells(builtin=True)`.
 
@@ -448,7 +452,7 @@ No payout ladder is modeled — don't invent one.
 ### The key invariant: metadata is frozen at import time
 
 When a hand is imported, `convert.hand_meta()` computes derived fields (`vpip`, `pfr`, `rfi`,
-`rfi_opp`, `pf_action`, `pf_faced`, `pf_opener`, `pf_opener_allin`, `pf_limper`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
+`rfi_opp`, `pf_action`, `pf_faced`, `pf_opener`, `pf_opener_allin`, `pf_limper`, `pf_eff_bb`, `stack_bb`, `net_bb`, `review`, `hero_pos`, …) **once** and stores them in
 the DB record alongside the original `raw` text and rendered `markdown`. The aggregate queries in
 `store.py` (`stats`, `hand_grid`) read these frozen fields directly — they never re-parse `raw`.
 
@@ -501,6 +505,10 @@ format if you touch the prompt.
   `rfi_opp` + `pf_action` + `no_action_fold` — those can't separate "faced a raise" from "faced a
   limp" from "walk", and `no_action_fold` is `True` for exactly the clean preflop fold, so filtering
   it out silently drops every fold from a defend-frequency denominator.
+  `RETURN` (uncalled chips handed back) is **not** a decision — reading it as hero's action once turned
+  880 BB walks into "open opportunity, folded" and SB hands that ended on a short BB all-in into SB folds.
+  An all-in for **≤ 1bb** (a micro-stack that can't even complete the blind) is not a raise: it counts as a
+  voluntary entrant, so the pot is a limp pot with no `pf_opener`/`pf_limper` and no chart compares it.
 - **Chip EV (`net_bb`)** is a play-quality metric, not winnings — tournament chips ≠ prize money, so
   the app never sums P&L as money.
 - Hand-grid stack buckets: `<15` (push/fold) / `15–25` / `25–40` / `40+` bb.

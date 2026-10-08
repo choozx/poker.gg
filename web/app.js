@@ -782,7 +782,8 @@ function renderMain() {
         ${netHtml(h.net, h.net_bb)}
       </div>
       <div class="hand-body">
-        ${h.chart_dev ? `<div class="dev-note">🎯 <b>차트 이탈</b> — ${esc(h.chart_dev.chart)} ${esc(h.chart_dev.combo)}:
+        ${h.chart_dev ? `<div class="dev-note">🎯 <b>차트 이탈</b> — ${esc(h.chart_dev.chart)}${
+          h.chart_dev.eff_bb != null ? ` (유효 ${h.chart_dev.eff_bb}bb)` : ''} ${esc(h.chart_dev.combo)}:
           실제 <b>${esc(h.chart_dev.did)}</b> (차트 ${h.chart_dev.did_pct}%) · 차트는 ${esc(h.chart_dev.mix)}</div>` : ''}
         ${mdToHtml(stripHeader(h.markdown))}
         <div class="ai-box" id="ai-${h.hand_id}">${aiBoxHtml(h.hand_id)}</div>

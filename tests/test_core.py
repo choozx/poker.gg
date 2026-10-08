@@ -61,6 +61,34 @@ class TestHandMeta(unittest.TestCase):
         self.assertIsNone(meta(raw, "78c4f548")["pf_opener"])
 
 
+    def test_effective_stack_is_smaller_of_opener_and_hero(self):
+        # 방어 차트는 내 스택이 아니라 유효 스택으로 고른다 — BTN 11,058 / BB 20,122 / SB(Hero) 10,000, bb 350
+        bb = meta(SAMPLE, "78c4f548")
+        self.assertEqual((bb["stack_bb"], bb["pf_eff_bb"]), (57.5, 31.6))
+        self.assertEqual(meta(SAMPLE, "Hero")["pf_eff_bb"], 28.6)      # 내가 더 작으면 내 스택
+        self.assertIsNone(meta(SAMPLE, "084a1d59")["pf_eff_bb"])        # 오픈 스팟엔 상대가 없다
+
+    def test_allin_below_one_bb_is_not_an_open(self):
+        # 실제로 있던 핸드 모양: BB 800에 BTN이 95칩 올인 → '오픈 올인을 받음'으로 세면 안 된다
+        raw = sample_with_preflop(["084a1d59: ALLIN 300", "Hero: folds", "78c4f548: RETURN 50"])
+        m = meta(raw, "Hero")
+        self.assertEqual((m["pf_faced"], m["pf_opener"], m["pf_limper"]), ("limp", None, None))
+        self.assertIsNone(ranges.hand_spot(m))
+        m = meta(sample_with_preflop(["084a1d59: ALLIN 400", "Hero: folds"]), "Hero")
+        self.assertEqual((m["pf_opener"], m["pf_opener_allin"]), ("BTN", True))   # 1bb 넘으면 올인 오픈
+
+    def test_return_is_not_a_decision(self):
+        # BB 워크와, BB가 블라인드로 올인해 판이 끝난 SB — 반환 줄을 결정으로 읽어 '폴드'로 셌었다
+        m = meta(sample_with_preflop(["084a1d59: folds", "Hero: folds", "78c4f548: RETURN 175"]), "78c4f548")
+        self.assertIsNone(m["pf_faced"])
+        self.assertFalse(m["rfi_opp"])
+        raw = sample_with_preflop(["084a1d59: folds", "Hero: RETURN 75"]).replace(
+            "78c4f548: posts big blind 350", "78c4f548: posts big blind 100 ALLIN")
+        m = meta(raw, "Hero")
+        self.assertIsNone(m["pf_faced"])
+        self.assertIsNone(ranges.hand_spot(m))
+
+
 # ---------------------------------------------------------------------------
 # 차트 키 · 상대 종류
 # ---------------------------------------------------------------------------
@@ -151,6 +179,23 @@ class TestNearestSlot(unittest.TestCase):
         self.assertEqual(ranges.hand_slot(db, r13), ("CO", None, 13))
         self.assertIn("13bb", ranges.hand_deviation(db, r13, {})["chart"])     # 13bb 차트로 이탈
         self.assertIsNone(ranges.hand_deviation(db, r10, {}))                  # 10bb 차트로는 정답
+
+
+    def test_defense_uses_effective_stack(self):
+        # 20bb인 내가 7bb 올인을 받으면 '7bb 올인을 받음' 차트 — 내 스택(20bb) 차트가 아니다
+        db = {"hands": {}}
+        for bb in ("7", "20"):
+            ranges.import_chart(db, "BB", bb, "AA:100", vs="BTN-allin")
+            ranges.import_chart(db, "BTN", bb, "AA:100")
+        reset_caches()
+        r = hand("BB", 7, ["Ah", "Ad"], faced="raise", pf_opener="BTN", pf_opener_allin=True,
+                 stack_bb=20, pf_eff_bb=7)
+        self.assertEqual(ranges.hand_slot(db, r), ("BB", "BTN-allin", 7))
+        self.assertEqual(ranges.hand_deviation(db, dict(r, pf_action="fold"), {})["eff_bb"], 7)
+        old = dict(r); del old["pf_eff_bb"]                     # 이 필드 전에 rebuild한 DB → 내 스택
+        self.assertEqual(ranges.hand_slot(db, old), ("BB", "BTN-allin", 20))
+        o = hand("BTN", 7, ["Ah", "Ad"], rfi=True, stack_bb=20, pf_eff_bb=7)
+        self.assertEqual(ranges.hand_slot(db, o), ("BTN", None, 20))   # 오픈은 내 스택
 
 
 class TestSeatsAndHero(unittest.TestCase):
