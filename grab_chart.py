@@ -311,6 +311,12 @@ def read_grid(im, box=None):
     # 2차: 빨강 전체의 밝기 분포로 올인/레이즈 경계를 정하고 열마다 배분
     cut = split_reds(reds)
     notes["two_tone"] = cut is not None
+    ls = [lum(p) for p in reds]
+    notes["red_lum"] = sum(ls) / len(ls) if ls else None
+    if cut is not None:
+        dark, light = [v for v in ls if v < cut], [v for v in ls if v >= cut]
+        notes["tones"] = {"jam": sum(dark) / len(dark), "raise": sum(light) / len(light),
+                          "jam_share": len(dark) / len(ls)}
     freq, jam, call, mixed = {}, {}, {}, []
     for (r, c), cols in grid.items():
         if not cols:
@@ -333,6 +339,75 @@ def read_grid(im, box=None):
             mixed.append((lab, f))
     notes["mixed"] = mixed
     return freq, jam, call, notes
+
+
+# ── 한 톤 차트: 레이즈냐 올인이냐 ────────────────────────────────────────────────
+# 빨강이 한 톤뿐이면 이미지만으론 그게 레이즈인지 올인인지 모른다 (예전엔 무조건 레이즈로 저장해서
+# 7bb UTG~HJ '전부 올인' 오픈이 '전부 레이즈'로 들어갔고, 순서표가 레이즈 0%짜리 노드의 방어 칸
+# 22장을 만들었다). 그래서 **두 톤이 또렷이 갈린 차트에서 본 밝기를 기억해 두고**(`learn_tones`)
+# 한 톤 차트는 그 밝기와 비교한다(`guess_tone`). 기억이 없거나 애매하면 감시 모드는 멈추고 묻는다
+# (j/r) — 답한 밝기도 기억한다. 레포 밖(~/.cache)에 둔다: 화면 테마에 딸린 값이라 공유할 게 아니다.
+TONES_PATH = os.path.expanduser("~/.cache/analyze_hand_history/grab_tones.json")
+TONE_MIN_SHARE = 0.05      # 두 톤 중 작은 쪽이 빨강의 이만큼은 돼야 '진짜 두 톤'으로 배운다
+TONE_NAME = {"jam": "올인", "raise": "레이즈"}
+
+
+def load_tones():
+    try:
+        with open(TONES_PATH, encoding="utf-8") as f:
+            t = json.load(f)
+        return {k: float(v) for k, v in t.items() if k in ("jam", "raise")}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def save_tones(tones):
+    try:
+        os.makedirs(os.path.dirname(TONES_PATH), exist_ok=True)
+        with open(TONES_PATH, "w", encoding="utf-8") as f:
+            json.dump(tones, f)
+    except OSError:
+        pass                                       # 기억 못 해도 다음에 다시 물어볼 뿐이다
+
+
+def learn_tones(notes, tones):
+    """두 톤이 또렷한 차트(작은 쪽도 빨강의 5% 이상)면 그 밝기를 기억한다. 배웠으면 True.
+    한 톤 차트에 번진 테두리 픽셀이 '밝은 톤'으로 잡히는 경우가 있어 비중이 작은 건 배우지 않는다."""
+    t = notes.get("tones")
+    if not t or min(t["jam_share"], 1 - t["jam_share"]) < TONE_MIN_SHARE:
+        return False
+    tones.update({"jam": t["jam"], "raise": t["raise"]})
+    save_tones(tones)
+    return True
+
+
+def single_tone(notes, vs=None):
+    """한 톤 차트면 그 빨강의 평균 밝기, 아니면 None. 올인을 받은 차트는 비폴드가 전부 콜로
+    저장되니 톤을 따질 필요가 없다."""
+    import ranges
+    if notes.get("two_tone") or notes.get("red_lum") is None or ranges.vs_parts(vs)[1] == "allin":
+        return None
+    return notes["red_lum"]
+
+
+def guess_tone(lum_v, tones):
+    """한 톤 밝기 → 'jam' / 'raise' / None(모름). 기억한 두 밝기 중 확실히 가까운 쪽만 고른다."""
+    d = {k: abs(lum_v - v) for k, v in tones.items()}
+    if not d:
+        return None
+    best = min(d, key=d.get)
+    if d[best] > MIN_TONE_GAP / 2:
+        return None                                # 기억한 어느 톤과도 멀다 (테마가 바뀌었나)
+    if len(d) == 2 and max(d.values()) - d[best] < MIN_TONE_GAP / 2:
+        return None                                # 두 톤 사이 어중간
+    return best
+
+
+def apply_tone(freq, call, tone):
+    """한 톤 차트의 빨강 몫을 그 톤으로 — 올인이면 jam = 비폴드 − 콜, 레이즈면 jam 없음."""
+    if tone != "jam":
+        return {}
+    return {k: round(v - call.get(k, 0.0), 3) for k, v in freq.items() if v - call.get(k, 0.0) > 0.005}
 
 
 # ── 앱에 보내기 ────────────────────────────────────────────────────────────────
@@ -548,7 +623,9 @@ def watch(a):
         return
     print("GTO 툴에서 아래 안내대로 차트를 띄우면 자동으로 찍어 저장합니다 (마우스는 그리드 밖에).\n"
           "  Enter = 지금 화면을 이 칸으로 저장 (첫 장, 또는 앞 칸과 똑같은 차트일 때)\n"
-          "  u = 방금 저장한 것 되돌리기 · s = 이 칸 건너뛰기 · q = 그만 (다음에 남은 것부터 이어서)")
+          "  u = 방금 저장한 것 되돌리기 · s = 이 칸 건너뛰기 · q = 그만 (다음에 남은 것부터 이어서)\n"
+          "  j / r = 빨강이 한 톤인 차트를 올인 / 레이즈로 저장 (모를 때만 물어봅니다)")
+    tones = load_tones()
 
     box, last_sig, pending, held, n_same = None, None, None, None, 0
     # 되돌리기·건너뛰기 직후엔 화면에 남아 있는 차트를 '이미 본 것'으로 다시 친다 — 안 그러면
@@ -572,7 +649,7 @@ def watch(a):
     announce()
     while i < len(todo):
         line = read_line(POLL_SEC)
-        force = False
+        force, tone_ans = False, None
         if line is not None:
             c = line.strip().lower()
             if c == "q":
@@ -601,7 +678,9 @@ def watch(a):
                 reseed = True
                 announce()
                 continue
-            force = c == ""
+            if c in ("j", "r"):
+                tone_ans = "jam" if c == "j" else "raise"
+            force = c in ("", "j", "r")
         try:
             im = capture_fast()
             freq, jam, call, notes = read_grid(im, box)
@@ -636,6 +715,20 @@ def watch(a):
                 held = sig
                 print(f"   ⚠️  {warn}\n      맞으면 Enter로 저장, 아니면 화면을 고치세요")
                 continue
+        lum_v = single_tone(notes, slot[2])
+        tone = None
+        if lum_v is not None:
+            tone = tone_ans or guess_tone(lum_v, tones)
+            if tone is None:
+                held = sig
+                act = "3벳" if slot[2] else "레이즈"
+                print(f"   ⚠️  빨강이 한 톤뿐이라 {act}인지 올인인지 모릅니다 — "
+                      f"올인이면 j, {act}면 r 을 치고 Enter")
+                continue
+            jam = apply_tone(freq, call, tone)
+            if tone_ans:
+                tones[tone] = lum_v
+                save_tones(tones)
         res = send(a.port, slot[0], slot[1], freq, jam, call,
                    f"GTOWizard {ranges.spot_name(slot[0], slot[2])} {slot[1]}bb", slot[2])
         if res.get("error"):
@@ -648,6 +741,10 @@ def watch(a):
             extra.append(f"콜 {sum(v * cw(k) for k, v in call.items()) / 1326 * 100:.0f}%")
         if jam:
             extra.append(f"올인 {sum(v * cw(k) for k, v in jam.items()) / 1326 * 100:.0f}%")
+        if tone:
+            extra.append(f"한 톤 → {TONE_NAME[tone]}")
+        else:
+            learn_tones(notes, tones)               # 두 톤이 또렷한 차트면 밝기를 기억 (한 톤 판단용)
         print(f"   ✅ {slot_name(slot)} 저장 — 액션 {res['pct']}%"
               + (f" ({' · '.join(extra)})" if extra else "")
               + ("" if notes["lines_ok"] else "  ⚠️ 격자선을 못 찾아 등분으로 읽음"))
@@ -692,6 +789,8 @@ def main():
     ap.add_argument("--source", default="", help="출처 메모 (예: 'GTOWizard 8max LJ 20bb')")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--dry-run", action="store_true", help="읽기만 하고 앱에 보내지 않음")
+    ap.add_argument("--tone", choices=("jam", "raise"),
+                    help="빨강이 한 톤인 차트를 올인(jam) / 레이즈(raise)로 — 기본은 기억한 밝기로 판단")
     a = ap.parse_args()
     if a.watch:
         return watch(a)
@@ -736,12 +835,24 @@ def main():
     if call:
         print(f"  초록(콜·림프) 감지 — 콜 {cpct:.1f}% ({len(call)}조합) · 드릴은 "
               f"{'3벳' if vs else '오픈'}/콜/폴드 3지선다가 됩니다")
+    tones = load_tones()
+    lum_v = single_tone(notes, vs)
+    if lum_v is not None:
+        tone = a.tone or guess_tone(lum_v, tones)
+        if tone:
+            jam = apply_tone(freq, call, tone)
+            jpct = sum(v * cw(c) for c, v in jam.items()) / 1326 * 100
+            if a.tone and not a.dry_run:
+                tones[tone] = lum_v
+                save_tones(tones)
+        print(f"  빨강이 한 톤 — " + (f"{'올인으로' if tone == 'jam' else '레이즈로'} 저장합니다"
+                                       + ("" if a.tone else " (기억한 밝기로 판단)") if tone else
+                                       "레이즈인지 올인인지 몰라 레이즈로 저장합니다. 올인이면 --tone jam"))
+    elif notes["two_tone"] and not a.dry_run:
+        learn_tones(notes, tones)
     if notes["two_tone"]:
         print(f"  빨강 두 톤 감지 — {'3벳' if vs else '레이즈'} {pct - jpct - cpct:.1f}% · 올인 {jpct:.1f}% "
               f"({len(jam)}조합에 올인 섞임)")
-    else:
-        print("  빨강이 한 톤이라 전부 같은 액션으로 읽었습니다 "
-              "(레이즈/올인이 나뉜 차트면 --region 으로 그리드만 잡아 보세요)")
     if notes["mixed"]:
         print("  경계(혼합) 핸드: " +
               ", ".join(f"{k} {v * 100:.0f}%" for k, v in notes["mixed"]))

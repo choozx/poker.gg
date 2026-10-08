@@ -275,7 +275,14 @@ user captured is the chart they see.
 (combo → total action frequency); the raise share is `weights - jam`. GTO tools encode the two as
 **two shades of the same red**, so `grab_chart.split_reds` 2-means the red pixels' luminance and
 calls the darker cluster all-in, falling back to a single tone when the clusters are closer than
-`MIN_TONE_GAP` — never hardcoding the palette. **Grading stays on the total** (`weights`): the drill
+`MIN_TONE_GAP` — never hardcoding the palette. **A single tone is ambiguous** (all-jam and all-raise look the
+same in isolation): it used to be stored as raise, which turned the 7bb UTG–HJ all-jam opens into all-raise and
+made the watch plan collect 22 defense charts behind a 0%-frequency raise node (GTO Wizard lets you click into a
+0% action, so "the defense node existed" proves nothing). Now `learn_tones` remembers the two luminances from a
+clearly two-tone chart (minor tone ≥ `TONE_MIN_SHARE`, so a one-tone chart's anti-aliased edge isn't learned) in
+`~/.cache/analyze_hand_history/grab_tones.json`, and a single-tone chart is classified against them
+(`guess_tone`, `apply_tone`). Unknown/ambiguous → watch mode holds and asks `j`/`r` (and remembers the answer);
+one-shot mode takes `--tone jam|raise`. **Grading stays on the total** (`weights`): the drill
 asks open-or-fold, and `jam` exists only so the chart view can draw both tones. If the drill ever
 asks raise-vs-jam, that is a new question type, not a change to `_class`.
 

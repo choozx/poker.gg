@@ -310,14 +310,18 @@ class TestWatchLoop(unittest.TestCase):
     """화면 대신 '어떤 차트가 떠 있나'를 이름으로 흉내 내 감시 루프를 돌린다."""
 
     CHARTS = {"A": {"AA": 1.0}, "B": {"KK": 1.0}, "C": {"QQ": 1.0},
-              "J": ({"AA": 1.0, "KK": 1.0}, {"AA": 1.0, "KK": 1.0}, {})}   # 올인만 있는 오픈 차트
+              "J": ({"AA": 1.0, "KK": 1.0}, {"AA": 1.0, "KK": 1.0}, {}),   # 올인만 있는 오픈 차트
+              # 빨강이 한 톤뿐인 차트 — 화면만으론 레이즈인지 올인인지 모른다 (밝기 80 / 140)
+              "D": ({"AA": 1.0, "KK": 1.0}, {}, {}, {"red_lum": 80.0}),
+              "L": ({"AA": 1.0, "QQ": 1.0}, {}, {}, {"red_lum": 140.0})}
 
     DEFAULT_STATE = {"custom": [{"pos": "UTG", "stack": "20", "bb": 20, "vs": None, "pct": 15,
                                  "has_jam": False, "jam_pct": 0, "call_pct": 0}]}
 
-    def run_watch(self, steps, stacks="20", only="UTG1,LJ", state=None):
+    def run_watch(self, steps, stacks="20", only="UTG1,LJ", state=None, tones=None):
         g = grab_chart
         saved, deleted, cur = [], [], {"i": 0, "scr": steps[0][1]}
+        self.jams, self.tones = [], dict(tones or {})
 
         def line(_t):
             if cur["i"] >= len(steps):
@@ -331,12 +335,16 @@ class TestWatchLoop(unittest.TestCase):
         patches = {
             "read_line": line,
             "capture_fast": lambda: cur["scr"],
-            "read_grid": lambda im, box=None: (*(self.CHARTS[im] if isinstance(self.CHARTS[im], tuple)
+            "read_grid": lambda im, box=None: (*(self.CHARTS[im][:3] if isinstance(self.CHARTS[im], tuple)
                                                  else (self.CHARTS[im], {}, {})),
-                                               {"box": (0, 0, 1, 1), "lines_ok": True}),
-            "fetch_state": lambda port: state or self.DEFAULT_STATE,
-            "send": lambda port, pos, st, f, j, c, src, vs=None: saved.append((pos, st, vs, next(iter(f))))
-                    or {"pct": 1.0},
+                                               {"box": (0, 0, 1, 1), "lines_ok": True,
+                                                **(self.CHARTS[im][3] if isinstance(self.CHARTS[im], tuple)
+                                                   and len(self.CHARTS[im]) > 3 else {})}),
+            "fetch_state": lambda port: state if state is not None else self.DEFAULT_STATE,
+            "send": lambda port, pos, st, f, j, c, src, vs=None: self.jams.append(bool(j))
+                    or saved.append((pos, st, vs, next(iter(f)))) or {"pct": 1.0},
+            "load_tones": lambda: dict(self.tones),
+            "save_tones": lambda t: self.tones.update(t),
             "delete_slot": lambda port, pos, st, vs: deleted.append((pos, st, vs)) or saved.pop(),
         }
         old = {k: getattr(g, k) for k in patches}
@@ -381,6 +389,45 @@ class TestWatchLoop(unittest.TestCase):
         p = grab_chart.plan(["10"], None, jams={("UTG", "10")}, no_raise={("UTG", "10")})
         self.assertNotIn(("UTG1", "10", "UTG"), p)
         self.assertIn(("UTG1", "10", "UTG-allin"), p)
+
+    def test_single_tone_unknown_asks_then_j_saves_jam(self):
+        # 실제로 났던 일: 7bb UTG~HJ '전부 올인' 오픈이 한 톤이라 '전부 레이즈'로 저장돼, 순서표가 레이즈
+        # 0%짜리 노드의 방어 칸을 만들었다. 이제 모르면 저장하지 않고 묻고, j면 올인 → 올인을 받는 칸으로
+        saved, _ = self.run_watch([(None, "A"), (None, "D"), (None, "D"), (None, "D"),
+                                   ("j\n", "D"), (None, "B"), (None, "B")],
+                                  stacks="7", only="UTG,UTG1", state={"custom": []})
+        self.assertEqual(saved, [("UTG", "7", None, "AA"), ("UTG1", "7", "UTG-allin", "KK")])
+        self.assertEqual(self.jams[0], True)
+        self.assertEqual(self.tones, {"jam": 80.0})                 # 답한 밝기를 기억
+
+    def test_single_tone_guessed_from_remembered_tones(self):
+        tones = {"jam": 82.0, "raise": 141.0}
+        saved, _ = self.run_watch([(None, "A"), (None, "D"), (None, "D")],
+                                  stacks="7", only="UTG,UTG1", state={"custom": []}, tones=tones)
+        self.assertEqual((saved, self.jams), ([("UTG", "7", None, "AA")], [True]))
+        saved, _ = self.run_watch([(None, "A"), (None, "L"), (None, "L")],
+                                  stacks="7", only="UTG,UTG1", state={"custom": []}, tones=tones)
+        self.assertEqual((saved, self.jams), ([("UTG", "7", None, "AA")], [False]))
+
+    def test_tone_helpers(self):
+        g = grab_chart
+        self.assertEqual(g.guess_tone(85, {"jam": 80, "raise": 140}), "jam")
+        self.assertIsNone(g.guess_tone(110, {"jam": 80, "raise": 140}))     # 어중간
+        self.assertIsNone(g.guess_tone(85, {}))
+        self.assertIsNone(g.guess_tone(140, {"jam": 80}))                   # 아는 톤과 멀면 짐작하지 않는다
+        self.assertEqual(g.apply_tone({"AA": 1.0, "KQs": 0.6}, {"KQs": 0.2}, "jam"), {"AA": 1.0, "KQs": 0.4})
+        self.assertEqual(g.apply_tone({"AA": 1.0}, {}, "raise"), {})
+        t = {}
+        old = g.save_tones
+        g.save_tones = lambda x: None
+        try:
+            # 한 톤에 번진 테두리가 '밝은 톤' 3%로 잡힌 건 배우지 않는다
+            self.assertFalse(g.learn_tones({"tones": {"jam": 80, "raise": 140, "jam_share": 0.97}}, t))
+            self.assertTrue(g.learn_tones({"tones": {"jam": 80, "raise": 140, "jam_share": 0.6}}, t))
+        finally:
+            g.save_tones = old
+        self.assertEqual(t, {"jam": 80, "raise": 140})
+        self.assertIsNone(g.single_tone({"two_tone": False, "red_lum": 80}, "UTG-allin"))  # 올인을 받음은 전부 콜
 
     def test_enter_forces_save(self):
         saved, _ = self.run_watch([(None, "A"), ("\n", "A")])
