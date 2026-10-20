@@ -456,6 +456,17 @@ Money side is pure arithmetic on the four user inputs (buy-in, prize %, ITM %, e
 `pool = buyin × entrants × prizeRate%`, `itm = ceil(entrants × itmRate%)`, bubble = `remaining − itm`.
 No payout ladder is modeled — don't invent one.
 
+### 🧮 팟 계산기 — frontend-only, for live home games
+
+Sidebar `SEL = -10`, `pot*` functions in `web/app.js`. Same rule as the timer: **no Python, no endpoint,
+no `hands_db.json`** — the player list persists to `localStorage` `ahh_pot_v1` so names survive to the
+next hand (`potClear` keeps names, clears chips). It is for splitting main/side pots at a real table,
+unrelated to the hand histories. The only input per seat is **total chips put in this hand** (blinds and
+antes included) + 폴드 + 패 순위 (1 = best, equal = chop). `potSplit` cuts a level at every live player's
+amount; folded chips are dead money in the levels they reached; a top level with one eligible player is
+an uncalled refund. Chops split in `POT.unit` chunks, odd chips to the winner nearest the button's left —
+so seats must be entered in that order.
+
 ### The key invariant: metadata is frozen at import time
 
 When a hand is imported, `convert.hand_meta()` computes derived fields (`vpip`, `pfr`, `rfi`,

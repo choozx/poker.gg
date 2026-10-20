@@ -125,6 +125,32 @@
   table.tm-struct tr.cur td { background: rgba(77,163,255,.13); color: var(--accent); font-weight: 700; }
   table.tm-struct tr.brk td { color: #c084fc; }
 
+  /* 🧮 팟 계산기 — 타이머처럼 핸드 DB와 무관한 독립 도구 */
+  .pot-card { padding: 16px 18px; margin-bottom: 12px; }
+  .pot-help { color: var(--dim); font-size: 12px; margin-bottom: 12px; }
+  .pot-help b { color: var(--text); font-weight: 600; }
+  table.pot-tbl { width: 100%; border-collapse: collapse; }
+  table.pot-tbl th { color: var(--dim); font-size: 11px; font-weight: 600; text-align: left; padding: 4px 6px; }
+  table.pot-tbl td { padding: 4px 6px; white-space: nowrap; }
+  table.pot-tbl input[type=text] { width: 100%; min-width: 70px; }
+  table.pot-tbl input.pot-put { width: calc(100% - 44px); text-align: right; font-variant-numeric: tabular-nums; }
+  table.pot-tbl select { background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+                         border-radius: 6px; padding: 4px 6px; }
+  table.pot-tbl tr.folded td { opacity: .5; }
+  table.pot-tbl label { color: var(--dim); font-size: 12px; cursor: pointer; }
+  input.pot-unit { width: 70px; text-align: right; }
+  .pot-pot { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px;
+             padding: 9px 12px; margin-bottom: 8px; background: var(--panel2); }
+  .pot-pot.main { border-left-color: var(--green); }
+  .pot-pot.refund { border-left-color: var(--dim); }
+  .pot-pot-top { display: flex; justify-content: space-between; align-items: baseline; font-weight: 600; }
+  .pot-pot-top b { font-size: 19px; font-variant-numeric: tabular-nums; }
+  .pot-who { color: var(--dim); font-size: 12px; }
+  .pot-win { margin-top: 3px; font-size: 13px; }
+  table.pot-settle { margin-top: 10px; }
+  table.pot-settle td.win { color: var(--green); }
+  table.pot-settle td.lose { color: var(--red); }
+
   /* 🎯 문제 풀기 — 내 리크 스팟에서 뽑은 스팟 문제 */
   .tourney.quiz { border-color: rgba(255,166,87,.45); }
   .tourney.quiz.sel { border-color: #ffa657; background: rgba(255,166,87,.08); }

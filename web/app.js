@@ -115,6 +115,10 @@ function renderSidebar() {
     <div class="tourney timer ${SEL===-6?'sel':''}" onclick="selectTimer()">
       <div class="tname">⏱ 토너먼트 타이머${TIMER.run.running ? ' <span style="color:var(--green)">●</span>' : ''}</div>
       <div class="tmeta">${tmSidebarMeta()}</div>
+    </div>
+    <div class="tourney ${SEL===-10?'sel':''}" style="border-color:rgba(232,184,79,.4)" onclick="selectPot()">
+      <div class="tname">🧮 팟 계산기</div>
+      <div class="tmeta">${potSidebarMeta()}</div>
     </div>`;
 }
 
@@ -2159,6 +2163,199 @@ function renderTimer() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 🧮 팟 계산기 (SEL = -10) — 오프라인 게임에서 여러 명이 올인했을 때 메인/사이드 팟 나누기.
+// 타이머처럼 핸드 DB와 무관한 독립 도구다. 입력은 '이번 핸드에 넣은 칩 합계'(블라인드·앤티 포함)
+// 하나뿐이고, 팟은 폴드 안 한 사람들의 투입액을 단계로 잘라 만든다. 명단은 다음 핸드에도 쓰니
+// localStorage에만 남긴다(서버·hands_db.json은 건드리지 않음).
+// ─────────────────────────────────────────────────────────────
+const POT_KEY = 'ahh_pot_v1';
+const POT_DEFAULT_NAMES = ['A', 'B', 'C', 'D'];
+let POT = {unit: 1, players: POT_DEFAULT_NAMES.map(n => ({name: n, put: 0, folded: false, rank: 0}))};
+
+function potSave() {
+  try { localStorage.setItem(POT_KEY, JSON.stringify(POT)); } catch (e) {}
+}
+function potLoad() {
+  try {
+    const s = JSON.parse(localStorage.getItem(POT_KEY) || 'null');
+    if (s && Array.isArray(s.players) && s.players.length) POT = Object.assign({unit: 1}, s);
+  } catch (e) {}
+}
+
+// 팟 나누기 — players: [{put, folded, rank}] (자리 순서 = 버튼 왼쪽부터), unit: 최소 칩 단위.
+// 폴드 안 한 사람의 투입액마다 한 단계씩 잘라서, 단계마다 '그만큼 넣은 사람 전원'의 몫을 모은다.
+// 폴드한 사람의 칩은 데드 머니라 들어간 단계의 팟에 섞이고 받을 자격만 없다.
+// 맨 위 단계에 자격자가 한 명뿐이면 아무도 콜하지 않은 초과분 → 돌려준다(solo).
+// 승자는 rank(1 = 제일 좋은 패, 같으면 같은 숫자)로 정하고, 자격자 중 순위가 빈 사람이 있으면 미정.
+// 나눠떨어지지 않는 칩은 unit 단위로 버튼 왼쪽에 가까운 승자부터 하나씩 준다.
+function potSplit(players, unit) {
+  unit = Math.max(1, unit || 1);
+  const live = players.map((p, i) => i).filter(i => !players[i].folded && players[i].put > 0);
+  const levels = [...new Set(live.map(i => players[i].put))].sort((a, b) => a - b);
+  const pots = [];
+  let prev = 0;
+  for (const lv of levels) {
+    let amount = 0;
+    players.forEach(p => { amount += Math.min(p.put, lv) - Math.min(p.put, prev); });
+    pots.push({amount, eligible: live.filter(i => players[i].put >= lv)});
+    prev = lv;
+  }
+  // 살아 있는 누구보다 많이 넣고 폴드한 칩(드묾) — 마지막 팟에 얹는다
+  const over = players.reduce((s, p) => s + Math.max(0, p.put - prev), 0);
+  if (over && pots.length) pots[pots.length - 1].amount += over;
+
+  const won = players.map(() => 0);
+  pots.forEach(pot => {
+    pot.solo = pot.eligible.length === 1;
+    if (pot.solo) pot.winners = pot.eligible.slice();
+    else if (pot.eligible.every(i => players[i].rank > 0)) {
+      const best = Math.min(...pot.eligible.map(i => players[i].rank));
+      pot.winners = pot.eligible.filter(i => players[i].rank === best);
+    } else pot.winners = null;
+    pot.shares = {};
+    if (!pot.winners) return;
+    const n = pot.winners.length;
+    const base = Math.floor(pot.amount / (n * unit)) * unit;
+    let rest = pot.amount - base * n;
+    pot.winners.forEach(i => {
+      const extra = Math.min(rest, unit);
+      rest -= extra;
+      pot.shares[i] = base + extra;
+      won[i] += base + extra;
+    });
+    pot.odd = pot.winners.length > 1 && pot.amount % (n * unit) !== 0;
+  });
+  // 혼자 받는 마지막 단계: 앞에 다른 팟이 있으면 콜 안 된 초과분 반환, 하나뿐이면 다 폴드해서 이긴 것
+  pots.forEach((pot, k) => { pot.refund = pot.solo && k > 0; });
+  return {pots, won, decided: pots.every(p => p.winners)};
+}
+
+function potSidebarMeta() {
+  const n = POT.players.filter(p => p.put > 0).length;
+  if (!n) return '여러 명 올인 · 메인/사이드 팟 나누기';
+  const total = POT.players.reduce((s, p) => s + p.put, 0);
+  return `${n}명 · 팟 ${tmNum(total)}`;
+}
+
+function selectPot() {
+  SEL = -10; renderSidebar();
+  $('#mainhead').innerHTML = '<h2>🧮 팟 계산기</h2>';
+  renderPot();
+  $('#main').scrollTop = 0;
+}
+
+function potNum(v) { return parseInt(String(v).replace(/[^0-9]/g, ''), 10) || 0; }
+
+// 칩 입력은 타이핑 중 다시 그리면 포커스가 날아가므로 결과 칸만 갱신한다
+function potSet(i, key, v) {
+  const p = POT.players[i];
+  if (key === 'put') p.put = potNum(v);
+  else if (key === 'name') p.name = v;
+  else if (key === 'rank') p.rank = potNum(v);
+  else if (key === 'folded') { p.folded = v; if (v) p.rank = 0; }
+  potSave();
+  if (key === 'folded') renderPot();
+  else { $('#pot-result').innerHTML = potResultHtml(); renderSidebar(); }
+}
+function potMax(i) {
+  POT.players[i].put = Math.max(0, ...POT.players.map((p, j) => j === i ? 0 : p.put));
+  potSave(); renderPot();
+}
+function potAdd() {
+  POT.players.push({name: String.fromCharCode(65 + POT.players.length % 26), put: 0, folded: false, rank: 0});
+  potSave(); renderPot();
+}
+function potRemove(i) {
+  if (POT.players.length <= 2) return;
+  POT.players.splice(i, 1);
+  potSave(); renderPot();
+}
+// 다음 핸드 — 명단(자리 순서)은 두고 칩·폴드·순위만 비운다
+function potClear() {
+  POT.players.forEach(p => { p.put = 0; p.folded = false; p.rank = 0; });
+  potSave(); renderPot();
+}
+function potSetUnit(v) { POT.unit = Math.max(1, potNum(v)); potSave(); $('#pot-result').innerHTML = potResultHtml(); }
+
+function renderPot() {
+  if (SEL !== -10) return;
+  const live = POT.players.filter(p => !p.folded).length;
+  const rankOpts = sel => ['<option value="0">—</option>']
+    .concat(Array.from({length: live}, (_, k) =>
+      `<option value="${k + 1}" ${sel === k + 1 ? 'selected' : ''}>${k + 1}</option>`)).join('');
+  const rows = POT.players.map((p, i) => `<tr class="${p.folded ? 'folded' : ''}">
+      <td><input type="text" value="${esc(p.name)}" oninput="potSet(${i}, 'name', this.value)"></td>
+      <td><input type="text" inputmode="numeric" class="pot-put" value="${p.put ? tmNum(p.put) : ''}" placeholder="0"
+                 oninput="potSet(${i}, 'put', this.value)"
+                 onblur="this.value = POT.players[${i}].put ? tmNum(POT.players[${i}].put) : ''">
+          <button class="tm-mini" onclick="potMax(${i})" title="지금 제일 많이 넣은 사람만큼 (콜)">콜</button></td>
+      <td><label><input type="checkbox" ${p.folded ? 'checked' : ''}
+                 onchange="potSet(${i}, 'folded', this.checked)"> 폴드</label></td>
+      <td><select ${p.folded ? 'disabled' : ''} onchange="potSet(${i}, 'rank', this.value)">${rankOpts(p.rank)}</select></td>
+      <td><button class="tm-mini" onclick="potRemove(${i})" title="이 자리 빼기"
+                  ${POT.players.length <= 2 ? 'disabled' : ''}>✕</button></td>
+    </tr>`).join('');
+
+  $('#hands').innerHTML = `<div class="tm-wrap">
+    <div class="tm-card pot-card">
+      <div class="pot-help">버튼 왼쪽(SB)부터 <b>자리 순서대로</b> 적고, 각자 <b>이번 핸드에 넣은 칩 합계</b>를
+        넣으세요 (블라인드·앤티 포함, 올인한 사람은 올인 금액). 쇼다운하면 <b>패 순위</b>를 고릅니다 —
+        1 = 제일 좋은 패, 비기면 같은 숫자.</div>
+      <table class="pot-tbl">
+        <tr><th>이름</th><th>넣은 칩</th><th></th><th>패 순위</th><th></th></tr>
+        ${rows}
+      </table>
+      <div class="tm-ctrl" style="margin:12px 0 0">
+        <button onclick="potAdd()">＋ 자리 추가</button>
+        <button onclick="potClear()" title="이름은 두고 칩·폴드·순위만 비웁니다">↺ 다음 핸드</button>
+        <span class="spacer"></span>
+        <label class="small">최소 칩 단위
+          <input type="text" inputmode="numeric" class="pot-unit" value="${POT.unit}"
+                 onchange="potSetUnit(this.value)" title="찹할 때 이 단위로 나눕니다. 남는 칩은 버튼 왼쪽에 가까운 승자부터"></label>
+      </div>
+    </div>
+    <div id="pot-result">${potResultHtml()}</div>
+  </div>`;
+}
+
+function potResultHtml() {
+  const ps = POT.players;
+  const total = ps.reduce((s, p) => s + p.put, 0);
+  if (!total) return '';
+  if (!ps.some(p => !p.folded && p.put > 0))
+    return '<div class="tm-card pot-card" style="color:var(--dim)">폴드 안 한 사람이 없습니다.</div>';
+  const r = potSplit(ps, POT.unit);
+  const nm = i => esc(ps[i].name || `${i + 1}번`);
+  let side = 0;
+  const cards = r.pots.map((pot, k) => {
+    const title = pot.refund ? '↩ 돌려줄 칩' : k === 0 ? '메인 팟' : `사이드 팟 ${++side}`;
+    const who = pot.refund
+      ? `<b>${nm(pot.eligible[0])}</b> 혼자 넣은 초과분 (아무도 콜 못 함)`
+      : `받을 수 있는 사람: ${pot.eligible.map(nm).join(', ')}`;
+    const win = !pot.winners
+      ? '<span style="color:var(--gold)">패 순위를 고르면 승자가 나옵니다</span>'
+      : pot.refund ? '' : '→ ' + pot.winners.map(i => `<b>${nm(i)}</b> ${tmNum(pot.shares[i])}`).join(' · ') +
+        (pot.winners.length > 1 ? ' <span style="color:var(--dim)">(찹)</span>' : '') +
+        (pot.odd ? ' <span style="color:var(--dim)">· 남는 칩은 버튼 왼쪽부터</span>' : '');
+    return `<div class="pot-pot ${pot.refund ? 'refund' : k === 0 ? 'main' : ''}">
+        <div class="pot-pot-top"><span>${title}</span><b>${tmNum(pot.amount)}</b></div>
+        <div class="pot-who">${who}</div>
+        ${win ? `<div class="pot-win">${win}</div>` : ''}
+      </div>`;
+  }).join('');
+  const settle = r.decided ? `<table class="tm-struct pot-settle">
+      <tr><th>이름</th><th>넣은 칩</th><th>받는 칩</th><th>손익</th></tr>
+      ${ps.map((p, i) => p.put || r.won[i] ? `<tr><td>${nm(i)}</td><td>${tmNum(p.put)}</td><td>${tmNum(r.won[i])}</td>
+        <td class="${r.won[i] - p.put > 0 ? 'win' : r.won[i] - p.put < 0 ? 'lose' : ''}">${r.won[i] - p.put > 0 ? '+' : ''}${tmNum(r.won[i] - p.put)}</td></tr>` : '').join('')}
+    </table>` : '';
+  return `<div class="tm-card pot-card">
+      <div class="pot-pot-top" style="margin-bottom:10px"><span>전체 팟</span><b>${tmNum(total)}</b></div>
+      ${cards}
+      ${settle}
+    </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────
 // 🎯 문제 풀기 (SEL = -7)
 // 서버가 내 리크 스팟을 뽑아 실제 핸드를 결정 지점에서 잘라 보내주고, 액션을 고르면
 // AI가 채점한다. 미래 정보(실제 액션·결과)는 채점이 끝난 뒤에만 서버에서 따로 받아온다.
@@ -3571,6 +3768,7 @@ function renderQuiz() {
 
 tmLoad();
 tmLoop();
+potLoad();
 
 // 저장된 DB가 있으면 시작하자마자 표시
 fetch('/api/db').then(r => r.json()).then(d => {
