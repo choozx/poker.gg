@@ -36,8 +36,17 @@ import ranges
 
 # 예전 grab_chart 수집 대상 + 40·50bb. 더 촘촘히 넣으면 리크 리포트의 bb 차트별 표본이 쪼개진다
 STACKS = (7, 10, 13, 15, 20, 25, 28, 30, 32, 35, 40, 50)
-ENV_FILE = os.path.expanduser("~/toyProj/poker-tracker/.local.env")
-SOURCE = "GTO Wizard 솔루션 DB"
+ENV_FILES = ("~/toyProj/poker-tracker/.local.env", "~/toy/poker-tracker/.local.env")  # PC마다 repo 위치가 다르다
+
+
+def default_env_file(candidates=ENV_FILES):
+    """있는 첫 파일 — 하나도 없으면 첫 후보(없는 파일이라 open_s3가 'S3 안 쓰는 PC'로 본다)."""
+    paths = [os.path.expanduser(p) for p in candidates]
+    return next((p for p in paths if os.path.isfile(p)), paths[0])
+
+
+ENV_FILE = default_env_file()
+SOURCE ="GTO Wizard 솔루션 DB"
 ETAG_FILE = os.path.expanduser("~/.cache/analyze_hand_history/chart_sync_etags.json")
 MIN_KEEP = 0.5              # 자동 교체로 차트가 이 비율 아래로 줄면 사고로 보고 멈춘다
 ANTE = 0.125                # 솔루션의 depth는 bb + 앤티 몫 ("20.125" = 20bb)

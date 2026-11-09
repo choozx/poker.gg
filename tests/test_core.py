@@ -522,6 +522,29 @@ class TestSyncCharts(unittest.TestCase):
         self.assertEqual(db["ranges"]["attempts"], [1])
 
 
+class TestEnvFilePath(unittest.TestCase):
+    """PC마다 poker-tracker 위치가 달라 한 경로로 고정하면 동기화가 말없이 꺼진다."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.first, self.second = os.path.join(tmp.name, "a.env"), os.path.join(tmp.name, "b.env")
+
+    def test_later_candidate_is_used_when_first_is_absent(self):
+        open(self.second, "w").close()
+        self.assertEqual(sync_charts.default_env_file((self.first, self.second)), self.second)
+
+    def test_first_candidate_wins_when_both_exist(self):
+        open(self.first, "w").close()
+        open(self.second, "w").close()
+        self.assertEqual(sync_charts.default_env_file((self.first, self.second)), self.first)
+
+    def test_no_file_means_sync_stays_off(self):
+        path = sync_charts.default_env_file((self.first, self.second))
+        self.assertEqual(path, self.first)
+        self.assertIsNone(sync_charts.open_s3(path))
+
+
 class TestAutoSync(unittest.TestCase):
     """앱 시작 시 자동 교체 — 안 받아도 될 때 안 받고, 실패해도 기존 차트가 남아야 한다."""
 
