@@ -9,13 +9,12 @@
 
 poker-tracker가 S3에 올린 SQLite(`pcs/*.db.gz`, 옛 `gtow-solutions.db.gz`)를 받아 차트로 바꾼 뒤
 `POST /api/range/replace-charts`로 보낸다 — 저장·클라우드 푸시는 앱이 한다 (DB를 직접 쓰면 다음 실행의
-클라우드 pull에 덮어쓰인다). 버킷 주소와 프로필은 poker-tracker의 `.local.env`에서 읽는다: 이 repo는
+클라우드 pull에 덮어쓰인다). 버킷 주소와 AWS 키는 poker-tracker의 `.local.env`에서만 읽는다: 이 repo는
 공개이므로 주소도, 받은 DB도 repo 안에 두지 않는다 (임시 폴더에 받고 끝나면 지운다).
 
 쓰는 노드: chipEV(8m·7m), 전원 같은 스택, 앞선 액션이 없거나 한 번뿐인 프리플랍 노드.
 """
 import argparse
-import configparser
 import datetime
 import gzip
 import hashlib
@@ -161,16 +160,10 @@ def read_env(path):
 
 
 def credentials(env):
-    get = lambda k: os.environ.get(k) or env.get(k)
-    if get("AWS_ACCESS_KEY_ID") and get("AWS_SECRET_ACCESS_KEY"):
-        return get("AWS_ACCESS_KEY_ID"), get("AWS_SECRET_ACCESS_KEY"), get("AWS_SESSION_TOKEN")
-    profile = get("AWS_PROFILE") or "default"
-    cp = configparser.RawConfigParser()
-    cp.read(os.path.expanduser("~/.aws/credentials"))
-    if profile not in cp or "aws_access_key_id" not in cp[profile]:
-        raise SyncError(f"AWS 키를 찾지 못했습니다 (프로필 '{profile}', ~/.aws/credentials)")
-    s = cp[profile]
-    return s["aws_access_key_id"], s["aws_secret_access_key"], s.get("aws_session_token")
+    """AWS 키는 `.local.env`에서만 읽는다 — 환경변수·~/.aws/credentials의 다른 계정 키가 끼어들지 않게."""
+    if not (env.get("AWS_ACCESS_KEY_ID") and env.get("AWS_SECRET_ACCESS_KEY")):
+        raise SyncError("AWS 키가 없습니다 (.local.env에 AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)")
+    return env["AWS_ACCESS_KEY_ID"], env["AWS_SECRET_ACCESS_KEY"], env.get("AWS_SESSION_TOKEN")
 
 
 class S3:

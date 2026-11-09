@@ -545,6 +545,29 @@ class TestEnvFilePath(unittest.TestCase):
         self.assertIsNone(sync_charts.open_s3(path))
 
 
+class TestCredentials(unittest.TestCase):
+    """AWS 키는 .local.env에서만 — ~/.aws/credentials의 만료된 임시 키나 환경변수가 끼어들면 안 된다."""
+
+    ENV = {"AWS_ACCESS_KEY_ID": "file-id", "AWS_SECRET_ACCESS_KEY": "file-secret"}
+
+    def test_keys_come_from_env_file_even_if_shell_has_others(self):
+        with mock.patch.dict(os.environ, {"AWS_ACCESS_KEY_ID": "shell-id", "AWS_SECRET_ACCESS_KEY": "shell-secret"}):
+            self.assertEqual(sync_charts.credentials(self.ENV), ("file-id", "file-secret", None))
+
+    def test_session_token_is_passed_when_present(self):
+        env = dict(self.ENV, AWS_SESSION_TOKEN="tok")
+        self.assertEqual(sync_charts.credentials(env)[2], "tok")
+
+    def test_missing_keys_do_not_fall_back_to_aws_profile(self):
+        with tempfile.TemporaryDirectory() as home:
+            os.mkdir(os.path.join(home, ".aws"))
+            with open(os.path.join(home, ".aws", "credentials"), "w") as f:
+                f.write("[default]\naws_access_key_id = aws-id\naws_secret_access_key = aws-secret\n")
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                with self.assertRaises(sync_charts.SyncError):
+                    sync_charts.credentials({})
+
+
 class TestAutoSync(unittest.TestCase):
     """앱 시작 시 자동 교체 — 안 받아도 될 때 안 받고, 실패해도 기존 차트가 남아야 한다."""
 

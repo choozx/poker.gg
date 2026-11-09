@@ -409,7 +409,7 @@ UTG1·LJ…BB의 방어 → UTG1 오픈 → …. 지켜야 할 것들:
 차트는 전부 이 도구로 넣은 것). poker-tracker가 S3에 올린 SQLite를 받아 chipEV(8m·7m), 전원 같은 스택, 앞선 액션이 0~1개인
 노드만 변환하고 `POST /api/range/replace-charts`로 **통째로** 바꾼다 — 앱이 떠 있어야 하고(클라우드 pull/push), 장마다
 `persist`하면 DB 저장을 수백 번 하므로 일괄 API다(`ranges.replace_charts`, 하나라도 틀리면 아무것도 안 바꾼다). 다시 돌리면
-**이후에 넣은 차트도 사라진다.** 버킷 주소는 poker-tracker의 `.local.env`(`ENV_FILES` 중 있는 첫 파일 — PC마다 repo 위치가 다르다)에서 읽는다 — 공개 repo라 주소도 받은 DB도 repo에 넣지
+**이후에 넣은 차트도 사라진다.** 버킷 주소와 AWS 키는 poker-tracker의 `.local.env`(`ENV_FILES` 중 있는 첫 파일 — PC마다 repo 위치가 다르다)에서만 읽는다(환경변수·`~/.aws/credentials`는 보지 않는다) — 공개 repo라 주소도 받은 DB도 repo에 넣지
 않는다. 스택은 `STACKS`만(bb 차트별로 표본이 쪼개져 리크 리포트가 비지 않게, 늘릴 때 주의). 함정: 7m의 UTG = 8맥스 UTG1,
 같은 칸이면 8m 우선, 올인은 코드가 `RAI`가 아닐 수 있다(10bb의 `R10`). 8맥스 UTG는 S3에 대부분 없어(7맥스 트리가 주력)
 UTG 자리·UTG 오프너 차트가 빠진 스택이 많다 — 있는 그대로 '차트 없음'으로 둔다.
