@@ -7,7 +7,9 @@
 """
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -17,6 +19,7 @@ import convert    # noqa: E402
 import grab_chart  # noqa: E402
 import ranges     # noqa: E402
 import store      # noqa: E402
+import sync_charts  # noqa: E402
 
 SAMPLE = open(os.path.join(ROOT, "sample_hand.txt"), encoding="utf-8").read()
 
@@ -437,6 +440,163 @@ class TestWatchLoop(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # AI 코치 · 목록 API
 # ---------------------------------------------------------------------------
+
+class TestSyncCharts(unittest.TestCase):
+    """S3 솔루션 노드 → 차트. 코드 이름만 믿으면 틀리는 곳들."""
+
+    @staticmethod
+    def body(*actions):
+        """actions: (type, allin, AA 빈도, 72o 빈도)"""
+        return {"players_info": [{"simple_hand_counters": {"AA": {}, "72o": {}}}],
+                "action_solutions": [{"action": {"type": t, "allin": a}, "strategy": [x, y]}
+                                     for t, a, x, y in actions]}
+
+    def spot(self, game, depth, pf):
+        stacks = "-".join([depth] * 8)
+        return sync_charts.node_spot(game, depth, stacks, pf)
+
+    def test_seven_max_utg_is_utg1(self):
+        self.assertEqual(self.spot("MTTGeneral_7m", "20.125", ""), (20, "UTG1", None))
+        self.assertEqual(self.spot("MTTGeneral_7m", "20.125", "R2"), (20, "LJ", "UTG1"))
+
+    def test_raise_for_whole_stack_is_allin_even_without_rai_code(self):
+        self.assertEqual(self.spot("MTTGeneral_8m", "10.125", "F-R10"), (10, "LJ", "UTG1-allin"))
+        self.assertEqual(self.spot("MTTGeneral_8m", "10.125", "F-R2"), (10, "LJ", "UTG1"))
+
+    def test_sb_limp_and_rejected_nodes(self):
+        self.assertEqual(self.spot("MTTGeneral_8m", "20.125", "F-F-F-F-F-F-C"), (20, "BB", "SB-limp"))
+        self.assertIsNone(self.spot("MTTGeneral_8m", "20.125", "C"))              # SB 말고 림프
+        self.assertIsNone(self.spot("MTTGeneral_8m", "20.125", "R2-R6"))          # 3벳 진행
+        self.assertIsNone(self.spot("MTTGeneral_ICM8m200PTT2", "20.125", ""))     # ICM
+        self.assertIsNone(sync_charts.node_spot("MTTGeneral_8m", "20.125", "20.125-30.125", ""))
+
+    def test_body_splits_call_and_jam_and_drops_check(self):
+        item = sync_charts.body_to_item(self.body(("FOLD", False, 0, 0.5), ("CALL", False, 0.25, 0.5),
+                                                  ("RAISE", False, 0.25, 0), ("RAISE", True, 0.5, 0)),
+                                        20, "SB", None)
+        self.assertEqual(item["text"], "72o:0.5000, AA:1.0000")
+        self.assertEqual(item["jam"], "AA:0.5000")
+        self.assertEqual(item["call"], "72o:0.5000, AA:0.2500")
+        limp = sync_charts.body_to_item(self.body(("CHECK", False, 0.5, 1), ("RAISE", False, 0.5, 0)),
+                                        20, "BB", "SB-limp")
+        self.assertEqual(limp["text"], "AA:0.5000")
+
+    def test_float_overflow_is_not_read_as_percent(self):
+        # 합이 1을 살짝 넘어 parse_range가 0~100 스케일로 읽으면 모든 빈도가 100분의 1이 된다
+        item = sync_charts.body_to_item(self.body(("RAISE", False, 0.6002, 0.3), ("RAISE", True, 0.4, 0)),
+                                        20, "CO", None)
+        weights, _ = ranges.parse_range(item["text"])
+        self.assertEqual(weights["AA"], 1.0)
+        self.assertAlmostEqual(weights["72o"], 0.3)
+
+    def test_8max_node_wins_over_7max(self):
+        import gzip, sqlite3, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.db")
+            con = sqlite3.connect(path)
+            con.execute("CREATE TABLE solution (gametype, depth, stacks, preflop_actions, flop_actions, board, "
+                        "street, body_gz, fetched_at)")
+            for game, tag, ts in (("MTTGeneral_8m", b"8", 1), ("MTTGeneral_7m", b"7", 99)):
+                n = int(game[-2])
+                pf = "F" if n == 8 else ""     # 둘 다 UTG1의 오픈 노드
+                con.execute("INSERT INTO solution VALUES (?,?,?,?,'','','PREFLOP',?,?)",
+                            (game, "20.125", "-".join(["20.125"] * n), pf, gzip.compress(tag), ts))
+            con.commit()
+            con.close()
+            found = {}
+            sync_charts.read_db(path, {20}, found)
+        self.assertEqual(gzip.decompress(found[(20, "UTG1", None)][1]), b"8")
+
+    def test_replace_is_all_or_nothing(self):
+        db = {"ranges": {"attempts": [1], "charts": {"UTG|13": {"weights": {"AA": 1.0}}}}}
+        bad = ranges.replace_charts(db, [{"pos": "UTG", "stack": "20", "text": "AA:1"},
+                                         {"pos": "NOPE", "stack": "20", "text": "AA:1"}], "s")
+        self.assertIn("error", bad)
+        self.assertIn("UTG|13", db["ranges"]["charts"])
+        self.assertIn("error", ranges.replace_charts(db, [], "s"))
+        self.assertIn("UTG|13", db["ranges"]["charts"])
+
+        ok = ranges.replace_charts(db, [{"pos": "BB", "stack": "20", "vs": "SB-limp", "text": "AA:0.5"}], "s")
+        self.assertEqual((ok["n"], ok["removed"], ok["changed"]), (1, 1, True))
+        self.assertEqual(list(db["ranges"]["charts"]), ["BB|20|vsSB-limp"])
+        self.assertEqual(db["ranges"]["attempts"], [1])
+
+
+class TestAutoSync(unittest.TestCase):
+    """앱 시작 시 자동 교체 — 안 받아도 될 때 안 받고, 실패해도 기존 차트가 남아야 한다."""
+
+    OLD = {"pos": "UTG", "stack": "20", "text": "AA:1.0000"}
+    NEW = {"pos": "UTG", "stack": "20", "text": "AA:0.5000"}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.etag_file = os.path.join(self.tmp.name, "sub", "etags.json")
+        self.db = {}
+        ranges.replace_charts(self.db, [self.OLD], sync_charts.SOURCE)
+        self.saves, self.logs = [], []
+        self.objects = {"p/pcs/mac.db.gz": '"e1"'}
+
+    def run_sync(self, items=None, boom=None):
+        s3 = mock.Mock()
+        s3.list.return_value = self.objects
+        fetch = mock.Mock(return_value=items, side_effect=boom)
+        with mock.patch.object(sync_charts, "open_s3", return_value=(s3, "p/")), \
+                mock.patch.object(sync_charts, "fetch_items", fetch):
+            sync_charts.auto_sync(self.db, self.saves.append, etag_file=self.etag_file, log=self.logs.append)
+        return fetch
+
+    def weight(self):
+        return self.db["ranges"]["charts"]["UTG|20"]["weights"]["AA"]
+
+    def test_new_content_replaces_and_saves(self):
+        self.run_sync([self.NEW])
+        self.assertEqual(self.weight(), 0.5)
+        self.assertEqual(len(self.saves), 1)
+
+    def test_unchanged_etags_skip_download(self):
+        self.run_sync([self.OLD])
+        self.assertEqual(self.run_sync([self.NEW]).call_count, 0)
+        self.assertEqual(self.weight(), 1.0)
+
+    def test_changed_etag_downloads_again(self):
+        self.run_sync([self.OLD])
+        self.objects = {"p/pcs/mac.db.gz": '"e2"'}
+        self.assertEqual(self.run_sync([self.NEW]).call_count, 1)
+        self.assertEqual(self.weight(), 0.5)
+
+    def test_same_content_does_not_save_or_touch_ts(self):
+        # ETag만 바뀌고 내용이 같으면 130MB 저장·클라우드 업로드를 하지 않는다 (ts는 날마다 달라도)
+        self.db["ranges"]["charts"]["UTG|20"]["ts"] = "old"
+        self.run_sync([self.OLD])
+        self.assertEqual(self.saves, [])
+        self.assertEqual(self.db["ranges"]["charts"]["UTG|20"]["ts"], "old")
+
+    def test_failure_keeps_charts_and_retries_next_time(self):
+        self.run_sync(boom=OSError("network down"))
+        self.assertEqual(self.weight(), 1.0)
+        self.assertEqual(self.saves, [])
+        self.assertTrue(any("network down" in m for m in self.logs))
+        self.assertEqual(self.run_sync([self.NEW]).call_count, 1)
+
+    def test_big_shrink_is_refused_and_retried(self):
+        ranges.replace_charts(self.db, [dict(self.OLD, stack=str(b)) for b in (10, 20, 30, 40)], sync_charts.SOURCE)
+        self.run_sync([self.NEW])
+        self.assertEqual(len(self.db["ranges"]["charts"]), 4)
+        self.assertEqual(self.saves, [])
+        self.assertEqual(self.run_sync([self.NEW]).call_count, 1)
+
+    def test_empty_db_redownloads_despite_same_etags(self):
+        self.run_sync([self.OLD])
+        self.db["ranges"]["charts"] = {}
+        self.assertEqual(self.run_sync([self.NEW]).call_count, 1)
+
+    def test_no_s3_config_is_silent(self):
+        sync_charts.auto_sync(self.db, self.saves.append, env_file=os.path.join(self.tmp.name, "none"),
+                              etag_file=self.etag_file, log=self.logs.append)
+        self.assertEqual((self.saves, self.logs), ([], []))
+        self.assertEqual(self.weight(), 1.0)
+
 
 class TestCoach(unittest.TestCase):
     def setUp(self):

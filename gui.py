@@ -27,6 +27,7 @@ import convert
 import quiz
 import ranges
 import store
+import sync_charts
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +724,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps(resp, ensure_ascii=False),
                        "application/json; charset=utf-8",
                        code=400 if resp.get("error") else 200)
+        elif self.path == "/api/range/replace-charts":
+            # 솔루션 DB로 차트 전체 교체 (sync_charts.py) — 장마다 persist하면 DB 저장을 천 번 넘게 하게 된다
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+            except ValueError:
+                self._send(json.dumps({"error": "잘못된 요청"}, ensure_ascii=False),
+                           "application/json; charset=utf-8", code=400)
+                return
+            resp = ranges.replace_charts(DB, body.get("charts"), body.get("source"))
+            if resp.get("changed"):
+                persist(DB)
+            self._send(json.dumps(resp, ensure_ascii=False),
+                       "application/json; charset=utf-8",
+                       code=400 if resp.get("error") else 200)
         elif self.path == "/api/range/delete-chart":
             length = int(self.headers.get("Content-Length", 0))
             try:
@@ -920,6 +936,8 @@ def main():
     print(f"AI 분석 백엔드: {AI_BACKEND.name if AI_BACKEND else '없음 (분석 비활성화)'}")
     if not args.no_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    # S3 솔루션 DB가 바뀌었으면 차트 교체 — 내려받는 데 시간이 걸리므로 서버를 기다리게 하지 않는다
+    threading.Thread(target=sync_charts.auto_sync, args=(DB, persist), name="chart-sync", daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

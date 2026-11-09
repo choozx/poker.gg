@@ -649,6 +649,33 @@ def import_chart(db, pos, stack, text, source=None, jam=None, call=None, vs=None
             "pct": pct, "mix_pct": mix_pct, "warnings": warnings}
 
 
+def replace_charts(db, items, source):
+    """가져온 차트를 **통째로** `items`로 바꾼다 (`sync_charts.py` — 솔루션 DB가 정답지).
+
+    items는 `{pos, stack, vs, text, jam, call}` 목록이고 규칙은 `import_chart` 그대로다. 임시 공간에 먼저
+    다 만들어 보고 **하나라도 틀리면 아무것도 안 바꾼다** — 반쯤 지워진 채로 저장되면 안 된다.
+    응시 기록(attempts)은 건드리지 않는다. 내용이 그대로면(`ts` 제외) 교체하지 않고 `changed: False`를
+    돌려준다 — 저장·클라우드 업로드를 헛되이 하지 않게, 그리고 화면의 차트 캐시(ts 기준)가 살아 있게."""
+    if not items:
+        return {"error": "차트가 하나도 없습니다 — 기존 차트를 지우지 않았습니다."}
+    tmp, errors = {}, []
+    for it in items:
+        r = import_chart(tmp, it.get("pos"), it.get("stack"), it.get("text"), source=source,
+                         jam=it.get("jam"), call=it.get("call"), vs=it.get("vs") or None)
+        if r.get("error"):
+            errors.append(f"{it.get('pos')}|{it.get('stack')}|{it.get('vs') or ''}: {r['error']}")
+    if errors:
+        return {"error": f"차트 {len(errors)}장을 읽지 못해 아무것도 바꾸지 않았습니다.", "errors": errors[:12]}
+    charts = _state_mut(tmp)["charts"]
+    state = _state_mut(db)
+    removed = len(state["charts"])
+    bare = lambda cs: {k: {f: v for f, v in r.items() if f != "ts"} for k, r in cs.items()}
+    if bare(state["charts"]) == bare(charts):
+        return {"ok": True, "n": len(charts), "removed": 0, "changed": False}
+    state["charts"] = charts            # 참조 하나만 바꾼다 — 다른 스레드는 옛 차트나 새 차트 중 하나만 본다
+    return {"ok": True, "n": len(charts), "removed": removed, "changed": True}
+
+
 def delete_chart(db, pos, stack, vs=None):
     """가져온 차트를 지우고 내장 차트로 되돌린다 (방어 차트는 내장이 없어 그냥 사라진다)."""
     slot, _, _ = parse_stack(stack)
