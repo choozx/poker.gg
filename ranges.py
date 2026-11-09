@@ -27,10 +27,12 @@
 의존 방향: convert ← store ← ranges ← gui (quiz.py와 같은 위상, 서로 참조하지 않는다)
 """
 
+import datetime
 import random
 import re
 import time
 
+import convert
 import store
 
 RANKS = "AKQJT98765432"
@@ -999,11 +1001,9 @@ def _hero_choice(r, kind):
     return "open" if a in ("3bet", "allin") else ("call" if a == "call" else "fold")
 
 
-def hand_deviation(db, r, cache=None):
-    """그 핸드의 프리플랍 결정이 차트와 어긋났으면 설명 dict, 아니면 None.
-
-    '어긋남' = 히어로가 고른 액션의 차트 빈도가 FOLD_LO(25%) 이하 — 드릴의 [실수] 기준과 같다.
-    비교 차트는 그 상황의 **가장 가까운 bb 차트**(`hand_slot`) — 리크 리포트와 같은 규칙이다."""
+def _hand_grade(db, r, cache=None):
+    """그 핸드의 프리플랍 결정을 차트에 맞대어 본 결과 — 비교할 차트가 없으면 None.
+    차트 이탈 표시와 일치도 집계가 함께 써서 두 숫자가 어긋나지 않는다."""
     hs = hand_slot(db, r)
     combo = store._combo(r.get("hero_cards") or [])
     if not hs or not combo:
@@ -1019,9 +1019,20 @@ def hand_deviation(db, r, cache=None):
     if not c or not c.get("source"):
         return None
     w = c["weights"].get(combo, 0.0)
-    d = _dist(w, min(c["call"].get(combo, 0.0), w))
     kind = vs_parts(vs)[1]
-    choice = _hero_choice(r, kind)
+    return {"pos": pos, "vs": vs, "slot": slot, "kind": kind, "combo": combo, "chart": c,
+            "dist": _dist(w, min(c["call"].get(combo, 0.0), w)), "choice": _hero_choice(r, kind)}
+
+
+def hand_deviation(db, r, cache=None):
+    """그 핸드의 프리플랍 결정이 차트와 어긋났으면 설명 dict, 아니면 None.
+
+    '어긋남' = 히어로가 고른 액션의 차트 빈도가 FOLD_LO(25%) 이하 — 드릴의 [실수] 기준과 같다.
+    비교 차트는 그 상황의 **가장 가까운 bb 차트**(`hand_slot`) — 리크 리포트와 같은 규칙이다."""
+    g = _hand_grade(db, r, cache)
+    if not g:
+        return None
+    pos, vs, combo, c, d, choice = g["pos"], g["vs"], g["combo"], g["chart"], g["dist"], g["choice"]
     if d[choice] > FOLD_LO:
         return None
     name = {"open": c["verb"], "call": c["call_name"], "fold": c["fold_name"]}
@@ -1047,6 +1058,149 @@ def annotate_deviations(db, hands):
             h["chart_dev"] = dev
             n += 1
     return n
+
+
+# ---------------------------------------------------------------------------
+# GTO 일치도 — 프리플랍 결정 전체가 차트와 얼마나 맞나 (AI 호출 없음)
+# ---------------------------------------------------------------------------
+
+TRIVIAL_FOLD = 0.95    # 차트가 이만큼 폴드인 칸을 폴드한 건 '당연한 폴드' — 일치율을 부풀리므로 핵심 결정에서 뺀다
+_FIT_KIND = {None: "오픈", "raise": "레이즈를 받음", "allin": "올인을 받음", "limp": "림프를 받음"}
+
+
+def _fit_add(row, g):
+    """결정 하나를 집계 행에 더한다. 판정선은 드릴·차트 이탈과 같다 (고른 액션의 차트 빈도)."""
+    d, choice = g["dist"], g["choice"]
+    share = d[choice]
+    row["n"] += 1
+    if not (choice == "fold" and d["fold"] >= TRIVIAL_FOLD):
+        row["core_n"] += 1
+    if share >= OPEN_HI:
+        row["good"] += 1
+    elif share > FOLD_LO:
+        row["ok"] += 1
+    else:
+        row["bad"] += 1
+        best = max(d, key=d.get)
+        row["tight" if choice == "fold" else "loose" if best == "fold" else "other"] += 1
+
+
+def _fit_rows(groups, min_n=LEAK_MIN_N):
+    rows = []
+    for label, s in groups:
+        if s["n"] < min_n:
+            continue
+        rows.append(dict(s, label=label,
+                         agree=round((s["n"] - s["bad"]) / s["n"] * 100, 1),
+                         core_agree=(round((s["core_n"] - s["bad"]) / s["core_n"] * 100, 1)
+                                     if s["core_n"] else None)))
+    return rows
+
+
+def adherence_report(db):
+    """프리플랍 결정이 가져온 차트와 얼마나 맞나 — 전체 · 상황 · 자리 · 스택 · 월별, 그리고 커버리지.
+
+    '일치' = 고른 액션의 차트 빈도가 25% 초과 (🎯 차트 이탈의 반대). 대부분의 결정이 당연한 폴드라
+    그대로 평균하면 누구나 90%에 가까우므로 **핵심 결정 일치율**(당연한 폴드 제외)을 함께 준다.
+    차트에 혼합 빈도로 있는 칸을 한쪽으로만 치는 차이는 잡지 못한다 — 그건 리크 리포트의 몫이다.
+    솔버 EV 손실이 아니라 차트 빈도 기준이다."""
+    blank = lambda: {"n": 0, "core_n": 0, "good": 0, "ok": 0, "bad": 0, "tight": 0, "loose": 0, "other": 0}
+    total, kinds, seats, stacks, months = blank(), {}, {}, {}, {}
+    axis = sorted({b for v in _slots_index(db).values() for b in v})
+    cover = {"decisions": 0, "compared": 0, "unmeasurable": 0, "no_chart": 0,
+             "short": 0, "deep": 0, "gap": 0}
+    cache = {}
+    for r in db.get("hands", {}).values():
+        if r.get("pf_faced") is None:
+            continue
+        cover["decisions"] += 1
+        spot = hand_spot(r)
+        if not spot:
+            cover["unmeasurable"] += 1
+            continue
+        g = _hand_grade(db, r, cache)
+        if not g:
+            cover["no_chart"] += 1
+            bb = hand_bb(r, spot[1])
+            side = ("gap" if not axis or bb is None or axis[0] <= bb <= axis[-1]
+                    else "short" if bb < axis[0] else "deep")
+            cover[side] += 1
+            continue
+        cover["compared"] += 1
+        month = (r.get("datetime") or "")[:7] or "?"
+        for row in (total, kinds.setdefault(g["kind"], blank()), seats.setdefault(g["pos"], blank()),
+                    stacks.setdefault(g["slot"], blank()), months.setdefault(month, blank())):
+            _fit_add(row, g)
+    return {
+        "personalized": personalized(db),
+        "cover": cover,
+        "axis": [axis[0], axis[-1]] if axis else None,
+        "total": _fit_rows([("전체", total)], min_n=1)[0] if total["n"] else None,
+        "kinds": _fit_rows((_FIT_KIND[k], kinds[k]) for k in _FIT_KIND if k in kinds),
+        "seats": _fit_rows((p, seats[p]) for p in POS_8MAX if p in seats),
+        "stacks": _fit_rows((f"{b}bb", stacks[b]) for b in sorted(stacks)),
+        "months": _fit_rows((m, months[m]) for m in sorted(months)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# GTO Wizard 업로드용 내보내기 — 쿼터가 있으니 볼 가치가 큰 핸드부터 (원문 그대로)
+# ---------------------------------------------------------------------------
+
+UPLOAD_KINDS = ("dev", "hu")
+_SHAPE_CACHE = {}      # (핸드 ID, 히어로) → pot_shape. raw는 바뀌지 않으므로 무효화할 일이 없다
+
+
+def _shape(r, hero):
+    key = (r.get("hand_id"), hero)
+    if key not in _SHAPE_CACHE:
+        _SHAPE_CACHE[key] = convert.pot_shape(convert.parse_hand(r.get("raw") or ""), hero)
+    return _SHAPE_CACHE[key]
+
+
+def upload_hands(db, kinds=UPLOAD_KINDS, days=30, limit=100, hero="Hero", today=None):
+    """업로드할 핸드를 고른다 → {"hands": 레코드들, "dev": n, "hu": n, "multiway": n}.
+
+    dev = 프리플랍 차트 이탈(차트 빈도가 낮은 순, 같으면 칩 변동 큰 순) / hu = 히어로가 결정한 헤즈업
+    포스트플랍(칩 변동 큰 순). GTO Wizard가 멀티웨이를 분석하지 않으므로 3명 이상 남은 핸드는 뺀다.
+    두 종류를 번갈아 담아 한쪽이 `limit`을 다 차지하지 않게 한다 (quiz.leak_spots의 인터리브와 같은 이유)."""
+    cutoff = ""
+    if days:
+        cutoff = ((today or datetime.date.today()) - datetime.timedelta(days=days)).strftime("%Y/%m/%d")
+    devs, hus, multiway = [], [], 0
+    cache = {}
+    for r in db.get("hands", {}).values():
+        if (r.get("datetime") or "")[:10] < cutoff or not r.get("raw"):
+            continue
+        dev = hand_deviation(db, r, cache) if "dev" in kinds else None
+        played = "hu" in kinds and not r.get("no_action_fold") and "*** FLOP" in r["raw"]
+        if not dev and not played:
+            continue
+        live, postflop = _shape(r, hero)
+        if live > 2:
+            multiway += 1
+            continue
+        if dev:
+            devs.append((dev["did_pct"], -abs(r.get("net_bb") or 0), r))
+        if played and postflop:
+            hus.append((-abs(r.get("net_bb") or 0), r))
+    devs.sort(key=lambda x: x[:2])
+    hus.sort(key=lambda x: x[0])
+    queues = [[x[-1] for x in devs], [x[-1] for x in hus]]
+    picked, seen = [], set()
+    i = 0
+    while len(picked) < limit and any(i < len(q) for q in queues):
+        for q in queues:
+            if i < len(q) and q[i].get("hand_id") not in seen and len(picked) < limit:
+                seen.add(q[i].get("hand_id"))
+                picked.append(q[i])
+        i += 1
+    return {"hands": picked, "dev": len(devs), "hu": len(hus), "multiway": multiway}
+
+
+def upload_text(hands):
+    """고른 핸드들의 CoinPoker 원문 — 빈 줄로 잇는다 (`convert.split_hands`로 그대로 다시 나뉜다)."""
+    return "\n\n\n".join(r["raw"].strip() for r in hands) + "\n"
 
 
 # ---------------------------------------------------------------------------

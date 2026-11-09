@@ -229,6 +229,19 @@ compare (that bucket has its own imported chart). `store` can't import `ranges`,
 to every hand-list response (tournament, review, grid drill-down, report hands) via `annotate_deviations`.
 The tournament header's "🎯 차트 이탈 N" filter overrides 프리폴드 숨기기 — most deviations *are* folds.
 
+**GTO 일치도 (the 📊 tab's third mode, `RANGE.view.mode = 'fit'`, `ranges.adherence_report`).** Every preflop decision
+graded by `_hand_grade` — the same function `hand_deviation` uses, so 차트 이탈 count = the badge count. 일치 = chosen
+action's chart share > 25%. Most decisions are obvious folds, so the headline is **핵심 일치율**: it drops folds of
+cells the chart folds ≥ `TRIVIAL_FOLD` (95%); without that everyone reads ~90%. It is chart frequency, not solver EV
+loss, and can't see "always one side of a mixed cell" (the leak report's job). The coverage line matters as much as
+the rate: only ~54% of decisions have a chart (≥40bb isn't collected, 3bet pots/multi-limp can't be measured).
+
+**GTO Wizard 업로드 파일** (same screen, `ranges.upload_hands`/`upload_text`). GTO Wizard accepts CoinPoker hand histories
+as-is, so the file is the original `raw`, no conversion. Its monthly quota is why hands are ranked (dev: lowest chart
+share first; hu: biggest |net_bb| first) and the two kinds alternate; multiway (3+ left after preflop, `convert.pot_shape`)
+is dropped because the Analyzer skips those. The app only produces the file — it never uploads for the user. There is
+no per-hand GTO Wizard deep link: no public URL format was found (2026-11).
+
 A **8/7/6맥스 · 5/4/3명** toggle (`rgvSeats`, `RANGE.view.max`) just drops seats from the front of the bar — data stays
 8max-keyed because an open range is set by how many players are behind (7max UTG = 8max UTG1, 6max UTG =
 8max LJ; same rule as `_pos_8max`), so no separate charts exist per format. If the current seat or opener
@@ -418,6 +431,7 @@ UTG 자리·UTG 오프너 차트가 빠진 스택이 많다 — 있는 그대로
 API: `GET /api/range/state` · `/api/range/next?pos=&stack=` · `/api/range/chart?pos=&stack=&vs=` ·
 `POST /api/range/grade` (plain JSON, no streaming; `vs` from the question) · `/api/range/import`
 (`{pos, stack, text, source, vs}`) · `/api/range/delete-chart` (`{pos, stack, vs}`). `vs` empty = 오픈 차트.
+`GET /api/range/adherence` · `/api/range/upload-preview?kinds=dev,hu&days=&limit=` · `/api/range/upload.txt` (same query, attachment).
 
 ### 💬 AI 코치 (`coach.py`) — 내 기록을 근거로 대화
 

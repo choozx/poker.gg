@@ -462,6 +462,28 @@ class Handler(BaseHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             resp = ranges.leak_report(DB, max_seats=qs.get("max", ["8"])[0] or 8)
             self._send(json.dumps(resp, ensure_ascii=False), "application/json; charset=utf-8")
+        elif path == "/api/range/adherence":
+            self._send(json.dumps(ranges.adherence_report(DB), ensure_ascii=False),
+                       "application/json; charset=utf-8")
+        elif path in ("/api/range/upload-preview", "/api/range/upload.txt"):
+            qs = parse_qs(urlparse(self.path).query)
+            def num(key, default, lo, hi):
+                try:
+                    return max(lo, min(hi, int(qs.get(key, [""])[0])))
+                except ValueError:
+                    return default
+            kinds = [k for k in qs.get("kinds", [""])[0].split(",") if k in ranges.UPLOAD_KINDS]
+            res = ranges.upload_hands(DB, kinds=kinds, days=num("days", 30, 0, 3650),
+                                      limit=num("limit", 100, 1, 5000), hero=HERO)
+            if path.endswith(".txt"):
+                name = time.strftime("coinpoker_gto_upload_%Y%m%d.txt")
+                self._send(ranges.upload_text(res["hands"]) if res["hands"] else "",
+                           "text/plain; charset=utf-8",
+                           headers={"Content-Disposition": f'attachment; filename="{name}"'})
+            else:
+                self._send(json.dumps({"picked": len(res["hands"]), "dev": res["dev"], "hu": res["hu"],
+                                       "multiway": res["multiway"]}, ensure_ascii=False),
+                           "application/json; charset=utf-8")
         elif path == "/api/range/hands":
             qs = parse_qs(urlparse(self.path).query)
             g = lambda k: qs.get(k, [""])[0]

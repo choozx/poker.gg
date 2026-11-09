@@ -2674,7 +2674,8 @@ let RANGE = {
   // 📊 레인지 차트 뷰어 (문제를 내지 않는 보기 전용 모드). vs '' = 오픈 차트
   view: {pos: '', vs: '', stack: '', chart: null, loading: false, err: '', rate: false, cache: {},
          max: rgvLoadMax(),    // 테이블 인원 (8/7/6맥스) — 화면에서 앞자리를 몇 개 빼고 보여줄지
-         mode: 'chart', leaks: null},   // mode: 'chart' | 'leak' (리크 리포트), leaks: 인원별 리포트 캐시
+         mode: 'chart', leaks: null,    // mode: 'chart' | 'leak' (리크 리포트) | 'fit' (GTO 일치도), leaks: 인원별 리포트 캐시
+         fit: null, up: {dev: true, hu: true, days: 30, limit: 100, seq: 0}},   // up: GTO Wizard 업로드 파일 옵션
 };
 
 function rgFilterQS() {
@@ -2692,6 +2693,7 @@ async function rgLoadState() {
   try { RANGE.state = await (await fetch('/api/range/state')).json(); }
   catch (e) { RANGE.state = {error: String(e)}; }
   RANGE.view.leaks = null;        // 차트가 새로 들어왔을 수 있다 — 리크 리포트는 다시 계산 (0.2초)
+  RANGE.view.fit = null;
   renderSidebar();
   if (SEL === -7) renderQuiz();
   if (SEL === -8) renderRangeChart();
@@ -3023,8 +3025,10 @@ function selectRangeChart() {
 function renderRangeChart() {
   if (SEL !== -8) return;
   const mb = (k, l) => `<button class="${RANGE.view.mode === k ? 'primary' : ''}" onclick="rgvSetMode('${k}')">${l}</button>`;
-  $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">📊 레인지 차트</h2>${mb('chart', '차트')}${mb('leak', '리크 리포트')}`;
-  if (RANGE.view.mode === 'leak') renderLeakView(); else renderRangeView();
+  $('#mainhead').innerHTML = `<h2 style="flex:0 0 auto">📊 레인지 차트</h2>${mb('chart', '차트')}${mb('leak', '리크 리포트')}${mb('fit', 'GTO 일치도')}`;
+  if (RANGE.view.mode === 'leak') renderLeakView();
+  else if (RANGE.view.mode === 'fit') renderFitView();
+  else renderRangeView();
 }
 
 function rgvSetMode(m) { RANGE.view.mode = m; renderRangeChart(); $('#main').scrollTop = 0; }
@@ -3131,6 +3135,115 @@ function renderLeakView() {
       기회가 ${L.data ? L.data.min_n : 15}번 이상인 스팟만 싣습니다. 행을 누르면 그 차트에 내 기록을 겹쳐 보고,
       조합을 누르면 실제 핸드로 갑니다.</div>
     ${body}</div>`;
+}
+
+// ── GTO 일치도 — 프리플랍 결정 전체 vs 차트 (서버 ranges.adherence_report) + GTO Wizard 업로드 파일 ──
+async function loadFit() {
+  const v = RANGE.view, me = v.fit = {loading: true};
+  renderRangeChart();
+  try {
+    const d = await (await fetch('/api/range/adherence')).json();
+    if (v.fit === me) v.fit = {data: d};
+  } catch (e) { if (v.fit === me) v.fit = {err: String(e)}; }
+  renderRangeChart();
+}
+
+function fitTable(title, rows) {
+  if (!rows.length) return '';
+  return `<h3 class="fit-h">${esc(title)}</h3>
+    <table class="lk static">
+      <tr><th>구간</th><th>결정</th><th>핵심 결정</th><th title="당연한 폴드를 뺀 결정 중 차트 허용 범위 안에 든 비율">핵심 일치율</th><th>전체 일치율</th><th>차트 이탈</th></tr>
+      ${rows.map(r => `<tr><td><b>${esc(r.label)}</b></td>
+        <td class="num">${r.n.toLocaleString()}</td>
+        <td class="num">${r.core_n.toLocaleString()}</td>
+        <td class="num"><b>${r.core_agree === null ? '—' : r.core_agree + '%'}</b></td>
+        <td class="num">${r.agree}%</td>
+        <td class="num">${r.bad.toLocaleString()}<br><span class="lk-sub">타이트 ${r.tight} · 루즈 ${r.loose} · 액션 다름 ${r.other}</span></td>
+      </tr>`).join('')}
+    </table>`;
+}
+
+function fitUploadQS() {
+  const u = RANGE.view.up, kinds = ['dev', 'hu'].filter(k => u[k]);
+  return new URLSearchParams({kinds: kinds.join(','), days: u.days, limit: u.limit}).toString();
+}
+
+async function fitUploadPreview() {
+  const u = RANGE.view.up, me = ++u.seq, box = $('#fit-preview'), dl = $('#fit-dl');
+  if (!box || !dl) return;
+  dl.classList.add('off');
+  if (!u.dev && !u.hu) { box.textContent = '담을 종류를 하나 이상 고르세요.'; return; }
+  box.textContent = '핸드 고르는 중…';
+  try {
+    const p = await (await fetch('/api/range/upload-preview?' + fitUploadQS())).json();
+    if (me !== u.seq) return;
+    const parts = [];
+    if (u.dev) parts.push(`차트 이탈 ${p.dev.toLocaleString()}`);
+    if (u.hu) parts.push(`헤즈업 포스트플랍 ${p.hu.toLocaleString()}`);
+    box.textContent = `후보 ${parts.join(' · ')} (멀티웨이 ${p.multiway.toLocaleString()}개 제외) → 이번 파일 ${p.picked.toLocaleString()}핸드`;
+    dl.href = '/api/range/upload.txt?' + fitUploadQS();
+    dl.classList.toggle('off', !p.picked);
+  } catch (e) { if (me === u.seq) box.textContent = String(e); }
+}
+
+function fitUploadSet(key, value) {
+  const u = RANGE.view.up;
+  if (key === 'limit') value = Math.max(1, Math.min(5000, parseInt(value, 10) || 100));
+  if (key === 'days') value = +value;
+  u[key] = value;
+  fitUploadPreview();
+}
+
+function fitUploadHtml() {
+  const u = RANGE.view.up;
+  return `<h3 class="fit-h">GTO Wizard 업로드 파일</h3>
+    <div class="fit-up">
+      <div class="qz-note">프리플랍 차트 비교만으로는 플랍 이후를 알 수 없습니다. GTO Wizard의 Hand History Analyzer에 올릴 핸드를
+        골라 CoinPoker <b>원문 그대로</b> 파일로 받습니다. 월 쿼터가 있으니 볼 가치가 큰 순서로 담고, 분석되지 않는 멀티웨이는 뺍니다.
+        앱이 대신 올리지는 않습니다 — 받은 파일을 GTO Wizard에 끌어다 놓으세요.</div>
+      <label><input type="checkbox" ${u.dev ? 'checked' : ''} onchange="fitUploadSet('dev', this.checked)"> 프리플랍 차트 이탈</label>
+      <label><input type="checkbox" ${u.hu ? 'checked' : ''} onchange="fitUploadSet('hu', this.checked)"> 헤즈업 포스트플랍</label>
+      <span class="qz-tglabel">기간</span>
+      <select class="qz-sel" onchange="fitUploadSet('days', this.value)">${[[30, '최근 30일'], [90, '최근 90일'], [365, '최근 1년'], [0, '전체']].map(([d, l]) =>
+        `<option value="${d}" ${d === u.days ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <span class="qz-tglabel">최대</span>
+      <input type="number" class="qz-sel" min="1" max="5000" value="${u.limit}" onchange="fitUploadSet('limit', this.value)">
+      <div class="fit-go"><a id="fit-dl" class="fit-dl off" download>📥 파일 받기</a><span id="fit-preview" class="lk-sub"></span></div>
+    </div>`;
+}
+
+function renderFitView() {
+  const v = RANGE.view;
+  if (!v.fit) { loadFit(); return; }
+  let body, tables = '';
+  if (v.fit.loading) body = '<div class="ai-loading">내 결정을 차트와 맞대어 보는 중</div>';
+  else if (v.fit.err) body = `<div class="qz-note">${esc(v.fit.err)}</div>`;
+  else if (v.fit.data.personalized === false) body = `<div class="qz-note">DB가 <code>--rebuild</code> 전이라
+      결정을 판정할 수 없습니다 — <code>python3 gui.py --rebuild</code> 후 다시 열어 주세요.</div>`;
+  else {
+    const d = v.fit.data, c = d.cover, t = d.total;
+    const pct = (a, b) => b ? (a / b * 100).toFixed(1) : '0';
+    const score = (label, val) => `<div><span>${label}</span><b>${val}</b></div>`;
+    const range = d.axis ? `${d.axis[0]}~${d.axis[1]}bb` : '없음';
+    body = (t ? `<div class="qz-score">
+        ${score('핵심 결정 일치율', t.core_agree === null ? '—' : t.core_agree + '%')}
+        ${score('전체 일치율', t.agree + '%')}
+        ${score('차트 이탈', t.bad.toLocaleString() + '회')}
+        ${score('차트와 비교한 결정', pct(c.compared, c.decisions) + '%')}
+      </div>` : '<div class="qz-note">차트와 비교할 수 있는 결정이 아직 없습니다.</div>')
+      + `<div class="qz-note" style="margin-top:12px">비교 못 한 결정 ${(c.no_chart + c.unmeasurable).toLocaleString()}개 —
+          맞는 차트 없음 ${c.no_chart.toLocaleString()}개(수집 범위 ${esc(range)}보다 깊음 ${c.deep.toLocaleString()} ·
+          짧음 ${c.short.toLocaleString()} · 범위 안의 빈 구간/미수집 스팟 ${c.gap.toLocaleString()}),
+          차트로 잴 수 없는 상황(콜러·3벳이 낀 팟, 다중 림프 등) ${c.unmeasurable.toLocaleString()}개.</div>`;
+    tables = fitTable('상황별', d.kinds) + fitTable('자리별', d.seats) + fitTable('스택별 (가장 가까운 bb 차트)', d.stacks)
+      + fitTable('월별', d.months);
+  }
+  $('#hands').innerHTML = `<div class="qz-wrap" style="max-width:1000px">
+    <div class="qz-note">고른 액션의 차트 빈도가 25%를 넘으면 일치로 봅니다(🎯 차트 이탈과 같은 기준). 차트가 95% 이상 폴드인 칸을
+      폴드한 '당연한 폴드'는 일치율을 부풀리므로 <b>핵심 일치율</b>에서 뺍니다. 프리플랍 차트 빈도 기준이며 솔버 EV 손실이 아닙니다.
+      혼합 빈도를 한쪽으로만 치는 차이는 리크 리포트에서 봅니다.</div>
+    ${body}${fitUploadHtml()}${tables}</div>`;
+  fitUploadPreview();
 }
 
 // 상황(vs)은 '' = 오픈 차트, 그 밖엔 오프너 이름. 슬롯은 (포지션, 상황, 스택)으로 갈린다.

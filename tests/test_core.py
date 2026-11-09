@@ -643,6 +643,120 @@ class TestWebFiles(unittest.TestCase):
             self.assertTrue(gui.web_file(name).strip(), name)
 
 
+class TestAdherence(unittest.TestCase):
+    def setUp(self):
+        reset_caches()
+        self.db = {"hands": {}}
+        ranges.import_chart(self.db, "CO", "20", "AA:100,KK:100,QQ:50")
+
+    def report(self, hands):
+        self.db["hands"] = {str(i): h for i, h in enumerate(hands)}
+        reset_caches()
+        return ranges.adherence_report(self.db)
+
+    def test_trivial_folds_do_not_inflate_core_rate(self):
+        hands = [hand("CO", 7, ["7h", "2d"], rfi=False) for _ in range(8)]   # 당연한 폴드
+        hands += [hand("CO", 7, ["Ah", "Ad"], rfi=False),                    # AA 폴드 — 타이트
+                  hand("CO", 7, ["7h", "2d"], rfi=True),                     # 72o 오픈 — 루즈
+                  hand("CO", 7, ["Kh", "Kd"], rfi=True),
+                  hand("CO", 7, ["Qh", "Qd"], rfi=True)]                     # 50% 칸은 어느 쪽이든 일치
+        t = self.report(hands)["total"]
+        self.assertEqual((t["n"], t["core_n"], t["bad"], t["tight"], t["loose"]), (12, 4, 2, 1, 1))
+        self.assertEqual((t["agree"], t["core_agree"]), (83.3, 50.0))
+
+    def test_counts_match_chart_deviation_badge(self):
+        hands = [hand("CO", 7, ["Ah", "Ad"], rfi=False), hand("CO", 7, ["Ah", "Ad"], rfi=True)]
+        t = self.report(hands)["total"]
+        self.assertEqual(t["bad"], sum(1 for h in hands if ranges.hand_deviation(self.db, h, {})))
+
+    def test_coverage_splits_why_not_compared(self):
+        hands = [hand("CO", 7, ["Ah", "Ad"], rfi=True),                      # 비교됨
+                 dict(hand("CO", 7, ["Ah", "Ad"], rfi=True), stack_bb=60),   # 차트보다 깊음
+                 hand("CO", 7, ["Ah", "Ad"], faced="raise"),                 # 콜러 낀 팟 등 — pf_opener 없음
+                 hand("CO", 7, ["Ah", "Ad"], faced=None)]                    # 결정 없음 (워크)
+        c = self.report(hands)["cover"]
+        self.assertEqual((c["decisions"], c["compared"], c["no_chart"], c["deep"], c["unmeasurable"]),
+                         (3, 1, 1, 1, 1))
+
+
+def upload_raw(hand_id, lines):
+    """샘플 핸드의 ID와 프리플랍을 바꾼 원문 (BTN 084a1d59 / SB Hero / BB 78c4f548)."""
+    return sample_with_preflop(lines).replace("69187300001", hand_id)
+
+
+FLOP_HU = ["084a1d59: folds", "Hero: raises 350 to 700", "78c4f548: calls 350",
+           "*** FLOP *** [Jd 8c 7d]", "Hero: bets 500", "78c4f548: folds"]
+FLOP_3WAY = ["084a1d59: calls 350", "Hero: calls 175", "78c4f548: checks",
+             "*** FLOP *** [Jd 8c 7d]", "Hero: checks", "78c4f548: checks", "084a1d59: checks"]
+FLOP_NO_HERO = ["084a1d59: raises 350 to 700", "Hero: folds", "78c4f548: calls 350",
+                "*** FLOP *** [Jd 8c 7d]", "78c4f548: checks", "084a1d59: checks"]
+
+
+class TestUploadHands(unittest.TestCase):
+    TODAY = __import__("datetime").date(2026, 6, 10)
+
+    def setUp(self):
+        reset_caches()
+        ranges._SHAPE_CACHE.clear()
+        self.db = {"hands": {}}
+        ranges.import_chart(self.db, "CO", "20", "AA:100,KK:100")
+
+    def add(self, hand_id, lines=None, **kw):
+        raw = upload_raw(hand_id, lines or ["084a1d59: folds", "Hero: folds"])
+        r = dict(hand("CO", 7, ["7h", "2d"]), hand_id=hand_id, raw=raw, net_bb=0,
+                 datetime="2026/06/05 10:00:00 KST", no_action_fold=False)
+        r.update(kw)
+        self.db["hands"][hand_id] = r
+        return r
+
+    def pick(self, **kw):
+        kw.setdefault("today", self.TODAY)
+        return ranges.upload_hands(self.db, **kw)
+
+    def ids(self, **kw):
+        return [r["hand_id"] for r in self.pick(**kw)["hands"]]
+
+    def test_pot_shape(self):
+        self.assertEqual(convert.pot_shape(convert.parse_hand(upload_raw("1", FLOP_HU))), (2, True))
+        self.assertEqual(convert.pot_shape(convert.parse_hand(upload_raw("1", FLOP_3WAY))), (3, True))
+        self.assertEqual(convert.pot_shape(convert.parse_hand(upload_raw("1", FLOP_NO_HERO))), (2, False))
+
+    def test_multiway_is_excluded_and_counted(self):
+        self.add("100", FLOP_HU, faced=None)
+        self.add("101", FLOP_3WAY, faced=None)
+        res = self.pick(kinds=["hu"])
+        self.assertEqual([r["hand_id"] for r in res["hands"]], ["100"])
+        self.assertEqual(res["multiway"], 1)
+
+    def test_preflop_fold_is_not_a_postflop_candidate(self):
+        self.add("100", FLOP_NO_HERO, faced=None, no_action_fold=True)
+        self.add("101", FLOP_NO_HERO, faced=None, no_action_fold=False)   # 플랍을 봤지만 히어로 결정은 없음
+        self.assertEqual(self.ids(kinds=["hu"]), [])
+
+    def test_days_window(self):
+        self.add("100", FLOP_HU, faced=None, datetime="2026/06/05 10:00:00 KST")
+        self.add("101", FLOP_HU, faced=None, datetime="2026/01/05 10:00:00 KST")
+        self.assertEqual(self.ids(kinds=["hu"], days=30), ["100"])
+        self.assertEqual(set(self.ids(kinds=["hu"], days=0)), {"100", "101"})
+
+    def test_limit_alternates_kinds_and_dedupes(self):
+        for i in range(4):                               # 차트 이탈 (AA 폴드)이 여럿이어도
+            self.add(f"20{i}", hero_cards=["Ah", "Ad"], rfi=False)
+        self.add("300", FLOP_HU, faced=None, net_bb=30)  # 포스트플랍 핸드가 밀려나지 않는다
+        got = self.ids(limit=2)
+        self.assertEqual(len(got), 2)
+        self.assertIn("300", got)
+        # 이탈이면서 헤즈업 포스트플랍인 핸드는 한 번만
+        self.db["hands"].clear()
+        self.add("400", FLOP_HU, hero_cards=["7h", "2d"], rfi=True)
+        self.assertEqual(self.ids(), ["400"])
+
+    def test_upload_text_is_original_and_resplits(self):
+        a, b = self.add("100", FLOP_HU), self.add("101", FLOP_HU)
+        parts = convert.split_hands(ranges.upload_text([a, b]))
+        self.assertEqual([p.strip() for p in parts], [a["raw"].strip(), b["raw"].strip()])
+
+
 class TestListApis(unittest.TestCase):
     def test_hands_by_combo_includes_markdown(self):
         # 실제로 났던 버그: markdown을 DB에 저장하지 않게 된 뒤 그리드 드릴다운만 본문 없이 와서 렌더가 깨졌다

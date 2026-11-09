@@ -267,6 +267,15 @@ def split_hands(text):
     return [p for p in parts if p.strip().startswith("CoinPoker Hand #")]
 
 
+def pot_shape(hand, hero="Hero"):
+    """(프리플랍이 끝났을 때 폴드하지 않고 남은 인원, 히어로가 플랍 이후에 직접 결정했나)."""
+    folded = {a.player for a in hand.actions if a.street == "preflop" and a.verb == "folds"}
+    postflop = any(a.player == hero and a.street != "preflop"
+                   and a.verb in ("checks", "bets", "calls", "raises", "folds", "allin")
+                   for a in hand.actions)
+    return len(hand.players) - len(folded), postflop
+
+
 # ---------------------------------------------------------------------------
 # 출력: AI 분석용 마크다운
 # ---------------------------------------------------------------------------
