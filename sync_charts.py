@@ -33,8 +33,9 @@ import xml.etree.ElementTree as ET
 
 import ranges
 
-# 예전 grab_chart 수집 대상 + 40·50bb. 더 촘촘히 넣으면 리크 리포트의 bb 차트별 표본이 쪼개진다
-STACKS = (7, 10, 13, 15, 20, 25, 28, 30, 32, 35, 40, 50)
+# 예전 grab_chart 수집 대상 + 40·50bb + 8~14bb(짧은 스택은 1~2bb 차이로 레인지가 크게 달라 촘촘히).
+# 더 촘촘히 넣으면 리크 리포트의 bb 차트별 표본이 쪼개진다
+STACKS = (7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 25, 28, 30, 32, 35, 40, 50)
 ENV_FILES = ("~/toyProj/poker-tracker/.local.env", "~/toy/poker-tracker/.local.env")  # PC마다 repo 위치가 다르다
 
 
